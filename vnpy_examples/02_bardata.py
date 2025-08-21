@@ -1,5 +1,6 @@
 import datetime
 from config import logger
+from functools import lru_cache
 from vnpy.trader.object import BarData
 from vnpy.trader.database import get_database
 from vnpy.trader.constant import Exchange, Interval
@@ -27,22 +28,35 @@ def save_bar_data_example() -> None:
     # 唯一约束(symbol, exchange, interval, datetime), 冲突会废除旧数据并插入新数据
     database.save_bar_data([bar_data], stream=False)
 
-
-def load_bar_data_example() -> None:
-    """读取 vnpy 数据库中的 K 线数据"""
+@lru_cache(maxsize=999)
+def load_bar_data_example(
+    symbol: str,
+    exchange: Exchange,
+    interval: Interval,
+    start: datetime,
+    end: datetime
+) -> list[BarData]:
+    """
+    - 读取 vnpy 数据库中的 K 线数据
+    - 注意：应使用 lru 缓存, 避免频繁调用相同的数据接口
+    """
     database = get_database()
     logger.info(type(database))  # 根据 SETTINGS["database.name"] 确定数据库类型
-    bar_data_list = database.load_bar_data(
-        symbol="600036",
-        exchange=Exchange.SSE,
-        interval=Interval.DAILY,
-        start=datetime.datetime(2025, 8, 8),
-        end=datetime.datetime(2025, 8, 8),
-    )
-    for bar_data in bar_data_list:
-        logger.info(bar_data)
+    bar_data_list: list[BarData] = database.load_bar_data(symbol, exchange, interval, start, end)
+    return bar_data_list
 
 
 if __name__ == '__main__':
     save_bar_data_example()
-    load_bar_data_example()
+    bar_data_list = load_bar_data_example(
+        symbol="600036",
+        exchange=Exchange.SSE,
+        interval=Interval.DAILY,
+        start=datetime.datetime(2025, 8, 1),
+        end=datetime.datetime(2025, 8, 15),
+    )
+    for bar_data in bar_data_list:
+        logger.info(bar_data)
+
+    # 清除缓存
+    load_bar_data_example.cache_clear()
