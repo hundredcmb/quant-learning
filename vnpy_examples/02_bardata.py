@@ -6,7 +6,7 @@ from vnpy.trader.constant import Exchange, Interval
 
 
 def save_bar_data_example() -> None:
-    """把外部 k 线数据导入 vnpy 数据库的示例代码 """
+    """把外部 K 线数据导入 vnpy 数据库"""
     database = get_database()
     logger.info(type(database))  # 根据 SETTINGS["database.name"] 确定数据库类型
     bar_data: BarData = BarData(
@@ -29,7 +29,7 @@ def save_bar_data_example() -> None:
 
 
 def load_bar_data_example() -> None:
-    """读取 vnpy 数据库中的 k 线数据"""
+    """读取 vnpy 数据库中的 K 线数据"""
     database = get_database()
     logger.info(type(database))  # 根据 SETTINGS["database.name"] 确定数据库类型
     bar_data_list = database.load_bar_data(

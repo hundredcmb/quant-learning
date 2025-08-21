@@ -5,9 +5,9 @@ from vnpy.trader.setting import SETTINGS
 
 def settings_example() -> None:
     """
-    查看当前 vnpy 配置的示例代码
+    查看当前 vnpy 配置
     如果使用的是 vnpy 客户端集成环境, 配置文件 ~/.vntrader/vt_setting.json
-    推荐直接在客户端修改配置或直接修改配置文件
+    可以直接在客户端UI 中修改配置或直接修改配置文件
     """
     logger.info(json.dumps(SETTINGS, indent=2))
 
