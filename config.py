@@ -1,6 +1,16 @@
-# 数据库配置
+# 加载环境变量
 import os
-DB_MYSQL_URL = os.environ["DB_MYSQL_URL"] # 格式: "mysql+pymysql://username:password@host:port/dbname?charset=utf8mb4"
+from pathlib import Path
+env_path = Path(f"{os.path.dirname(os.path.abspath(__file__))}/.env")
+with open(env_path, 'r', encoding='utf-8') as f:
+    for line in f:
+        line = line.strip()
+        if line and not line.startswith('#') and '=' in line:
+            key, value = line.split('=', 1)
+            os.environ[key.strip()] = value.strip()
+
+# 数据库配置
+DB_MYSQL_URL = os.environ["DB_MYSQL_URL"]
 
 # 日志配置
 import sys
