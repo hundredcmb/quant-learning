@@ -5,11 +5,13 @@ from vnpy.trader.object import BarData
 from vnpy.trader.database import get_database
 from vnpy.trader.constant import Exchange, Interval
 
+# 初始化数据库对象, 类型为 SETTINGS["database.name"], 会自动设置数据库连接参数
+database = get_database()
+logger.info(f"type(database)={type(database)}")
+
 
 def save_bar_data_example() -> None:
     """把外部 K 线数据导入 vnpy 数据库"""
-    database = get_database()
-    logger.info(type(database))  # 根据 SETTINGS["database.name"] 确定数据库类型
     bar_data: BarData = BarData(
         gateway_name="DB",
         symbol="600036",
@@ -28,6 +30,7 @@ def save_bar_data_example() -> None:
     # 唯一约束(symbol, exchange, interval, datetime), 冲突会废除旧数据并插入新数据
     database.save_bar_data([bar_data], stream=False)
 
+
 @lru_cache(maxsize=999)
 def load_bar_data_example(
     symbol: str,
@@ -40,8 +43,6 @@ def load_bar_data_example(
     - 读取 vnpy 数据库中的 K 线数据
     - 注意：应使用 lru 缓存, 避免频繁调用相同的数据接口
     """
-    database = get_database()
-    logger.info(type(database))  # 根据 SETTINGS["database.name"] 确定数据库类型
     bar_data_list: list[BarData] = database.load_bar_data(symbol, exchange, interval, start, end)
     return bar_data_list
 
