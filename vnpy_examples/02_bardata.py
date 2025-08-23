@@ -1,5 +1,5 @@
-import datetime
 from config import logger
+from datetime import datetime
 from functools import lru_cache
 from vnpy.trader.object import BarData
 from vnpy.trader.database import get_database
@@ -16,7 +16,7 @@ def save_bar_data_example() -> None:
         gateway_name="DB",
         symbol="600036",
         exchange=Exchange.SSE,
-        datetime=datetime.datetime(2025, 8, 8),
+        datetime=datetime(2025, 8, 8),
         interval=Interval.DAILY,
         volume=456421.53,
         turnover=2044145.472,
@@ -48,16 +48,15 @@ def load_bar_data_example(
 
 
 if __name__ == '__main__':
-    save_bar_data_example()
-    bar_data_list = load_bar_data_example(
+    b_list = load_bar_data_example(
         symbol="600036",
         exchange=Exchange.SSE,
         interval=Interval.DAILY,
-        start=datetime.datetime(2025, 8, 1),
-        end=datetime.datetime(2025, 8, 15),
+        start=datetime(2025, 8, 1),
+        end=datetime(2025, 8, 15),
     )
-    for bar_data in bar_data_list:
-        logger.info(bar_data)
+    for b_data in b_list:
+        logger.info(b_data)
 
     # 清除缓存
     load_bar_data_example.cache_clear()

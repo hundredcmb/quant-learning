@@ -4,6 +4,7 @@ from vnpy.trader.datafeed import get_datafeed
 from vnpy.trader.database import get_database
 from vnpy.trader.constant import Exchange, Interval
 from vnpy.trader.object import HistoryRequest, BarData
+from vnpy_tushare.tushare_datafeed import EXCHANGE_VT2TS
 
 # 初始化数据服务对象, 类型为 SETTINGS["datafeed.name"], 会自动设置 token 或 用户名密码
 datafeed = get_datafeed()
@@ -12,6 +13,9 @@ logger.info(f"type(datafeed)={type(datafeed)}")
 # 初始化数据库对象, 类型为 SETTINGS["database.name"], 会自动设置数据库连接参数
 database = get_database()
 logger.info(f"type(database)={type(database)}")
+
+# 创建 tushare->vnpy 交易所枚举映射关系
+EXCHANGE_TS2VT: dict[str, Exchange] = {v: k for k, v in EXCHANGE_VT2TS.items()}
 
 
 def datafeed_example(
@@ -40,21 +44,21 @@ def datafeed_example(
     logger.info(f"len(bardata_list)={len(bardata_list)}")
 
     # 把下载到的数据保存到数据库
-    return database.save_bar_data(bardata_list, stream=False), len(bardata_list)
+    is_saved = True
+    if len(bardata_list) > 0:
+        is_saved = database.save_bar_data(bardata_list, stream=False)
+    return is_saved, len(bardata_list)
 
 
 def datafeed_hs300_example():
     """
     - 把 沪深300 成分股的日线数据写入 vnpy 数据库
-    - 仅作示范: 导入的 只有2025 年的数据, 有性能优化的空间
+    - 适合导入天数多(超过1年)的场景
+    - 如果只导入几天的数据会很慢, 更推荐使用原生的 tushare 接口
     """
     # 这里可以直接使用 ts 数据接口, get_datafeed 已经设置过了 token
     import tushare as ts
     pro = ts.pro_api()
-
-    # 获取 tushare->vnpy 交易所映射关系
-    from vnpy_tushare.tushare_datafeed import EXCHANGE_VT2TS
-    EXCHANGE_TS2VT: dict[str, Exchange] = {v: k for k, v in EXCHANGE_VT2TS.items()}
 
     # 获取沪深300指数的成分股, tushare 只有每月首个交易日和最后一个交易日的数据
     df = pro.index_weight(index_code='399300.SZ', start_date='20250630', end_date='20250630')
@@ -76,13 +80,14 @@ def datafeed_hs300_example():
                 exchange=exchange,
                 interval=Interval.DAILY,
                 start=datetime(2025, 1, 1),
-                end=datetime(2025, 8, 15),
+                end=datetime(2025, 8, 22),
             )
             if is_saved:
                 saved_stock_count += 1
                 saved_bar_count += bar_count
     logger.info(f"saved_stock_count={saved_stock_count}")
     logger.info(f"saved_bar_count={saved_bar_count}")
+
 
 if __name__ == "__main__":
     datafeed_hs300_example()
