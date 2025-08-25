@@ -1,17 +1,17 @@
 from vnpy_ctastrategy import (
-    CtaTemplate,
-    StopOrder,
-    TickData,
     BarData,
+    TickData,
+    StopOrder,
     TradeData,
     OrderData,
+    CtaTemplate,
     ArrayManager,
 )
-from vnpy.trader.constant import Direction
+from vnpy.trader.constant import Direction, Status
 
 
 class NoShortDoubleMaStrategy(CtaTemplate):
-    """不做空的双均线策略"""
+    """不做空的日线双均线策略(适用于A股的趋势股)"""
 
     author = "hundredcmb"
 
@@ -77,16 +77,13 @@ class NoShortDoubleMaStrategy(CtaTemplate):
         self.slow_ma0 = slow_ma[-1]
         self.slow_ma1 = slow_ma[-2]
 
-        cta_engine: BacktestingEngine = self.cta_engine
         if self.fast_ma0 > self.slow_ma0 and self.count == 0:
             price = bar.close_price * 1.1
             volume = int(self.cash / price / 100) * 100
             self.buy(price, volume)
-            # cta_engine.output(f"买入提交, {bar.datetime}, count={volume}, price={price:.2f}")
         elif self.fast_ma0 < self.slow_ma0 and self.count > 0:
             price = bar.close_price * 0.9
             self.sell(price, self.count)
-            # cta_engine.output(f"卖出提交, {bar.datetime}, count={self.count}, price={price:.2f}")
 
         self.put_event()
 
@@ -94,8 +91,16 @@ class NoShortDoubleMaStrategy(CtaTemplate):
         """
         Callback of new order data update.
         """
-        self.cta_engine.output(f"{order.datetime} {order.vt_symbol} {order.direction.value} {order.offset.value} {order.price:.2f} {order.volume}")
-        self.cta_engine.output(order.type)
+        if order.status == Status.NOTTRADED:
+            if order.direction == Direction.LONG:
+                self.cta_engine.output(f"买入提交: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+            elif order.direction == Direction.SHORT:
+                self.cta_engine.output(f"卖出提交: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+        elif order.status == Status.CANCELLED:
+            if order.direction == Direction.LONG:
+                self.cta_engine.output(f"买入撤单: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+            elif order.direction == Direction.SHORT:
+                self.cta_engine.output(f"卖出撤单: count={order.volume}, price={order.price:.2f}, {order.datetime}")
 
     def on_trade(self, trade: TradeData) -> None:
         """
@@ -105,11 +110,11 @@ class NoShortDoubleMaStrategy(CtaTemplate):
         if direction == Direction.LONG:
             self.count += trade.volume
             self.cash -= trade.price * trade.volume
-            self.cta_engine.output(f"买入成交, {trade.datetime}, count={trade.volume}, price={trade.price:.2f}")
+            self.cta_engine.output(f"买入成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
         elif direction == Direction.SHORT:
             self.count -= trade.volume
             self.cash += trade.price * trade.volume
-            self.cta_engine.output(f"卖出成交, {trade.datetime}, count={trade.volume}, price={trade.price:.2f}")
+            self.cta_engine.output(f"卖出成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
 
     def on_stop_order(self, stop_order: StopOrder) -> None:
         """
