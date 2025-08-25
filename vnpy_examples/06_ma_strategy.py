@@ -1,3 +1,11 @@
+import numpy as np
+from datetime import datetime
+from vnpy.trader.constant import (
+    Status,
+    Exchange,
+    Interval,
+    Direction,
+)
 from vnpy_ctastrategy import (
     BarData,
     TickData,
@@ -7,50 +15,55 @@ from vnpy_ctastrategy import (
     CtaTemplate,
     ArrayManager,
 )
-from vnpy.trader.constant import Direction, Status
 
 
-class NoShortDoubleMaStrategy(CtaTemplate):
-    """不做空的日线双均线策略(适用于A股的趋势股)"""
+class NoShortDailyDoubleMaStrategy(CtaTemplate):
+    """
+    - 不做空的日线双均线策略(仅用于回测学习, 无 tick 数据)
+    - 策略细节: 如果n日收盘时快均线在上时, n+1日开盘时满仓; n日收盘时慢均线在上时, n+1日开盘时空仓
+    """
 
     author = "hundredcmb"
 
-    fast_window: int = 20
-    slow_window: int = 60
+    fast_window: int = 30
+    slow_window: int = 90
 
+    # 最新日线的快慢均线值
     fast_ma0: float = 0.0
-    fast_ma1: float = 0.0
     slow_ma0: float = 0.0
+
+    # 上一交易日的日线的快慢均线值
+    fast_ma1: float = 0.0
     slow_ma1: float = 0.0
 
-    count: int = 0
-    cash: int = 0
+    # 账户剩余资金, 而剩余持股数为 self.pos
+    cash: float = 0.0
 
     parameters = ["fast_window", "slow_window"]
-    variables = ["fast_ma0", "fast_ma1", "slow_ma0", "slow_ma1"]
+    variables = ["fast_ma0", "fast_ma1", "slow_ma0", "slow_ma1", "cash"]
 
     def on_init(self) -> None:
         """
         Callback when strategy is inited.
         """
-        self.write_log("策略初始化")
-        self.am: ArrayManager = ArrayManager()
-        self.load_bar(10)
+        self.am: ArrayManager = ArrayManager(size=self.slow_window)
         self.cash = self.cta_engine.capital
+
+        # 补充策略开始日以前的均线数据, 由于股票交易日不连续, days要填大一些
+        self.load_bar(days=self.slow_window * 2, interval=Interval.DAILY, use_database=True)
+        self.trading = True
 
     def on_start(self) -> None:
         """
         Callback when strategy is started.
         """
-        self.write_log("策略启动")
-        self.put_event()
+        pass
 
     def on_stop(self) -> None:
         """
         Callback when strategy is stopped.
         """
-        self.write_log("策略停止")
-        self.put_event()
+        pass
 
     def on_tick(self, tick: TickData) -> None:
         """
@@ -62,30 +75,33 @@ class NoShortDoubleMaStrategy(CtaTemplate):
         """
         Callback of new bar data update.
         """
+        # 有新的日线数据, 取消所有未成交委托
         self.cancel_all()
 
+        # 更新滑动窗口
         am = self.am
         am.update_bar(bar)
-        if not am.inited:
+        if not am.inited or not self.trading:
             return
 
-        fast_ma = am.sma(self.fast_window, array=True)
-        self.fast_ma0 = fast_ma[-1]
-        self.fast_ma1 = fast_ma[-2]
+        # 更新快均线, 提取近两天的值
+        fast_ma: np.ndarray = am.sma(n=self.fast_window, array=True)
+        self.fast_ma0 = float(fast_ma[-1].item())
+        self.fast_ma1 = float(fast_ma[-2].item())
 
-        slow_ma = am.sma(self.slow_window, array=True)
-        self.slow_ma0 = slow_ma[-1]
-        self.slow_ma1 = slow_ma[-2]
+        # 更新慢均线, 提取近两天的值
+        slow_ma: np.ndarray = am.sma(n=self.slow_window, array=True)
+        self.slow_ma0 = float(slow_ma[-1].item())
+        self.slow_ma1 = float(slow_ma[-2].item())
 
-        if self.fast_ma0 > self.slow_ma0 and self.count == 0:
-            price = bar.close_price * 1.1
+        # 上涨趋势就满仓, 下跌趋势就空仓
+        if self.fast_ma0 >= self.slow_ma0 and self.pos == 0:
+            price = bar.close_price * 1.1  # 确保下一交易日开盘竞价能够成交
             volume = int(self.cash / price / 100) * 100
             self.buy(price, volume)
-        elif self.fast_ma0 < self.slow_ma0 and self.count > 0:
-            price = bar.close_price * 0.9
-            self.sell(price, self.count)
-
-        self.put_event()
+        elif self.fast_ma0 < self.slow_ma0 and self.pos > 0:
+            price = bar.close_price * 0.9  # 确保下一交易日开盘竞价能够成交
+            self.sell(price, self.pos)
 
     def on_order(self, order: OrderData) -> None:
         """
@@ -108,11 +124,9 @@ class NoShortDoubleMaStrategy(CtaTemplate):
         """
         direction = trade.direction
         if direction == Direction.LONG:
-            self.count += trade.volume
             self.cash -= trade.price * trade.volume
             self.cta_engine.output(f"买入成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
         elif direction == Direction.SHORT:
-            self.count -= trade.volume
             self.cash += trade.price * trade.volume
             self.cta_engine.output(f"卖出成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
 
@@ -124,25 +138,23 @@ class NoShortDoubleMaStrategy(CtaTemplate):
 
 
 if __name__ == '__main__':
-    from datetime import datetime
-    from vnpy.trader.constant import Interval
     from vnpy_ctastrategy.backtesting import BacktestingEngine, BacktestingMode
 
     engine = BacktestingEngine()
     engine.set_parameters(
-        vt_symbol="600036.SSE",
+        vt_symbol=f"600036.{Exchange.SSE.value}",  # 股票代码(代码.市场)
+        rate=0.0003354,  # 单向手续费率(包括印花税), A股最低为(0.854+0.854+5)/10000/2
+        slippage=0,  # 滑点, 成交可能的偏差
+        size=1,  # 合约乘数, 股票实物为1
+        pricetick=0.01,  # 最小价格变动
+        capital=1000000,  # 初始资金
         interval=Interval.DAILY,
+        mode=BacktestingMode.BAR,
         start=datetime(2014, 1, 1),
         end=datetime(2025, 8, 22),
-        mode=BacktestingMode.BAR,
-        rate=0.0003354,  # A股费率 (0.854+0.854+5)/10000/2
-        slippage=0,
-        size=1,
-        pricetick=0.01,
-        capital=1000000,
     )
     engine.load_data()
-    engine.add_strategy(NoShortDoubleMaStrategy, {
+    engine.add_strategy(NoShortDailyDoubleMaStrategy, {
         "fast_window": 22,
         "slow_window": 85,
     })
