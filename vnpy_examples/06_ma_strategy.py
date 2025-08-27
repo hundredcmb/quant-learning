@@ -144,6 +144,8 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         if self.strftime_tushare(bar.datetime) in self.sell_dates and self.pos > 0:
             price = bar.close_price * 0.9  # 确保下一交易日开盘竞价能够成交
             self.sell(price, self.pos)
+        elif self.strftime_tushare(bar.datetime) in self.record_dates:
+            pass
         else:
             # 上涨趋势就满仓, 下跌趋势就空仓
             if self.fast_ma0 >= self.slow_ma0 and self.pos == 0:
