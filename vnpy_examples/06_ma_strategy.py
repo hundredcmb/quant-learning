@@ -1,5 +1,3 @@
-import numpy as np
-from datetime import datetime
 from vnpy.trader.constant import (
     Status,
     Exchange,
@@ -15,12 +13,21 @@ from vnpy_ctastrategy import (
     CtaTemplate,
     ArrayManager,
 )
+from vnpy_tushare.tushare_datafeed import EXCHANGE_VT2TS
+
+import numpy as np
+import tushare as ts
+from datetime import datetime
+
+# 创建 tushare->vnpy 交易所枚举映射关系
+EXCHANGE_TS2VT: dict[str, Exchange] = {v: k for k, v in EXCHANGE_VT2TS.items()}
 
 
 class NoShortDailyDoubleMaStrategy(CtaTemplate):
     """
     - 不做空的日线双均线策略(仅用于回测学习, 无 tick 数据)
     - 策略细节: 如果n日收盘时快均线在上时, n+1日开盘时满仓; n日收盘时慢均线在上时, n+1日开盘时空仓
+    - 特殊情况: 股权登记日的当天会空仓, 如果除权除息日快均线在上, 下一天开盘满仓
     """
 
     author = "hundredcmb"
@@ -36,11 +43,48 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
     fast_ma1: float = 0.0
     slow_ma1: float = 0.0
 
+    # 股权登记日
+    record_dates: set[str] = set()
+
+    # 除权除息日
+    ex_dates: set[str] = set()
+
+    # 股权登记日的前一天
+    sell_dates: set[str] = set()
+
     # 账户剩余资金, 而剩余持股数为 self.pos
     cash: float = 0.0
 
     parameters = ["fast_window", "slow_window"]
     variables = ["fast_ma0", "fast_ma1", "slow_ma0", "slow_ma1", "cash"]
+
+    @staticmethod
+    def strftime_tushare(date: datetime):
+        return datetime.strftime(date, "%Y%m%d")
+
+    def init_ex_dates(self):
+        pro = ts.pro_api()
+        symbol = self.cta_engine.symbol
+        exchange: str = EXCHANGE_VT2TS[self.cta_engine.exchange]
+        df = pro.dividend(ts_code=f'{symbol}.{exchange}', fields='ts_code,div_proc,stk_div,record_date,ex_date')
+        for _idx, row in df.iterrows():
+            if row['div_proc'] == "实施":
+                self.record_dates.add(row['record_date'])
+                self.ex_dates.add(row['ex_date'])
+        is_sell_date = False
+        start_date = self.strftime_tushare(self.cta_engine.start)
+        end_date = self.strftime_tushare(self.cta_engine.end)
+        df = pro.trade_cal(exchange='SSE', start_date=start_date, end_date=end_date)
+        for _idx, row in df.iterrows():
+            cal_date = row["cal_date"]
+            is_open = int(row["is_open"])
+            if not is_open:
+                continue
+            if is_sell_date:
+                self.sell_dates.add(cal_date)
+                is_sell_date = False
+            if cal_date in self.record_dates:
+                is_sell_date = True
 
     def on_init(self) -> None:
         """
@@ -51,7 +95,9 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
 
         # 补充策略开始日以前的均线数据, 由于股票交易日不连续, days要填大一些
         self.load_bar(days=self.slow_window * 2, interval=Interval.DAILY, use_database=True)
-        self.trading = True
+
+        # 拉取股票的除权除息信息, 本策略不参与任何分红和送转
+        self.init_ex_dates()
 
     def on_start(self) -> None:
         """
@@ -94,14 +140,19 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         self.slow_ma0 = float(slow_ma[-1].item())
         self.slow_ma1 = float(slow_ma[-2].item())
 
-        # 上涨趋势就满仓, 下跌趋势就空仓
-        if self.fast_ma0 >= self.slow_ma0 and self.pos == 0:
-            price = bar.close_price * 1.1  # 确保下一交易日开盘竞价能够成交
-            volume = int(self.cash / price / 100) * 100
-            self.buy(price, volume)
-        elif self.fast_ma0 < self.slow_ma0 and self.pos > 0:
+        # 股权登记日需要额外处理
+        if self.strftime_tushare(bar.datetime) in self.sell_dates and self.pos > 0:
             price = bar.close_price * 0.9  # 确保下一交易日开盘竞价能够成交
             self.sell(price, self.pos)
+        else:
+            # 上涨趋势就满仓, 下跌趋势就空仓
+            if self.fast_ma0 >= self.slow_ma0 and self.pos == 0:
+                price = bar.close_price * 1.1  # 确保下一交易日开盘竞价能够成交
+                volume = int(self.cash / price / 100) * 100
+                self.buy(price, volume)
+            elif self.fast_ma0 < self.slow_ma0 and self.pos > 0:
+                price = bar.close_price * 0.9  # 确保下一交易日开盘竞价能够成交
+                self.sell(price, self.pos)
 
     def on_order(self, order: OrderData) -> None:
         """

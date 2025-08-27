@@ -22,11 +22,11 @@ if __name__ == "__main__":
 
     # 添加第一个绘图区域: 用于显示蜡烛图, 隐藏x轴的值(时间)的显示
     widget.add_plot(plot_name="candle", hide_x_axis=True)
-    widget.add_item(CandleItem, item_name="candle", plot_name="candle")
+    widget.add_item(item_class=CandleItem, item_name="candle", plot_name="candle")
 
     # 添加第二个绘图区域: 用于显示成交量, 最大高度限制为200像素
     widget.add_plot(plot_name="volume", maximum_height=200)
-    widget.add_item(VolumeItem, item_name="volume", plot_name="volume")
+    widget.add_item(item_class=VolumeItem, item_name="volume", plot_name="volume")
 
     # 添加光标, 显示 某个bar蜡烛图的信息, 某个bar成交量信息, 光标x轴值, 光标y轴值
     widget.add_cursor()
