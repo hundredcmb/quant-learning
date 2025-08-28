@@ -49,7 +49,7 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
     # 除权除息日
     ex_dates: set[str] = set()
 
-    # 股权登记日的前一天
+    # 提前注册的需要挂卖单的日期
     sell_dates: set[str] = set()
 
     # 账户剩余资金, 而剩余持股数为 self.pos
@@ -60,31 +60,51 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
 
     @staticmethod
     def strftime_tushare(date: datetime):
+        """格式化成tushare的日期字符串"""
         return datetime.strftime(date, "%Y%m%d")
 
-    def init_ex_dates(self):
+    def init_sell_dates(self):
+        """
+        初始化强制卖单日集合
+        - 股权登记日前一天的bar
+        - 最后一天前一天的bar
+        """
         pro = ts.pro_api()
         symbol = self.cta_engine.symbol
         exchange: str = EXCHANGE_VT2TS[self.cta_engine.exchange]
+
+        # 拉取股票的分红送转信息
         df = pro.dividend(ts_code=f'{symbol}.{exchange}', fields='ts_code,div_proc,stk_div,record_date,ex_date')
         for _idx, row in df.iterrows():
             if row['div_proc'] == "实施":
                 self.record_dates.add(row['record_date'])
                 self.ex_dates.add(row['ex_date'])
-        is_sell_date = False
+
+        # 拉取历史交易日信息
         start_date = self.strftime_tushare(self.cta_engine.start)
         end_date = self.strftime_tushare(self.cta_engine.end)
         df = pro.trade_cal(exchange='SSE', start_date=start_date, end_date=end_date)
+
+        # 提取股权登记日前一天
+        is_record_date = False
+        is_last_date = 0
         for _idx, row in df.iterrows():
             cal_date = row["cal_date"]
             is_open = int(row["is_open"])
             if not is_open:
                 continue
-            if is_sell_date:
+
+            if is_last_date == 0:
+                is_last_date = 1
+            elif is_last_date == 1:
                 self.sell_dates.add(cal_date)
-                is_sell_date = False
+                is_last_date = 2
+
+            if is_record_date:
+                self.sell_dates.add(cal_date)
+                is_record_date = False
             if cal_date in self.record_dates:
-                is_sell_date = True
+                is_record_date = True
 
     def on_init(self) -> None:
         """
@@ -96,8 +116,8 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         # 补充策略开始日以前的均线数据, 由于股票交易日不连续, days要填大一些
         self.load_bar(days=self.slow_window * 2, interval=Interval.DAILY, use_database=True)
 
-        # 拉取股票的除权除息信息, 本策略不参与任何分红和送转
-        self.init_ex_dates()
+        # 初始化卖出日集合
+        self.init_sell_dates()
 
     def on_start(self) -> None:
         """
@@ -162,14 +182,18 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         """
         if order.status == Status.NOTTRADED:
             if order.direction == Direction.LONG:
-                self.cta_engine.output(f"买入提交: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+                self.cta_engine.output(f"买入提交: count={order.volume}, price={order.price:.2f}"
+                                       f", {order.datetime.strftime("%Y-%m-%d")}")
             elif order.direction == Direction.SHORT:
-                self.cta_engine.output(f"卖出提交: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+                self.cta_engine.output(f"卖出提交: count={order.volume}, price={order.price:.2f}"
+                                       f", {order.datetime.strftime("%Y-%m-%d")}")
         elif order.status == Status.CANCELLED:
             if order.direction == Direction.LONG:
-                self.cta_engine.output(f"买入撤单: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+                self.cta_engine.output(f"买入撤单: count={order.volume}, price={order.price:.2f}"
+                                       f", {order.datetime.strftime("%Y-%m-%d")}")
             elif order.direction == Direction.SHORT:
-                self.cta_engine.output(f"卖出撤单: count={order.volume}, price={order.price:.2f}, {order.datetime}")
+                self.cta_engine.output(f"卖出撤单: count={order.volume}, price={order.price:.2f}"
+                                       f", {order.datetime.strftime("%Y-%m-%d")}")
 
     def on_trade(self, trade: TradeData) -> None:
         """
@@ -178,10 +202,12 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         direction = trade.direction
         if direction == Direction.LONG:
             self.cash -= trade.price * trade.volume
-            self.cta_engine.output(f"买入成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
+            self.cta_engine.output(f"买入成交: count={trade.volume}, price={trade.price:.2f}"
+                                   f", {trade.datetime.strftime("%Y-%m-%d")}")
         elif direction == Direction.SHORT:
             self.cash += trade.price * trade.volume
-            self.cta_engine.output(f"卖出成交: count={trade.volume}, price={trade.price:.2f}, {trade.datetime}")
+            self.cta_engine.output(f"卖出成交: count={trade.volume}, price={trade.price:.2f}"
+                                   f", {trade.datetime.strftime("%Y-%m-%d")}")
 
     def on_stop_order(self, stop_order: StopOrder) -> None:
         """
@@ -195,7 +221,7 @@ if __name__ == '__main__':
 
     engine = BacktestingEngine()
     engine.set_parameters(
-        vt_symbol=f"600036.{Exchange.SSE.value}",  # 股票代码(代码.市场)
+        vt_symbol=f"600519.{Exchange.SSE.value}",  # 股票代码(代码.市场)
         rate=0.0003354,  # 单向手续费率(包括印花税), A股最低为(0.854+0.854+5)/10000/2
         slippage=0,  # 滑点, 成交可能的偏差
         size=1,  # 合约乘数, 股票实物为1
@@ -203,13 +229,13 @@ if __name__ == '__main__':
         capital=1000000,  # 初始资金
         interval=Interval.DAILY,
         mode=BacktestingMode.BAR,
-        start=datetime(2014, 1, 1),
-        end=datetime(2025, 8, 22),
+        start=datetime(2016, 1, 1),
+        end=datetime(2025, 8, 27),
     )
     engine.load_data()
     engine.add_strategy(NoShortDailyDoubleMaStrategy, {
-        "fast_window": 22,
-        "slow_window": 85,
+        "fast_window": 30,
+        "slow_window": 50,
     })
 
     engine.run_backtesting()
