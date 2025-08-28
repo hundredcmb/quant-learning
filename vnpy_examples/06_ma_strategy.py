@@ -16,7 +16,6 @@ from vnpy_ctastrategy import (
 from vnpy_tushare.tushare_datafeed import EXCHANGE_VT2TS
 
 import numpy as np
-import tushare as ts
 from datetime import datetime
 
 # 创建 tushare->vnpy 交易所枚举映射关系
@@ -27,13 +26,17 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
     """
     - 不做空的日线双均线策略(仅用于回测学习, 无 tick 数据)
     - 策略细节: 如果n日收盘时快均线在上时, n+1日开盘时满仓; n日收盘时慢均线在上时, n+1日开盘时空仓
-    - 特殊情况: 股权登记日的当天会空仓, 如果除权除息日快均线在上, 下一天开盘满仓
+    - 支持开启除权策略(贴近真实的交易): 股权登记日的当天会空仓, 如果除权除息日快均线在上, 下一天开盘满仓
     """
 
     author = "hundredcmb"
 
     fast_window: int = 30
     slow_window: int = 90
+
+    # 0=忽略分红使用不复权股价模拟(使用的本地的数据库, 支持 vnpy 的参数优化)
+    # 1=每次分红之前逃权(每次回测会调用tushare接口, 不支持 vnpy 的参数优化)
+    skip_ex: int = 0
 
     # 最新日线的快慢均线值
     fast_ma0: float = 0.0
@@ -55,7 +58,7 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
     # 账户剩余资金, 而剩余持股数为 self.pos
     cash: float = 0.0
 
-    parameters = ["fast_window", "slow_window"]
+    parameters = ["fast_window", "slow_window", "skip_ex"]
     variables = ["fast_ma0", "fast_ma1", "slow_ma0", "slow_ma1", "cash"]
 
     @staticmethod
@@ -69,6 +72,10 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         - 股权登记日前一天的bar
         - 最后一天前一天的bar
         """
+        if self.skip_ex == 0:
+            return
+
+        import tushare as ts
         pro = ts.pro_api()
         symbol = self.cta_engine.symbol
         exchange: str = EXCHANGE_VT2TS[self.cta_engine.exchange]
@@ -236,6 +243,7 @@ if __name__ == '__main__':
     engine.add_strategy(NoShortDailyDoubleMaStrategy, {
         "fast_window": 30,
         "slow_window": 50,
+        "skip_ex": 1,
     })
 
     engine.run_backtesting()
