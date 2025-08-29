@@ -117,11 +117,11 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         """
         Callback when strategy is inited.
         """
-        self.am: ArrayManager = ArrayManager(size=self.slow_window)
+        self.am: ArrayManager = ArrayManager(size=self.slow_window + 1)
         self.cash = self.cta_engine.capital
 
         # 补充策略开始日以前的均线数据, 由于股票交易日不连续, days要填大一些
-        self.load_bar(days=self.slow_window * 2, interval=Interval.DAILY, use_database=True)
+        self.load_bar(days=self.slow_window * 2 + 1, interval=Interval.DAILY, use_database=True)
 
         # 初始化卖出日集合
         self.init_sell_dates()
@@ -159,13 +159,13 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
 
         # 更新快均线, 提取近两天的值
         fast_ma: np.ndarray = am.sma(n=self.fast_window, array=True)
-        self.fast_ma0 = float(fast_ma[-1].item())
-        self.fast_ma1 = float(fast_ma[-2].item())
+        self.fast_ma0 = float(fast_ma[-1])
+        self.fast_ma1 = float(fast_ma[-2])
 
         # 更新慢均线, 提取近两天的值
         slow_ma: np.ndarray = am.sma(n=self.slow_window, array=True)
-        self.slow_ma0 = float(slow_ma[-1].item())
-        self.slow_ma1 = float(slow_ma[-2].item())
+        self.slow_ma0 = float(slow_ma[-1])
+        self.slow_ma1 = float(slow_ma[-2])
 
         # 股权登记日需要额外处理
         if self.strftime_tushare(bar.datetime) in self.sell_dates and self.pos > 0:
@@ -228,7 +228,7 @@ if __name__ == '__main__':
 
     engine = BacktestingEngine()
     engine.set_parameters(
-        vt_symbol=f"600519.{Exchange.SSE.value}",  # 股票代码(代码.市场)
+        vt_symbol=f"F600036.{Exchange.SSE.value}",  # 股票代码(代码.市场)
         rate=0.0003354,  # 单向手续费率(包括印花税), A股最低为(0.854+0.854+5)/10000/2
         slippage=0,  # 滑点, 成交可能的偏差
         size=1,  # 合约乘数, 股票实物为1
@@ -236,13 +236,13 @@ if __name__ == '__main__':
         capital=1000000,  # 初始资金
         interval=Interval.DAILY,
         mode=BacktestingMode.BAR,
-        start=datetime(2016, 1, 1),
-        end=datetime(2025, 8, 27),
+        start=datetime(2018, 1, 1),
+        end=datetime(2025, 8, 28),
     )
     engine.load_data()
     engine.add_strategy(NoShortDailyDoubleMaStrategy, {
-        "fast_window": 30,
-        "slow_window": 50,
+        "fast_window": 22,
+        "slow_window": 85,
         "skip_ex": 1,
     })
 
