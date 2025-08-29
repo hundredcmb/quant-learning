@@ -78,6 +78,8 @@ class NoShortDailyDoubleMaStrategy(CtaTemplate):
         import tushare as ts
         pro = ts.pro_api()
         symbol = self.cta_engine.symbol
+        if symbol[0] == "F":
+            symbol = symbol[1:]
         exchange: str = EXCHANGE_VT2TS[self.cta_engine.exchange]
 
         # 拉取股票的分红送转信息
