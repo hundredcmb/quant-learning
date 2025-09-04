@@ -63,6 +63,103 @@ def datafeed_example(
         is_saved = database.save_bar_data(bardata_list, stream=False)
     return is_saved, len(bardata_list)
 
+def datafeed_static_forward_example(
+    symbol: str,
+    exchange: Exchange,
+    interval: Interval,
+    start_date: datetime,
+    end_date: datetime,
+) -> tuple[bool, int]:
+    """
+    - 下载静态前复权(东财或同花顺同款)股票数据到数据库(股票符号前添加SF), end 参数是基准股价
+    """
+    # 这里可以直接使用 ts 数据接口, get_datafeed 已经设置过了 token
+    import tushare as ts
+    pro = ts.pro_api()
+
+    # 构造不复权查询参数, 这里我们计划下载的是招商银行的历史日线数据
+    req = HistoryRequest(
+        symbol=symbol,  # A 股六位数字代码
+        exchange=exchange,  # 交易所
+        interval=interval,  # K 线级别
+        start=start_date,  # 开始时间
+        end=end_date,  # 结束时间
+    )
+
+    # 下载不复权数据
+    bardata_list: list[BarData] = datafeed.query_bar_history(req)
+    logger.info(f"len(bardata_list)={len(bardata_list)}")
+
+    is_saved = True
+    if len(bardata_list) > 0:
+        # 获取分红送转数据
+        ex_list: list[tuple[datetime, float, float]] = []
+        ts_code = f'{symbol}.{EXCHANGE_VT2TS[exchange]}'
+        df = pro.dividend(ts_code=ts_code, fields='ts_code,div_proc,stk_div,cash_div,record_date,ex_date')
+        for _idx, row in df.iterrows():
+            if row['div_proc'] == "实施":
+                ex_datetime = datetime.strptime(row['ex_date'], "%Y%m%d").replace(tzinfo=CHINA_TZ)
+                ex_cash = float(row["cash_div"])
+                ex_stk = 1.0 + float(row["stk_div"])
+                ex_list.append((ex_datetime, ex_cash, ex_stk))
+
+        # 先处理分红除权的部分
+        for exd1, exc1, exs1 in ex_list:
+            if exd1 < start_date.replace(tzinfo=CHINA_TZ):
+                break
+            for bar in reversed(bardata_list):
+                if bar.datetime < exd1:
+                    bar.close_price -= exc1
+                    bar.open_price -= exc1
+                    bar.high_price -= exc1
+                    bar.low_price -= exc1
+
+        # 再处理送转的部分
+        for exd, exc, exs in ex_list:
+            if exd < start_date.replace(tzinfo=CHINA_TZ):
+                break
+            for bar in reversed(bardata_list):
+                if bar.datetime < exd:
+                    bar.close_price /= exs
+                    bar.open_price /= exs
+                    bar.high_price /= exs
+                    bar.low_price /= exs
+
+        # # 先处理送转的部分
+        # for exd, exc, exs in ex_list:
+        #     if exd < start_date.replace(tzinfo=CHINA_TZ):
+        #         break
+        #     logger.info(f"before: {exd}, {exc}, {exs}")
+        #     for bar in reversed(bardata_list):
+        #         if bar.datetime < exd:
+        #             bar.close_price /= exs
+        #             bar.open_price /= exs
+        #             bar.high_price /= exs
+        #             bar.low_price /= exs
+
+        # # 再处理分红除权的部分
+        # for exd1, exc1, exs1 in ex_list:
+        #     if exd1 < start_date.replace(tzinfo=CHINA_TZ):
+        #         break
+        #     logger.info(f"after: {exd1}, {exc1}, {exs1}")
+        #     for bar in reversed(bardata_list):
+        #         if bar.datetime < exd1:
+        #             bar.close_price -= exc1 / exs1
+        #             bar.open_price -= exc1 / exs1
+        #             bar.high_price -= exc1 / exs1
+        #             bar.low_price -= exc1 / exs1
+
+        # 为前复权的股票代码添加特殊符号
+        for bar in bardata_list:
+            bar.symbol = f"SF{bar.symbol}"
+            bar.close_price = round_to(bar.close_price, 0.01)
+            bar.low_price = round_to(bar.low_price, 0.01)
+            bar.high_price = round_to(bar.high_price, 0.01)
+            bar.open_price = round_to(bar.open_price, 0.01)
+            # logger.info(f"{bar.datetime}, {bar.close_price:.2f}")
+
+        is_saved = database.save_bar_data(bardata_list, stream=False)
+    return is_saved, len(bardata_list)
 
 def datafeed_forward_example(
     symbol: str,
@@ -218,10 +315,19 @@ def datafeed_hs300_example(is_forward: bool = False):
 
 if __name__ == "__main__":
     # datafeed_hs300_example(is_forward=True)
-    datafeed_forward_example(
-        symbol="600036",
-        exchange=Exchange.SSE,
+
+    # datafeed_static_forward_example(
+    #     symbol="600570",
+    #     exchange=Exchange.SSE,
+    #     interval=Interval.DAILY,
+    #     start_date=datetime(2021, 1, 1),
+    #     end_date=datetime(2025, 9, 2),
+    # )
+
+    datafeed_static_forward_example(
+        symbol="002594",
+        exchange=Exchange.SZSE,
         interval=Interval.DAILY,
-        start_date=datetime(2016, 1, 1),
-        end_date=datetime(2025, 8, 28),
+        start_date=datetime(2024, 1, 1),
+        end_date=datetime(2025, 9, 2),
     )
