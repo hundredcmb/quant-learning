@@ -1,0 +1,3068 @@
+[
+    {
+        "level": "L1",
+        "industry_code": "110000",
+        "industry_name": "农林牧渔",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "220000",
+        "industry_name": "基础化工",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "230000",
+        "industry_name": "钢铁",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "240000",
+        "industry_name": "有色金属",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "270000",
+        "industry_name": "电子",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "280000",
+        "industry_name": "汽车",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "330000",
+        "industry_name": "家用电器",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "340000",
+        "industry_name": "食品饮料",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "350000",
+        "industry_name": "纺织服饰",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "360000",
+        "industry_name": "轻工制造",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "370000",
+        "industry_name": "医药生物",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "410000",
+        "industry_name": "公用事业",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "420000",
+        "industry_name": "交通运输",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "430000",
+        "industry_name": "房地产",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "450000",
+        "industry_name": "商贸零售",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "460000",
+        "industry_name": "社会服务",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "480000",
+        "industry_name": "银行",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "490000",
+        "industry_name": "非银金融",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "510000",
+        "industry_name": "综合",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "610000",
+        "industry_name": "建筑材料",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "620000",
+        "industry_name": "建筑装饰",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "630000",
+        "industry_name": "电力设备",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "640000",
+        "industry_name": "机械设备",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "650000",
+        "industry_name": "国防军工",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "710000",
+        "industry_name": "计算机",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "720000",
+        "industry_name": "传媒",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "730000",
+        "industry_name": "通信",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "740000",
+        "industry_name": "煤炭",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "750000",
+        "industry_name": "石油石化",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "760000",
+        "industry_name": "环保",
+        "parent_code": "0"
+    },
+    {
+        "level": "L1",
+        "industry_code": "770000",
+        "industry_name": "美容护理",
+        "parent_code": "0"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110100",
+        "industry_name": "种植业",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110200",
+        "industry_name": "渔业",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110300",
+        "industry_name": "林业Ⅱ",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110400",
+        "industry_name": "饲料",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110500",
+        "industry_name": "农产品加工",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110700",
+        "industry_name": "养殖业",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110800",
+        "industry_name": "动物保健Ⅱ",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "110900",
+        "industry_name": "农业综合Ⅱ",
+        "parent_code": "110000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220200",
+        "industry_name": "化学原料",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220300",
+        "industry_name": "化学制品",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220400",
+        "industry_name": "化学纤维",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220500",
+        "industry_name": "塑料",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220600",
+        "industry_name": "橡胶",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220800",
+        "industry_name": "农化制品",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "220900",
+        "industry_name": "非金属材料Ⅱ",
+        "parent_code": "220000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "230300",
+        "industry_name": "冶钢原料",
+        "parent_code": "230000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "230400",
+        "industry_name": "普钢",
+        "parent_code": "230000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "230500",
+        "industry_name": "特钢Ⅱ",
+        "parent_code": "230000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "240200",
+        "industry_name": "金属新材料",
+        "parent_code": "240000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "240300",
+        "industry_name": "工业金属",
+        "parent_code": "240000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "240400",
+        "industry_name": "贵金属",
+        "parent_code": "240000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "240500",
+        "industry_name": "小金属",
+        "parent_code": "240000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "240600",
+        "industry_name": "能源金属",
+        "parent_code": "240000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270100",
+        "industry_name": "半导体",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270200",
+        "industry_name": "元件",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270300",
+        "industry_name": "光学光电子",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270400",
+        "industry_name": "其他电子Ⅱ",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270500",
+        "industry_name": "消费电子",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "270600",
+        "industry_name": "电子化学品Ⅱ",
+        "parent_code": "270000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "280200",
+        "industry_name": "汽车零部件",
+        "parent_code": "280000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "280300",
+        "industry_name": "汽车服务",
+        "parent_code": "280000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "280400",
+        "industry_name": "摩托车及其他",
+        "parent_code": "280000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "280500",
+        "industry_name": "乘用车",
+        "parent_code": "280000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "280600",
+        "industry_name": "商用车",
+        "parent_code": "280000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330100",
+        "industry_name": "白色家电",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330200",
+        "industry_name": "黑色家电",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330300",
+        "industry_name": "小家电",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330400",
+        "industry_name": "厨卫电器",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330500",
+        "industry_name": "照明设备Ⅱ",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330600",
+        "industry_name": "家电零部件Ⅱ",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "330700",
+        "industry_name": "其他家电Ⅱ",
+        "parent_code": "330000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340400",
+        "industry_name": "食品加工",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340500",
+        "industry_name": "白酒Ⅱ",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340600",
+        "industry_name": "非白酒",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340700",
+        "industry_name": "饮料乳品",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340800",
+        "industry_name": "休闲食品",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "340900",
+        "industry_name": "调味发酵品Ⅱ",
+        "parent_code": "340000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "350100",
+        "industry_name": "纺织制造",
+        "parent_code": "350000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "350200",
+        "industry_name": "服装家纺",
+        "parent_code": "350000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "350300",
+        "industry_name": "饰品",
+        "parent_code": "350000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "360100",
+        "industry_name": "造纸",
+        "parent_code": "360000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "360200",
+        "industry_name": "包装印刷",
+        "parent_code": "360000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "360300",
+        "industry_name": "家居用品",
+        "parent_code": "360000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "360500",
+        "industry_name": "文娱用品",
+        "parent_code": "360000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370100",
+        "industry_name": "化学制药",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370200",
+        "industry_name": "中药Ⅱ",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370300",
+        "industry_name": "生物制品",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370400",
+        "industry_name": "医药商业",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370500",
+        "industry_name": "医疗器械",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "370600",
+        "industry_name": "医疗服务",
+        "parent_code": "370000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "410100",
+        "industry_name": "电力",
+        "parent_code": "410000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "410300",
+        "industry_name": "燃气Ⅱ",
+        "parent_code": "410000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "420800",
+        "industry_name": "物流",
+        "parent_code": "420000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "420900",
+        "industry_name": "铁路公路",
+        "parent_code": "420000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "421000",
+        "industry_name": "航空机场",
+        "parent_code": "420000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "421100",
+        "industry_name": "航运港口",
+        "parent_code": "420000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "430100",
+        "industry_name": "房地产开发",
+        "parent_code": "430000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "430300",
+        "industry_name": "房地产服务",
+        "parent_code": "430000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "450200",
+        "industry_name": "贸易Ⅱ",
+        "parent_code": "450000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "450300",
+        "industry_name": "一般零售",
+        "parent_code": "450000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "450400",
+        "industry_name": "专业连锁Ⅱ",
+        "parent_code": "450000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "450600",
+        "industry_name": "互联网电商",
+        "parent_code": "450000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "450700",
+        "industry_name": "旅游零售Ⅱ",
+        "parent_code": "450000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "460600",
+        "industry_name": "体育Ⅱ",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "460700",
+        "industry_name": "本地生活服务Ⅱ",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "460800",
+        "industry_name": "专业服务",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "460900",
+        "industry_name": "酒店餐饮",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "461000",
+        "industry_name": "旅游及景区",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "461100",
+        "industry_name": "教育",
+        "parent_code": "460000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "480200",
+        "industry_name": "国有大型银行Ⅱ",
+        "parent_code": "480000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "480300",
+        "industry_name": "股份制银行Ⅱ",
+        "parent_code": "480000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "480400",
+        "industry_name": "城商行Ⅱ",
+        "parent_code": "480000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "480500",
+        "industry_name": "农商行Ⅱ",
+        "parent_code": "480000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "480600",
+        "industry_name": "其他银行Ⅱ",
+        "parent_code": "480000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "490100",
+        "industry_name": "证券Ⅱ",
+        "parent_code": "490000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "490200",
+        "industry_name": "保险Ⅱ",
+        "parent_code": "490000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "490300",
+        "industry_name": "多元金融",
+        "parent_code": "490000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "510100",
+        "industry_name": "综合Ⅱ",
+        "parent_code": "510000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "610100",
+        "industry_name": "水泥",
+        "parent_code": "610000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "610200",
+        "industry_name": "玻璃玻纤",
+        "parent_code": "610000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "610300",
+        "industry_name": "装修建材",
+        "parent_code": "610000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "620100",
+        "industry_name": "房屋建设Ⅱ",
+        "parent_code": "620000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "620200",
+        "industry_name": "装修装饰Ⅱ",
+        "parent_code": "620000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "620300",
+        "industry_name": "基础建设",
+        "parent_code": "620000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "620400",
+        "industry_name": "专业工程",
+        "parent_code": "620000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "620600",
+        "industry_name": "工程咨询服务Ⅱ",
+        "parent_code": "620000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630100",
+        "industry_name": "电机Ⅱ",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630300",
+        "industry_name": "其他电源设备Ⅱ",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630500",
+        "industry_name": "光伏设备",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630600",
+        "industry_name": "风电设备",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630700",
+        "industry_name": "电池",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "630800",
+        "industry_name": "电网设备",
+        "parent_code": "630000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "640100",
+        "industry_name": "通用设备",
+        "parent_code": "640000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "640200",
+        "industry_name": "专用设备",
+        "parent_code": "640000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "640500",
+        "industry_name": "轨交设备Ⅱ",
+        "parent_code": "640000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "640600",
+        "industry_name": "工程机械",
+        "parent_code": "640000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "640700",
+        "industry_name": "自动化设备",
+        "parent_code": "640000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "650100",
+        "industry_name": "航天装备Ⅱ",
+        "parent_code": "650000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "650200",
+        "industry_name": "航空装备Ⅱ",
+        "parent_code": "650000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "650300",
+        "industry_name": "地面兵装Ⅱ",
+        "parent_code": "650000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "650400",
+        "industry_name": "航海装备Ⅱ",
+        "parent_code": "650000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "650500",
+        "industry_name": "军工电子Ⅱ",
+        "parent_code": "650000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "710100",
+        "industry_name": "计算机设备",
+        "parent_code": "710000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "710300",
+        "industry_name": "IT服务Ⅱ",
+        "parent_code": "710000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "710400",
+        "industry_name": "软件开发",
+        "parent_code": "710000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720400",
+        "industry_name": "游戏Ⅱ",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720500",
+        "industry_name": "广告营销",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720600",
+        "industry_name": "影视院线",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720700",
+        "industry_name": "数字媒体",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720800",
+        "industry_name": "社交Ⅱ",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "720900",
+        "industry_name": "出版",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "721000",
+        "industry_name": "电视广播Ⅱ",
+        "parent_code": "720000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "730100",
+        "industry_name": "通信服务",
+        "parent_code": "730000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "730200",
+        "industry_name": "通信设备",
+        "parent_code": "730000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "740100",
+        "industry_name": "煤炭开采",
+        "parent_code": "740000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "740200",
+        "industry_name": "焦炭Ⅱ",
+        "parent_code": "740000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "750100",
+        "industry_name": "油气开采Ⅱ",
+        "parent_code": "750000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "750200",
+        "industry_name": "油服工程",
+        "parent_code": "750000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "750300",
+        "industry_name": "炼化及贸易",
+        "parent_code": "750000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "760100",
+        "industry_name": "环境治理",
+        "parent_code": "760000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "760200",
+        "industry_name": "环保设备Ⅱ",
+        "parent_code": "760000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "770100",
+        "industry_name": "个护用品",
+        "parent_code": "770000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "770200",
+        "industry_name": "化妆品",
+        "parent_code": "770000"
+    },
+    {
+        "level": "L2",
+        "industry_code": "770300",
+        "industry_name": "医疗美容",
+        "parent_code": "770000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110101",
+        "industry_name": "种子",
+        "parent_code": "110100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110102",
+        "industry_name": "粮食种植",
+        "parent_code": "110100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110103",
+        "industry_name": "其他种植业",
+        "parent_code": "110100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110104",
+        "industry_name": "食用菌",
+        "parent_code": "110100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110201",
+        "industry_name": "海洋捕捞",
+        "parent_code": "110200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110202",
+        "industry_name": "水产养殖",
+        "parent_code": "110200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110301",
+        "industry_name": "林业Ⅲ",
+        "parent_code": "110300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110402",
+        "industry_name": "畜禽饲料",
+        "parent_code": "110400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110403",
+        "industry_name": "水产饲料",
+        "parent_code": "110400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110404",
+        "industry_name": "宠物食品",
+        "parent_code": "110400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110501",
+        "industry_name": "果蔬加工",
+        "parent_code": "110500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110502",
+        "industry_name": "粮油加工",
+        "parent_code": "110500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110504",
+        "industry_name": "其他农产品加工",
+        "parent_code": "110500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110702",
+        "industry_name": "生猪养殖",
+        "parent_code": "110700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110703",
+        "industry_name": "肉鸡养殖",
+        "parent_code": "110700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110704",
+        "industry_name": "其他养殖",
+        "parent_code": "110700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110801",
+        "industry_name": "动物保健Ⅲ",
+        "parent_code": "110800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "110901",
+        "industry_name": "农业综合Ⅲ",
+        "parent_code": "110900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220201",
+        "industry_name": "纯碱",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220202",
+        "industry_name": "氯碱",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220203",
+        "industry_name": "无机盐",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220204",
+        "industry_name": "其他化学原料",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220205",
+        "industry_name": "煤化工",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220206",
+        "industry_name": "钛白粉",
+        "parent_code": "220200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220305",
+        "industry_name": "涂料油墨",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220307",
+        "industry_name": "民爆制品",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220308",
+        "industry_name": "纺织化学制品",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220309",
+        "industry_name": "其他化学制品",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220311",
+        "industry_name": "氟化工",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220313",
+        "industry_name": "聚氨酯",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220315",
+        "industry_name": "食品及饲料添加剂",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220316",
+        "industry_name": "有机硅",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220317",
+        "industry_name": "胶黏剂及胶带",
+        "parent_code": "220300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220401",
+        "industry_name": "涤纶",
+        "parent_code": "220400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220403",
+        "industry_name": "粘胶",
+        "parent_code": "220400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220404",
+        "industry_name": "其他化学纤维",
+        "parent_code": "220400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220405",
+        "industry_name": "氨纶",
+        "parent_code": "220400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220406",
+        "industry_name": "锦纶",
+        "parent_code": "220400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220501",
+        "industry_name": "其他塑料制品",
+        "parent_code": "220500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220503",
+        "industry_name": "改性塑料",
+        "parent_code": "220500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220504",
+        "industry_name": "合成树脂",
+        "parent_code": "220500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220505",
+        "industry_name": "膜材料",
+        "parent_code": "220500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220602",
+        "industry_name": "其他橡胶制品",
+        "parent_code": "220600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220603",
+        "industry_name": "炭黑",
+        "parent_code": "220600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220604",
+        "industry_name": "橡胶助剂",
+        "parent_code": "220600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220801",
+        "industry_name": "氮肥",
+        "parent_code": "220800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220802",
+        "industry_name": "磷肥及磷化工",
+        "parent_code": "220800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220803",
+        "industry_name": "农药",
+        "parent_code": "220800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220804",
+        "industry_name": "钾肥",
+        "parent_code": "220800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220805",
+        "industry_name": "复合肥",
+        "parent_code": "220800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "220901",
+        "industry_name": "非金属材料Ⅲ",
+        "parent_code": "220900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230301",
+        "industry_name": "铁矿石",
+        "parent_code": "230300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230302",
+        "industry_name": "冶钢辅料",
+        "parent_code": "230300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230401",
+        "industry_name": "长材",
+        "parent_code": "230400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230402",
+        "industry_name": "板材",
+        "parent_code": "230400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230403",
+        "industry_name": "钢铁管材",
+        "parent_code": "230400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "230501",
+        "industry_name": "特钢Ⅲ",
+        "parent_code": "230500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240201",
+        "industry_name": "其他金属新材料",
+        "parent_code": "240200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240202",
+        "industry_name": "磁性材料",
+        "parent_code": "240200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240301",
+        "industry_name": "铝",
+        "parent_code": "240300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240302",
+        "industry_name": "铜",
+        "parent_code": "240300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240303",
+        "industry_name": "铅锌",
+        "parent_code": "240300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240401",
+        "industry_name": "黄金",
+        "parent_code": "240400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240402",
+        "industry_name": "白银",
+        "parent_code": "240400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240501",
+        "industry_name": "稀土",
+        "parent_code": "240500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240502",
+        "industry_name": "钨",
+        "parent_code": "240500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240504",
+        "industry_name": "其他小金属",
+        "parent_code": "240500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240505",
+        "industry_name": "钼",
+        "parent_code": "240500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240601",
+        "industry_name": "钴",
+        "parent_code": "240600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240602",
+        "industry_name": "镍",
+        "parent_code": "240600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "240603",
+        "industry_name": "锂",
+        "parent_code": "240600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270102",
+        "industry_name": "分立器件",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270103",
+        "industry_name": "半导体材料",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270104",
+        "industry_name": "数字芯片设计",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270105",
+        "industry_name": "模拟芯片设计",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270106",
+        "industry_name": "集成电路制造",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270107",
+        "industry_name": "集成电路封测",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270108",
+        "industry_name": "半导体设备",
+        "parent_code": "270100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270202",
+        "industry_name": "印制电路板",
+        "parent_code": "270200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270203",
+        "industry_name": "被动元件",
+        "parent_code": "270200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270301",
+        "industry_name": "面板",
+        "parent_code": "270300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270302",
+        "industry_name": "LED",
+        "parent_code": "270300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270303",
+        "industry_name": "光学元件",
+        "parent_code": "270300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270401",
+        "industry_name": "其他电子Ⅲ",
+        "parent_code": "270400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270503",
+        "industry_name": "品牌消费电子",
+        "parent_code": "270500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270504",
+        "industry_name": "消费电子零部件及组装",
+        "parent_code": "270500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "270601",
+        "industry_name": "电子化学品Ⅲ",
+        "parent_code": "270600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280202",
+        "industry_name": "车身附件及饰件",
+        "parent_code": "280200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280203",
+        "industry_name": "底盘与发动机系统",
+        "parent_code": "280200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280204",
+        "industry_name": "轮胎轮毂",
+        "parent_code": "280200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280205",
+        "industry_name": "其他汽车零部件",
+        "parent_code": "280200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280206",
+        "industry_name": "汽车电子电气系统",
+        "parent_code": "280200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280302",
+        "industry_name": "汽车经销商",
+        "parent_code": "280300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280303",
+        "industry_name": "汽车综合服务",
+        "parent_code": "280300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280401",
+        "industry_name": "其他运输设备",
+        "parent_code": "280400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280402",
+        "industry_name": "摩托车",
+        "parent_code": "280400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280501",
+        "industry_name": "电动乘用车",
+        "parent_code": "280500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280502",
+        "industry_name": "综合乘用车",
+        "parent_code": "280500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280601",
+        "industry_name": "商用载货车",
+        "parent_code": "280600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "280602",
+        "industry_name": "商用载客车",
+        "parent_code": "280600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330102",
+        "industry_name": "空调",
+        "parent_code": "330100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330106",
+        "industry_name": "冰洗",
+        "parent_code": "330100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330201",
+        "industry_name": "彩电",
+        "parent_code": "330200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330202",
+        "industry_name": "其他黑色家电",
+        "parent_code": "330200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330301",
+        "industry_name": "厨房小家电",
+        "parent_code": "330300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330302",
+        "industry_name": "清洁小家电",
+        "parent_code": "330300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330303",
+        "industry_name": "个护小家电",
+        "parent_code": "330300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330401",
+        "industry_name": "厨房电器",
+        "parent_code": "330400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330402",
+        "industry_name": "卫浴电器",
+        "parent_code": "330400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330501",
+        "industry_name": "照明设备Ⅲ",
+        "parent_code": "330500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330601",
+        "industry_name": "家电零部件Ⅲ",
+        "parent_code": "330600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "330701",
+        "industry_name": "其他家电Ⅲ",
+        "parent_code": "330700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340401",
+        "industry_name": "肉制品",
+        "parent_code": "340400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340404",
+        "industry_name": "其他食品",
+        "parent_code": "340400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340406",
+        "industry_name": "预加工食品",
+        "parent_code": "340400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340407",
+        "industry_name": "保健品",
+        "parent_code": "340400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340501",
+        "industry_name": "白酒Ⅲ",
+        "parent_code": "340500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340601",
+        "industry_name": "啤酒",
+        "parent_code": "340600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340602",
+        "industry_name": "其他酒类",
+        "parent_code": "340600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340701",
+        "industry_name": "软饮料",
+        "parent_code": "340700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340702",
+        "industry_name": "乳品",
+        "parent_code": "340700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340801",
+        "industry_name": "零食",
+        "parent_code": "340800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340802",
+        "industry_name": "烘焙食品",
+        "parent_code": "340800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340803",
+        "industry_name": "熟食",
+        "parent_code": "340800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "340901",
+        "industry_name": "调味发酵品Ⅲ",
+        "parent_code": "340900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350102",
+        "industry_name": "棉纺",
+        "parent_code": "350100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350104",
+        "industry_name": "印染",
+        "parent_code": "350100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350105",
+        "industry_name": "辅料",
+        "parent_code": "350100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350106",
+        "industry_name": "其他纺织",
+        "parent_code": "350100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350107",
+        "industry_name": "纺织鞋类制造",
+        "parent_code": "350100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350205",
+        "industry_name": "鞋帽及其他",
+        "parent_code": "350200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350206",
+        "industry_name": "家纺",
+        "parent_code": "350200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350208",
+        "industry_name": "运动服装",
+        "parent_code": "350200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350209",
+        "industry_name": "非运动服装",
+        "parent_code": "350200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350301",
+        "industry_name": "钟表珠宝",
+        "parent_code": "350300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350302",
+        "industry_name": "多品类奢侈品",
+        "parent_code": "350300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "350303",
+        "industry_name": "其他饰品",
+        "parent_code": "350300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360102",
+        "industry_name": "大宗用纸",
+        "parent_code": "360100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360103",
+        "industry_name": "特种纸",
+        "parent_code": "360100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360202",
+        "industry_name": "印刷",
+        "parent_code": "360200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360203",
+        "industry_name": "金属包装",
+        "parent_code": "360200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360204",
+        "industry_name": "塑料包装",
+        "parent_code": "360200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360205",
+        "industry_name": "纸包装",
+        "parent_code": "360200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360206",
+        "industry_name": "综合包装",
+        "parent_code": "360200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360306",
+        "industry_name": "瓷砖地板",
+        "parent_code": "360300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360307",
+        "industry_name": "成品家居",
+        "parent_code": "360300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360308",
+        "industry_name": "定制家居",
+        "parent_code": "360300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360309",
+        "industry_name": "卫浴制品",
+        "parent_code": "360300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360311",
+        "industry_name": "其他家居用品",
+        "parent_code": "360300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360501",
+        "industry_name": "文化用品",
+        "parent_code": "360500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "360502",
+        "industry_name": "娱乐用品",
+        "parent_code": "360500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370101",
+        "industry_name": "原料药",
+        "parent_code": "370100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370102",
+        "industry_name": "化学制剂",
+        "parent_code": "370100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370201",
+        "industry_name": "中药Ⅲ",
+        "parent_code": "370200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370302",
+        "industry_name": "血液制品",
+        "parent_code": "370300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370303",
+        "industry_name": "疫苗",
+        "parent_code": "370300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370304",
+        "industry_name": "其他生物制品",
+        "parent_code": "370300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370402",
+        "industry_name": "医药流通",
+        "parent_code": "370400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370403",
+        "industry_name": "线下药店",
+        "parent_code": "370400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370404",
+        "industry_name": "互联网药店",
+        "parent_code": "370400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370502",
+        "industry_name": "医疗设备",
+        "parent_code": "370500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370503",
+        "industry_name": "医疗耗材",
+        "parent_code": "370500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370504",
+        "industry_name": "体外诊断",
+        "parent_code": "370500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370602",
+        "industry_name": "诊断服务",
+        "parent_code": "370600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370603",
+        "industry_name": "医疗研发外包",
+        "parent_code": "370600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370604",
+        "industry_name": "医院",
+        "parent_code": "370600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "370605",
+        "industry_name": "其他医疗服务",
+        "parent_code": "370600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410101",
+        "industry_name": "火力发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410102",
+        "industry_name": "水力发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410104",
+        "industry_name": "热力服务",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410106",
+        "industry_name": "光伏发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410107",
+        "industry_name": "风力发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410108",
+        "industry_name": "核力发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410109",
+        "industry_name": "其他能源发电",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410110",
+        "industry_name": "电能综合服务",
+        "parent_code": "410100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "410301",
+        "industry_name": "燃气Ⅲ",
+        "parent_code": "410300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420802",
+        "industry_name": "原材料供应链服务",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420803",
+        "industry_name": "中间产品及消费品供应链服务",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420804",
+        "industry_name": "快递",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420805",
+        "industry_name": "跨境物流",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420806",
+        "industry_name": "仓储物流",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420807",
+        "industry_name": "公路货运",
+        "parent_code": "420800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420901",
+        "industry_name": "高速公路",
+        "parent_code": "420900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420902",
+        "industry_name": "公交",
+        "parent_code": "420900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "420903",
+        "industry_name": "铁路运输",
+        "parent_code": "420900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "421001",
+        "industry_name": "航空运输",
+        "parent_code": "421000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "421002",
+        "industry_name": "机场",
+        "parent_code": "421000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "421101",
+        "industry_name": "航运",
+        "parent_code": "421100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "421102",
+        "industry_name": "港口",
+        "parent_code": "421100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430101",
+        "industry_name": "住宅开发",
+        "parent_code": "430100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430102",
+        "industry_name": "商业地产",
+        "parent_code": "430100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430103",
+        "industry_name": "产业地产",
+        "parent_code": "430100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430301",
+        "industry_name": "物业管理",
+        "parent_code": "430300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430302",
+        "industry_name": "房产租赁经纪",
+        "parent_code": "430300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "430303",
+        "industry_name": "房地产综合服务",
+        "parent_code": "430300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450201",
+        "industry_name": "贸易Ⅲ",
+        "parent_code": "450200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450301",
+        "industry_name": "百货",
+        "parent_code": "450300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450302",
+        "industry_name": "超市",
+        "parent_code": "450300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450303",
+        "industry_name": "多业态零售",
+        "parent_code": "450300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450304",
+        "industry_name": "商业物业经营",
+        "parent_code": "450300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450401",
+        "industry_name": "专业连锁Ⅲ",
+        "parent_code": "450400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450601",
+        "industry_name": "综合电商",
+        "parent_code": "450600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450602",
+        "industry_name": "跨境电商",
+        "parent_code": "450600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450603",
+        "industry_name": "电商服务",
+        "parent_code": "450600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "450701",
+        "industry_name": "旅游零售Ⅲ",
+        "parent_code": "450700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460601",
+        "industry_name": "体育Ⅲ",
+        "parent_code": "460600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460701",
+        "industry_name": "本地生活服务Ⅲ",
+        "parent_code": "460700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460801",
+        "industry_name": "人力资源服务",
+        "parent_code": "460800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460802",
+        "industry_name": "检测服务",
+        "parent_code": "460800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460803",
+        "industry_name": "会展服务",
+        "parent_code": "460800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460804",
+        "industry_name": "其他专业服务",
+        "parent_code": "460800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460901",
+        "industry_name": "酒店",
+        "parent_code": "460900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "460902",
+        "industry_name": "餐饮",
+        "parent_code": "460900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461001",
+        "industry_name": "博彩",
+        "parent_code": "461000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461002",
+        "industry_name": "人工景区",
+        "parent_code": "461000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461003",
+        "industry_name": "自然景区",
+        "parent_code": "461000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461004",
+        "industry_name": "旅游综合",
+        "parent_code": "461000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461101",
+        "industry_name": "学历教育",
+        "parent_code": "461100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461102",
+        "industry_name": "培训教育",
+        "parent_code": "461100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "461103",
+        "industry_name": "教育运营及其他",
+        "parent_code": "461100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "480201",
+        "industry_name": "国有大型银行Ⅲ",
+        "parent_code": "480200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "480301",
+        "industry_name": "股份制银行Ⅲ",
+        "parent_code": "480300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "480401",
+        "industry_name": "城商行Ⅲ",
+        "parent_code": "480400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "480501",
+        "industry_name": "农商行Ⅲ",
+        "parent_code": "480500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "480601",
+        "industry_name": "其他银行Ⅲ",
+        "parent_code": "480600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490101",
+        "industry_name": "证券Ⅲ",
+        "parent_code": "490100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490201",
+        "industry_name": "保险Ⅲ",
+        "parent_code": "490200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490302",
+        "industry_name": "金融控股",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490303",
+        "industry_name": "期货",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490304",
+        "industry_name": "信托",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490305",
+        "industry_name": "租赁",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490306",
+        "industry_name": "金融信息服务",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490307",
+        "industry_name": "资产管理",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "490308",
+        "industry_name": "其他多元金融",
+        "parent_code": "490300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "510101",
+        "industry_name": "综合Ⅲ",
+        "parent_code": "510100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610101",
+        "industry_name": "水泥制造",
+        "parent_code": "610100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610102",
+        "industry_name": "水泥制品",
+        "parent_code": "610100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610201",
+        "industry_name": "玻璃制造",
+        "parent_code": "610200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610202",
+        "industry_name": "玻纤制造",
+        "parent_code": "610200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610301",
+        "industry_name": "耐火材料",
+        "parent_code": "610300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610302",
+        "industry_name": "管材",
+        "parent_code": "610300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610303",
+        "industry_name": "其他建材",
+        "parent_code": "610300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610304",
+        "industry_name": "防水材料",
+        "parent_code": "610300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "610305",
+        "industry_name": "涂料",
+        "parent_code": "610300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620101",
+        "industry_name": "房屋建设Ⅲ",
+        "parent_code": "620100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620201",
+        "industry_name": "装修装饰Ⅲ",
+        "parent_code": "620200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620306",
+        "industry_name": "基建市政工程",
+        "parent_code": "620300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620307",
+        "industry_name": "园林工程",
+        "parent_code": "620300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620401",
+        "industry_name": "钢结构",
+        "parent_code": "620400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620402",
+        "industry_name": "化学工程",
+        "parent_code": "620400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620403",
+        "industry_name": "国际工程",
+        "parent_code": "620400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620404",
+        "industry_name": "其他专业工程",
+        "parent_code": "620400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "620601",
+        "industry_name": "工程咨询服务Ⅲ",
+        "parent_code": "620600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630101",
+        "industry_name": "电机Ⅲ",
+        "parent_code": "630100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630301",
+        "industry_name": "综合电力设备商",
+        "parent_code": "630300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630304",
+        "industry_name": "火电设备",
+        "parent_code": "630300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630306",
+        "industry_name": "其他电源设备Ⅲ",
+        "parent_code": "630300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630501",
+        "industry_name": "硅料硅片",
+        "parent_code": "630500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630502",
+        "industry_name": "光伏电池组件",
+        "parent_code": "630500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630503",
+        "industry_name": "逆变器",
+        "parent_code": "630500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630504",
+        "industry_name": "光伏辅材",
+        "parent_code": "630500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630505",
+        "industry_name": "光伏加工设备",
+        "parent_code": "630500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630601",
+        "industry_name": "风电整机",
+        "parent_code": "630600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630602",
+        "industry_name": "风电零部件",
+        "parent_code": "630600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630701",
+        "industry_name": "锂电池",
+        "parent_code": "630700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630702",
+        "industry_name": "电池化学品",
+        "parent_code": "630700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630703",
+        "industry_name": "锂电专用设备",
+        "parent_code": "630700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630704",
+        "industry_name": "燃料电池",
+        "parent_code": "630700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630705",
+        "industry_name": "蓄电池及其他电池",
+        "parent_code": "630700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630801",
+        "industry_name": "输变电设备",
+        "parent_code": "630800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630802",
+        "industry_name": "配电设备",
+        "parent_code": "630800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630803",
+        "industry_name": "电网自动化设备",
+        "parent_code": "630800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630804",
+        "industry_name": "电工仪器仪表",
+        "parent_code": "630800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "630805",
+        "industry_name": "线缆部件及其他",
+        "parent_code": "630800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640101",
+        "industry_name": "机床工具",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640103",
+        "industry_name": "磨具磨料",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640105",
+        "industry_name": "制冷空调设备",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640106",
+        "industry_name": "其他通用设备",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640107",
+        "industry_name": "仪器仪表",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640108",
+        "industry_name": "金属制品",
+        "parent_code": "640100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640203",
+        "industry_name": "能源及重型设备",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640204",
+        "industry_name": "楼宇设备",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640206",
+        "industry_name": "纺织服装设备",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640207",
+        "industry_name": "农用机械",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640208",
+        "industry_name": "印刷包装机械",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640209",
+        "industry_name": "其他专用设备",
+        "parent_code": "640200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640501",
+        "industry_name": "轨交设备Ⅲ",
+        "parent_code": "640500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640601",
+        "industry_name": "工程机械整机",
+        "parent_code": "640600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640602",
+        "industry_name": "工程机械器件",
+        "parent_code": "640600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640701",
+        "industry_name": "机器人",
+        "parent_code": "640700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640702",
+        "industry_name": "工控设备",
+        "parent_code": "640700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640703",
+        "industry_name": "激光设备",
+        "parent_code": "640700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "640704",
+        "industry_name": "其他自动化设备",
+        "parent_code": "640700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "650101",
+        "industry_name": "航天装备Ⅲ",
+        "parent_code": "650100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "650201",
+        "industry_name": "航空装备Ⅲ",
+        "parent_code": "650200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "650301",
+        "industry_name": "地面兵装Ⅲ",
+        "parent_code": "650300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "650401",
+        "industry_name": "航海装备Ⅲ",
+        "parent_code": "650400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "650501",
+        "industry_name": "军工电子Ⅲ",
+        "parent_code": "650500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "710102",
+        "industry_name": "安防设备",
+        "parent_code": "710100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "710103",
+        "industry_name": "其他计算机设备",
+        "parent_code": "710100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "710301",
+        "industry_name": "IT服务Ⅲ",
+        "parent_code": "710300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "710401",
+        "industry_name": "垂直应用软件",
+        "parent_code": "710400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "710402",
+        "industry_name": "横向通用软件",
+        "parent_code": "710400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720401",
+        "industry_name": "游戏Ⅲ",
+        "parent_code": "720400"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720501",
+        "industry_name": "营销代理",
+        "parent_code": "720500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720502",
+        "industry_name": "广告媒体",
+        "parent_code": "720500"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720601",
+        "industry_name": "影视动漫制作",
+        "parent_code": "720600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720602",
+        "industry_name": "院线",
+        "parent_code": "720600"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720701",
+        "industry_name": "视频媒体",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720702",
+        "industry_name": "音频媒体",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720703",
+        "industry_name": "图片媒体",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720704",
+        "industry_name": "门户网站",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720705",
+        "industry_name": "文字媒体",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720706",
+        "industry_name": "其他数字媒体",
+        "parent_code": "720700"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720801",
+        "industry_name": "社交Ⅲ",
+        "parent_code": "720800"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720901",
+        "industry_name": "教育出版",
+        "parent_code": "720900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720902",
+        "industry_name": "大众出版",
+        "parent_code": "720900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "720903",
+        "industry_name": "其他出版",
+        "parent_code": "720900"
+    },
+    {
+        "level": "L3",
+        "industry_code": "721001",
+        "industry_name": "电视广播Ⅲ",
+        "parent_code": "721000"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730102",
+        "industry_name": "电信运营商",
+        "parent_code": "730100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730103",
+        "industry_name": "通信工程及服务",
+        "parent_code": "730100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730104",
+        "industry_name": "通信应用增值服务",
+        "parent_code": "730100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730204",
+        "industry_name": "通信网络设备及器件",
+        "parent_code": "730200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730205",
+        "industry_name": "通信线缆及配套",
+        "parent_code": "730200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730206",
+        "industry_name": "通信终端及配件",
+        "parent_code": "730200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "730207",
+        "industry_name": "其他通信设备",
+        "parent_code": "730200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "740101",
+        "industry_name": "动力煤",
+        "parent_code": "740100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "740102",
+        "industry_name": "焦煤",
+        "parent_code": "740100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "740201",
+        "industry_name": "焦炭Ⅲ",
+        "parent_code": "740200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750101",
+        "industry_name": "油气开采Ⅲ",
+        "parent_code": "750100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750201",
+        "industry_name": "油田服务",
+        "parent_code": "750200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750202",
+        "industry_name": "油气及炼化工程",
+        "parent_code": "750200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750301",
+        "industry_name": "炼油化工",
+        "parent_code": "750300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750302",
+        "industry_name": "油品石化贸易",
+        "parent_code": "750300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "750303",
+        "industry_name": "其他石化",
+        "parent_code": "750300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "760101",
+        "industry_name": "大气治理",
+        "parent_code": "760100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "760102",
+        "industry_name": "水务及水治理",
+        "parent_code": "760100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "760103",
+        "industry_name": "固废治理",
+        "parent_code": "760100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "760104",
+        "industry_name": "综合环境治理",
+        "parent_code": "760100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "760201",
+        "industry_name": "环保设备Ⅲ",
+        "parent_code": "760200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770101",
+        "industry_name": "生活用纸",
+        "parent_code": "770100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770102",
+        "industry_name": "洗护用品",
+        "parent_code": "770100"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770201",
+        "industry_name": "化妆品制造及其他",
+        "parent_code": "770200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770202",
+        "industry_name": "品牌化妆品",
+        "parent_code": "770200"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770301",
+        "industry_name": "医美耗材",
+        "parent_code": "770300"
+    },
+    {
+        "level": "L3",
+        "industry_code": "770302",
+        "industry_name": "医美服务",
+        "parent_code": "770300"
+    }
+]
