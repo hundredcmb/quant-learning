@@ -6,41 +6,60 @@ from tushare.pro.client import DataApi
 
 
 class ShenWanIndustryNode:
-    def __init__(self, industry_code: str, industry_name: str, level: int):
+    def __init__(self, index_code: str, industry_code: str, industry_name: str, level: int):
+        self.index_code: str = index_code  # 指数代码
         self.industry_code: str = industry_code  # 行业代码
         self.industry_name: str = industry_name  # 行业名称
         self.level: int = level  # 层级：0/1/2/3, 0是树根节点
         self.parent: ShenWanIndustryNode | None = None  # 父节点
         self.children: list[ShenWanIndustryNode] = []  # 子节点列表
+        self.constituent_stocks: list[str] = []  # 成分股代码列表, tushare 格式
 
 
 class ShenWanIndustryTree:
     def __init__(self):
-        self.root: ShenWanIndustryNode = ShenWanIndustryNode(industry_code="", industry_name="", level=0)
+        self.root: ShenWanIndustryNode = ShenWanIndustryNode(
+            index_code="",
+            industry_code="",
+            industry_name="",
+            level=0,
+        )
+        self.index_code_to_node: dict[str, ShenWanIndustryNode] = {}  # 指数代码到节点的映射
         self.industry_code_to_node: dict[str, ShenWanIndustryNode] = {}  # 行业代码到节点的映射
         self.industry_name_to_node: dict[str, ShenWanIndustryNode] = {}  # 行业名称到节点的映射
         self.level_to_nodes: dict[int, list[ShenWanIndustryNode]] = {1: [], 2: [], 3: []}
+        self.constituent_stock_to_l3_node: dict[str, ShenWanIndustryNode] = {}
 
-    def build(self):
+    def build_industries(self):
+        """从本地 JSON 数据源构建申万三级行业树"""
         current_file_path = os.path.abspath(__file__)
         current_dir_path = os.path.dirname(current_file_path)
         with open(f"{current_dir_path}/SW2021.json", "r", encoding="utf-8") as f:
             sw2021_list = json.load(f)
             for row in sw2021_list:
-                self.parse_row(row)
+                self.parse_industry_row(row)
 
-    def build_by_tushare(self, pro: DataApi) -> None:
+    def build_industries_by_tushare(self, pro: DataApi) -> None:
+        """从 tushare 数据源构建申万三级行业树, 数据长期不变, 更推荐使用 build_industries"""
         df = pro.index_classify(src='SW2021')
         for _ix, row in df.iterrows():
-            self.parse_row(row)
+            self.parse_industry_row(row)
 
-    def parse_row(self, row: dict[str, str] | pd.Series) -> None:
+    def parse_industry_row(self, row: dict[str, str] | pd.Series) -> None:
+        """解析申万行业数据行, 创建节点并添加到树中"""
         level = row['level']
+        index_code = row['index_code']
         industry_code = row['industry_code']
         industry_name = row['industry_name']
         parent_code = row['parent_code']
 
-        node = ShenWanIndustryNode(industry_code=industry_code, industry_name=industry_name, level=level)
+        node = ShenWanIndustryNode(
+            index_code=index_code,
+            industry_code=industry_code,
+            industry_name=industry_name,
+            level=level,
+        )
+        self.index_code_to_node[index_code] = node
         self.industry_code_to_node[industry_code] = node
         self.industry_name_to_node[industry_name] = node
 
@@ -58,15 +77,53 @@ class ShenWanIndustryTree:
             elif level == "L3":
                 self.level_to_nodes[3].append(node)
 
+    def build_constituent_stocks_by_tushare(self, pro: DataApi) -> None:
+        """
+        从 tushare 数据源获取各个行业的股票列表并填充到对应节点
+        """
+        if not self.root.children:
+            raise RuntimeError("请先构建行业树结构")
+
+        for node_l1 in self.root.children:
+            df = pro.index_member_all(l1_code=node_l1.index_code)
+            for _ix, row in df.iterrows():
+                ts_code = row['ts_code']
+                l3_code = row['l3_code']
+                l1_code = row['l1_code']
+
+                if l1_code != node_l1.index_code:
+                    raise ValueError(f"成分股所属 L1 行业不匹配: 预期 {node_l1.index_code}, 实际 {l1_code}")
+
+                if l3_node := self.index_code_to_node.get(l3_code):
+                    l3_node.constituent_stocks.append(ts_code)
+                    l3_node.parent.constituent_stocks.append(ts_code)
+                    l3_node.parent.parent.constituent_stocks.append(ts_code)
+                    self.constituent_stock_to_l3_node[ts_code] = l3_node
+                else:
+                    raise ValueError(f"找不到L3行业代码: {l3_code} 对应的节点")
+
 
 if __name__ == "__main__":
-    tree = ShenWanIndustryTree()
-    tree.build()
-    l1 = tree.level_to_nodes[1]
+    import tushare as ts
+    from vnpy.trader.setting import SETTINGS
 
-    for node in l1:
-        print(node.industry_code, node.industry_name)
-        for child in node.children:
-            print("    ", child.industry_code, child.industry_name)
-            for child_child in child.children:
-                print("        ", child_child.industry_code, child_child.industry_name)
+    token = SETTINGS["datafeed.password"]
+    pro = ts.pro_api(token=token)
+
+    tree = ShenWanIndustryTree()
+    tree.build_industries()
+    tree.build_constituent_stocks_by_tushare(pro=pro)
+
+    l1 = tree.level_to_nodes[1]
+    for n in l1:
+        print(n.industry_code, n.index_code, n.industry_name)
+        for child in n.children:
+            print(" " * 4, child.industry_code, child.index_code, child.industry_name)
+            for c_child in child.children:
+                print(
+                    " " * 8,
+                    c_child.industry_code,
+                    c_child.index_code,
+                    c_child.industry_name,
+                    c_child.constituent_stocks
+                )
