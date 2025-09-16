@@ -29,6 +29,7 @@ class ShenWanIndustryTree:
         self.industry_name_to_node: dict[str, ShenWanIndustryNode] = {}  # 行业名称到节点的映射
         self.level_to_nodes: dict[int, list[ShenWanIndustryNode]] = {1: [], 2: [], 3: []}
         self.constituent_stock_to_l3_node: dict[str, ShenWanIndustryNode] = {}
+        self.stock_basic: dict[str, dict[str, str]] = {}  # 上市状态的股票 tushare 代码到信息的映射
 
     def build_industries(self):
         """从本地 JSON 数据源构建申万三级行业树"""
@@ -77,30 +78,44 @@ class ShenWanIndustryTree:
             elif level == "L3":
                 self.level_to_nodes[3].append(node)
 
-    def build_constituent_stocks_by_tushare(self, pro: DataApi) -> None:
+    def build_constituent_stocks_by_tushare(self, pro: DataApi, filter_unlisted: bool = True) -> int:
         """
         从 tushare 数据源获取各个行业的股票列表并填充到对应节点
         """
         if not self.root.children:
             raise RuntimeError("请先构建行业树结构")
 
-        for node_l1 in self.root.children:
-            df = pro.index_member_all(l1_code=node_l1.index_code)
+        if filter_unlisted and not self.stock_basic:
+            df = pro.stock_basic(list_status='L', fields='ts_code,name')
+            for _ix, row in df.iterrows():
+                self.stock_basic[row['ts_code']] = row.to_dict()
+
+        count = 0
+        offset = 0
+        batch_size = 1999
+        while True:
+            df = pro.index_member_all(offset=offset, limit=batch_size)
+            if len(df) == 0:
+                break
+            offset += batch_size
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
-                l3_code = row['l3_code']
-                l1_code = row['l1_code']
 
-                if l1_code != node_l1.index_code:
-                    raise ValueError(f"成分股所属 L1 行业不匹配: 预期 {node_l1.index_code}, 实际 {l1_code}")
+                if filter_unlisted and (ts_code not in self.stock_basic):
+                    continue
+
+                l3_code = row['l3_code']
 
                 if l3_node := self.index_code_to_node.get(l3_code):
                     l3_node.constituent_stocks.append(ts_code)
                     l3_node.parent.constituent_stocks.append(ts_code)
                     l3_node.parent.parent.constituent_stocks.append(ts_code)
                     self.constituent_stock_to_l3_node[ts_code] = l3_node
+                    count += 1
                 else:
                     raise ValueError(f"找不到L3行业代码: {l3_code} 对应的节点")
+
+        return count
 
 
 if __name__ == "__main__":
@@ -112,7 +127,7 @@ if __name__ == "__main__":
 
     tree = ShenWanIndustryTree()
     tree.build_industries()
-    tree.build_constituent_stocks_by_tushare(pro=pro)
+    stock_count = tree.build_constituent_stocks_by_tushare(pro=pro)
 
     l1 = tree.level_to_nodes[1]
     for n in l1:
