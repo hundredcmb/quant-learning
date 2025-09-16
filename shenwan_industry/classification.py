@@ -1,5 +1,7 @@
 import os
 import json
+import warnings
+from datetime import datetime
 
 import pandas as pd
 from tushare.pro.client import DataApi
@@ -100,12 +102,10 @@ class ShenWanIndustryTree:
             offset += batch_size
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
-
                 if filter_unlisted and (ts_code not in self.stock_basic):
                     continue
 
                 l3_code = row['l3_code']
-
                 if l3_node := self.index_code_to_node.get(l3_code):
                     l3_node.constituent_stocks.append(ts_code)
                     l3_node.parent.constituent_stocks.append(ts_code)
@@ -113,9 +113,80 @@ class ShenWanIndustryTree:
                     self.constituent_stock_to_l3_node[ts_code] = l3_node
                     count += 1
                 else:
-                    raise ValueError(f"找不到L3行业代码: {l3_code} 对应的节点")
+                    raise ValueError(f"找不到 L3 行业代码 '{l3_code}' 对应的节点")
 
         return count
+
+    def daily_rank(
+        self,
+        pro: DataApi,
+        date: datetime
+    ) -> tuple[list[tuple[str, float, int]], list[tuple[str, float, int]], list[tuple[str, float, int]]]:
+        """
+        获取指定日期的行业涨幅(等权)排名
+        """
+        if not self.root.children:
+            raise RuntimeError("请先构建行业树结构")
+
+        if not self.constituent_stock_to_l3_node:
+            raise RuntimeError("请先加载行业成分股")
+
+        tushare_code_to_pct_chg: dict[str, float] = {}
+        batch_size = 5999
+        date_str = date.strftime("%Y%m%d")
+        df = pro.daily(trade_date=date_str)
+        for _ix, row in df.iterrows():
+            ts_code = row['ts_code']
+            pct_chg = row['pct_chg']
+            tushare_code_to_pct_chg[ts_code] = pct_chg
+
+        # 行业index_code -> (行业index_code, 上涨百分比, 成分股数量)
+        l1_chg_map: dict[str, tuple[str, float, int]] = {}
+        l2_chg_map: dict[str, tuple[str, float, int]] = {}
+        l3_chg_map: dict[str, tuple[str, float, int]] = {}
+
+        for node_l1 in self.level_to_nodes[1]:
+            l1_chg_map[node_l1.index_code] = (node_l1.index_code, 0, 0)
+        for node_l2 in self.level_to_nodes[2]:
+            l2_chg_map[node_l2.index_code] = (node_l2.index_code, 0, 0)
+        for node_l3 in self.level_to_nodes[3]:
+            l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
+
+        for ts_code, pct_chg in tushare_code_to_pct_chg.items():
+            if not (l3_node := self.constituent_stock_to_l3_node.get(ts_code)):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L3 行业", RuntimeWarning)
+                continue
+            if not (l2_node := l3_node.parent):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L2 行业", RuntimeWarning)
+                continue
+            if not (l1_node := l2_node.parent):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L1 行业", RuntimeWarning)
+                continue
+
+            for l_node, l_chg_map in [(l3_node, l3_chg_map), (l2_node, l2_chg_map), (l1_node, l1_chg_map)]:
+                l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
+                l_count_new = l_count + 1
+                l_pct_chg_new = (l_pct_chg * l_count + pct_chg) / l_count_new
+                l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
+
+        # 对行业涨幅由大到小排序
+        l1_rank_list = sorted(
+            [item for item in l1_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        l2_rank_list = sorted(
+            [item for item in l2_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        l3_rank_list = sorted(
+            [item for item in l3_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return l1_rank_list, l2_rank_list, l3_rank_list
 
 
 if __name__ == "__main__":
@@ -129,16 +200,25 @@ if __name__ == "__main__":
     tree.build_industries()
     stock_count = tree.build_constituent_stocks_by_tushare(pro=pro)
 
-    l1 = tree.level_to_nodes[1]
-    for n in l1:
-        print(n.industry_code, n.index_code, n.industry_name)
-        for child in n.children:
-            print(" " * 4, child.industry_code, child.index_code, child.industry_name)
-            for c_child in child.children:
-                print(
-                    " " * 8,
-                    c_child.industry_code,
-                    c_child.index_code,
-                    c_child.industry_name,
-                    c_child.constituent_stocks
-                )
+    # l1 = tree.level_to_nodes[1]
+    # for n in l1:
+    #     print(n.industry_code, n.index_code, n.industry_name)
+    #     for child in n.children:
+    #         print(" " * 4, child.industry_code, child.index_code, child.industry_name)
+    #         for c_child in child.children:
+    #             print(
+    #                 " " * 8,
+    #                 c_child.industry_code,
+    #                 c_child.index_code,
+    #                 c_child.industry_name,
+    #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
+    #             )
+
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank(pro=pro, date=datetime(2025, 9, 16))
+    for index_code, pct_chg, count in l2_rank_list:
+        print(
+            f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
+            tree.index_code_to_node[index_code].industry_name,
+            count,
+            [tree.stock_basic[s]['name'] for s in tree.index_code_to_node[index_code].constituent_stocks],
+        )
