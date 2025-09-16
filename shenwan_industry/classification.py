@@ -99,7 +99,6 @@ class ShenWanIndustryTree:
             df = pro.index_member_all(offset=offset, limit=batch_size)
             if len(df) == 0:
                 break
-            offset += batch_size
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
                 if filter_unlisted and (ts_code not in self.stock_basic):
@@ -114,6 +113,10 @@ class ShenWanIndustryTree:
                     count += 1
                 else:
                     raise ValueError(f"找不到 L3 行业代码 '{l3_code}' 对应的节点")
+
+            offset += len(df)
+            if batch_size > len(df):
+                break
 
         return count
 
@@ -131,14 +134,25 @@ class ShenWanIndustryTree:
         if not self.constituent_stock_to_l3_node:
             raise RuntimeError("请先加载行业成分股")
 
-        tushare_code_to_pct_chg: dict[str, float] = {}
+        offset = 0
         batch_size = 5999
         date_str = date.strftime("%Y%m%d")
-        df = pro.daily(trade_date=date_str)
-        for _ix, row in df.iterrows():
-            ts_code = row['ts_code']
-            pct_chg = row['pct_chg']
-            tushare_code_to_pct_chg[ts_code] = pct_chg
+        tushare_code_to_pct_chg: dict[str, float] = {}
+        while True:
+            df = pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
+            if len(df) == 0:
+                 break
+            for _ix, row in df.iterrows():
+                ts_code = row['ts_code']
+                pct_chg = row['pct_chg']
+                tushare_code_to_pct_chg[ts_code] = pct_chg
+
+            offset += len(df)
+            if batch_size > len(df):
+                break
+
+        if not tushare_code_to_pct_chg:
+            raise ValueError(f"没有获取到 {date_str} 交易日的行情数据")
 
         # 行业index_code -> (行业index_code, 上涨百分比, 成分股数量)
         l1_chg_map: dict[str, tuple[str, float, int]] = {}
@@ -152,7 +166,15 @@ class ShenWanIndustryTree:
         for node_l3 in self.level_to_nodes[3]:
             l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
 
-        for ts_code, pct_chg in tushare_code_to_pct_chg.items():
+        stock_pool: set[str] = set()
+        for ts_code in tushare_code_to_pct_chg:
+            stock_pool.add(ts_code)
+        for ts_code in self.constituent_stock_to_l3_node:
+            stock_pool.add(ts_code)
+
+        for ts_code in stock_pool:
+            pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0) # 有交易数据则用实际涨幅, 停牌则按0%
+
             if not (l3_node := self.constituent_stock_to_l3_node.get(ts_code)):
                 warnings.warn(f"找不到股票 '{ts_code}' 对应的 L3 行业", RuntimeWarning)
                 continue
