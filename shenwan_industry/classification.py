@@ -12,6 +12,7 @@ class ShenWanIndustryNode:
         self.index_code: str = index_code  # 指数代码
         self.industry_code: str = industry_code  # 行业代码
         self.industry_name: str = industry_name  # 行业名称
+        self.industry_name_long: str = ""  # 行业名称, 1-2-3 级全称
         self.level: int = level  # 层级：0/1/2/3, 0是树根节点
         self.parent: ShenWanIndustryNode | None = None  # 父节点
         self.children: list[ShenWanIndustryNode] = []  # 子节点列表
@@ -41,12 +42,23 @@ class ShenWanIndustryTree:
             sw2021_list = json.load(f)
             for row in sw2021_list:
                 self.parse_industry_row(row)
+        self.build_industry_names()
 
     def build_industries_by_tushare(self, pro: DataApi) -> None:
         """从 tushare 数据源构建申万三级行业树, 数据长期不变, 更推荐使用 build_industries"""
         df = pro.index_classify(src='SW2021')
         for _ix, row in df.iterrows():
             self.parse_industry_row(row)
+        self.build_industry_names()
+
+    def build_industry_names(self):
+        """生成所有行业名全称"""
+        for node in self.level_to_nodes[1]:
+            node.industry_name_long = node.industry_name
+        for node in self.level_to_nodes[2]:
+            node.industry_name_long = node.parent.industry_name + "-" + node.industry_name
+        for node in self.level_to_nodes[3]:
+            node.industry_name_long = node.parent.industry_name_long + "-" + node.industry_name
 
     def parse_industry_row(self, row: dict[str, str] | pd.Series) -> None:
         """解析申万行业数据行, 创建节点并添加到树中"""
@@ -120,7 +132,7 @@ class ShenWanIndustryTree:
 
         return count
 
-    def daily_rank(
+    def daily_rank_equal_weight(
         self,
         pro: DataApi,
         date: datetime
@@ -236,11 +248,11 @@ if __name__ == "__main__":
     #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
     #             )
 
-    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank(pro=pro, date=datetime(2025, 9, 16))
-    for index_code, pct_chg, count in l2_rank_list:
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 19))
+    for index_code, pct_chg, count in l3_rank_list:
         print(
             f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
-            tree.index_code_to_node[index_code].industry_name,
+            tree.index_code_to_node[index_code].industry_name_long,
             count,
-            [tree.stock_basic[s]['name'] for s in tree.index_code_to_node[index_code].constituent_stocks],
+            [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_code].constituent_stocks],
         )
