@@ -135,7 +135,7 @@ class ShenWanIndustryTree:
     def daily_rank_equal_weight(
         self,
         pro: DataApi,
-        date: datetime
+        date: datetime,
     ) -> tuple[list[tuple[str, float, int]], list[tuple[str, float, int]], list[tuple[str, float, int]]]:
         """
         获取指定日期的行业涨幅(等权)排名
@@ -222,6 +222,157 @@ class ShenWanIndustryTree:
 
         return l1_rank_list, l2_rank_list, l3_rank_list
 
+    def daily_rank(
+        self,
+        pro: DataApi,
+        date: datetime,
+    ) -> tuple[list[tuple[str, float, int]], list[tuple[str, float, int]], list[tuple[str, float, int]]]:
+        """
+        获取指定日期的行业涨幅(等权)排名
+        """
+        if not self.root.children:
+            raise RuntimeError("请先构建行业树结构")
+
+        if not self.constituent_stock_to_l3_node:
+            raise RuntimeError("请先加载行业成分股")
+
+        offset = 0
+        batch_size = 999
+        date_str = date.strftime("%Y%m%d")
+        tushare_code_to_circ_mv: dict[str, float] = {}
+        while True:
+            df = pro.daily_basic(
+                ts_code='',
+                trade_date=date_str,
+                fields='ts_code,circ_mv',
+                offset=offset,
+                limit=batch_size,
+            )
+            for _ix, row in df.iterrows():
+                ts_code = row['ts_code']
+                circ_mv = row['circ_mv']
+                tushare_code_to_circ_mv[ts_code] = circ_mv
+
+            offset += len(df)
+            if batch_size > len(df):
+                break
+
+        if not tushare_code_to_circ_mv:
+            raise ValueError(f"没有获取到 {date_str} 交易日的流通市值数据")
+
+        offset = 0
+        batch_size = 5999
+        tushare_code_to_pct_chg: dict[str, float] = {}
+        while True:
+            df = pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
+            if len(df) == 0:
+                break
+            for _ix, row in df.iterrows():
+                ts_code = row['ts_code']
+                pct_chg = row['pct_chg']
+                tushare_code_to_pct_chg[ts_code] = pct_chg
+
+            offset += len(df)
+            if batch_size > len(df):
+                break
+
+        if not tushare_code_to_pct_chg:
+            raise ValueError(f"没有获取到 {date_str} 交易日的行情数据")
+
+        # 行业index_code -> (行业index_code, 上涨百分比, 成分股数量)
+        l1_chg_map: dict[str, tuple[str, float, int]] = {}
+        l2_chg_map: dict[str, tuple[str, float, int]] = {}
+        l3_chg_map: dict[str, tuple[str, float, int]] = {}
+
+        # 行业index_code -> (新增流通市值总和, 上一交易日流通市值总和)
+        l1_circ_map: dict[str, tuple[float, float]] = {}
+        l2_circ_map: dict[str, tuple[float, float]] = {}
+        l3_circ_map: dict[str, tuple[float, float]] = {}
+
+        for node_l1 in self.level_to_nodes[1]:
+            l1_chg_map[node_l1.index_code] = (node_l1.index_code, 0, 0)
+            l1_circ_map[node_l1.index_code] = (0, 0)
+        for node_l2 in self.level_to_nodes[2]:
+            l2_chg_map[node_l2.index_code] = (node_l2.index_code, 0, 0)
+            l2_circ_map[node_l2.index_code] = (0, 0)
+        for node_l3 in self.level_to_nodes[3]:
+            l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
+            l3_circ_map[node_l3.index_code] = (0, 0)
+
+        stock_pool: set[str] = set()
+        for ts_code in tushare_code_to_pct_chg:
+            stock_pool.add(ts_code)
+        for ts_code in self.constituent_stock_to_l3_node:
+            stock_pool.add(ts_code)
+
+        for ts_code in stock_pool:
+            pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
+
+            if not (l3_node := self.constituent_stock_to_l3_node.get(ts_code)):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L3 行业", RuntimeWarning)
+                continue
+            if not (l2_node := l3_node.parent):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L2 行业", RuntimeWarning)
+                continue
+            if not (l1_node := l2_node.parent):
+                warnings.warn(f"找不到股票 '{ts_code}' 对应的 L1 行业", RuntimeWarning)
+                continue
+
+            data_list = [
+                (l3_node, l3_chg_map, l3_circ_map),
+                (l2_node, l2_chg_map, l2_circ_map),
+                (l1_node, l1_chg_map, l1_circ_map),
+            ]
+
+            for l_node, l_chg_map, l_circ_map in data_list:
+                l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
+                l_circ1, l_circ2 = l_circ_map.get(l_node.index_code)
+                l_count_new = l_count + 1
+                l_circ_mv = tushare_code_to_circ_mv.get(ts_code)
+                if l_circ_mv is None:
+                    df = pro.daily_basic(
+                        ts_code=ts_code,
+                        fields='ts_code,trade_date,circ_mv',
+                        offset=0,
+                        limit=1,
+                    )
+                    for _ix, row in df.iterrows():
+                        l_circ_mv = row['circ_mv']
+                        tushare_code_to_circ_mv[ts_code] = l_circ_mv
+                        break
+
+                    if l_circ_mv is None:
+                        raise ValueError(f"没有获取到 {ts_code} 的流通市值数据")
+
+                # 新增流通市值
+                l_circ1_new = l_circ_mv * pct_chg / 100 / (pct_chg / 100 + 1) + l_circ1
+
+                # 上一交易日的流通市值
+                l_circ2_new = l_circ_mv / (pct_chg / 100 + 1) + l_circ2
+
+                l_pct_chg_new = l_circ1_new / l_circ2_new * 100
+                l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
+                l_circ_map[l_node.index_code] = (l_circ1_new, l_circ2_new)
+
+        # 对行业涨幅由大到小排序
+        l1_rank_list = sorted(
+            [item for item in l1_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        l2_rank_list = sorted(
+            [item for item in l2_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        l3_rank_list = sorted(
+            [item for item in l3_chg_map.values() if item[2] > 0],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        return l1_rank_list, l2_rank_list, l3_rank_list
+
 
 if __name__ == "__main__":
     import tushare as ts
@@ -248,8 +399,19 @@ if __name__ == "__main__":
     #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
     #             )
 
-    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 19))
-    for index_code, pct_chg, count in l3_rank_list:
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 22))
+    for index_code, pct_chg, count in l2_rank_list:
+        print(
+            f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
+            tree.index_code_to_node[index_code].industry_name_long,
+            count,
+            [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_code].constituent_stocks],
+        )
+
+    print("\n\n")
+
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank(pro=pro, date=datetime(2025, 9, 22))
+    for index_code, pct_chg, count in l2_rank_list:
         print(
             f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
             tree.index_code_to_node[index_code].industry_name_long,
