@@ -1,7 +1,7 @@
 import os
 import json
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from tushare.pro.client import DataApi
@@ -153,7 +153,7 @@ class ShenWanIndustryTree:
         while True:
             df = pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
             if len(df) == 0:
-                 break
+                break
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
                 pct_chg = row['pct_chg']
@@ -185,7 +185,7 @@ class ShenWanIndustryTree:
             stock_pool.add(ts_code)
 
         for ts_code in stock_pool:
-            pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0) # 有交易数据则用实际涨幅, 停牌则按0%
+            pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
 
             if not (l3_node := self.constituent_stock_to_l3_node.get(ts_code)):
                 warnings.warn(f"找不到股票 '{ts_code}' 对应的 L3 行业", RuntimeWarning)
@@ -228,7 +228,7 @@ class ShenWanIndustryTree:
         date: datetime,
     ) -> tuple[list[tuple[str, float, int]], list[tuple[str, float, int]], list[tuple[str, float, int]]]:
         """
-        获取指定日期的行业涨幅(等权)排名
+        获取指定日期的行业涨幅(流通市值加权)排名
         """
         if not self.root.children:
             raise RuntimeError("请先构建行业树结构")
@@ -239,7 +239,7 @@ class ShenWanIndustryTree:
         offset = 0
         batch_size = 999
         date_str = date.strftime("%Y%m%d")
-        tushare_code_to_circ_mv: dict[str, float] = {}
+        tushare_code_to_circ_mv: dict[str, float] = {}  # ts_code -> 排行当日的流通市值
         while True:
             df = pro.daily_basic(
                 ts_code='',
@@ -284,7 +284,7 @@ class ShenWanIndustryTree:
         l2_chg_map: dict[str, tuple[str, float, int]] = {}
         l3_chg_map: dict[str, tuple[str, float, int]] = {}
 
-        # 行业index_code -> (新增流通市值总和, 上一交易日流通市值总和)
+        # 行业index_code -> (当日收盘新增流通市值总和, 当日开盘前的流通市值总和)
         l1_circ_map: dict[str, tuple[float, float]] = {}
         l2_circ_map: dict[str, tuple[float, float]] = {}
         l3_circ_map: dict[str, tuple[float, float]] = {}
@@ -329,17 +329,23 @@ class ShenWanIndustryTree:
                 l_circ1, l_circ2 = l_circ_map.get(l_node.index_code)
                 l_count_new = l_count + 1
                 l_circ_mv = tushare_code_to_circ_mv.get(ts_code)
+
+                # 处理当日停牌的情况: 需要获取停牌前的流通市值(最多支持连续停牌 2 年)
                 if l_circ_mv is None:
                     df = pro.daily_basic(
                         ts_code=ts_code,
-                        fields='ts_code,trade_date,circ_mv',
-                        offset=0,
-                        limit=1,
+                        fields='trade_date,circ_mv',
+                        start_date=(date - timedelta(days=730)).strftime("%Y%m%d"),
+                        end_date=date_str
                     )
+
+                    # 响应的数据默认按日期降序
                     for _ix, row in df.iterrows():
-                        l_circ_mv = row['circ_mv']
-                        tushare_code_to_circ_mv[ts_code] = l_circ_mv
-                        break
+                        d_str = row['trade_date']
+                        if datetime.strptime(d_str, "%Y%m%d") <= date:
+                            l_circ_mv = row['circ_mv']
+                            tushare_code_to_circ_mv[ts_code] = l_circ_mv
+                            break
 
                     if l_circ_mv is None:
                         raise ValueError(f"没有获取到 {ts_code} 的流通市值数据")
@@ -347,7 +353,7 @@ class ShenWanIndustryTree:
                 # 新增流通市值
                 l_circ1_new = l_circ_mv * pct_chg / 100 / (pct_chg / 100 + 1) + l_circ1
 
-                # 上一交易日的流通市值
+                # 当日开盘前的流通市值
                 l_circ2_new = l_circ_mv / (pct_chg / 100 + 1) + l_circ2
 
                 l_pct_chg_new = l_circ1_new / l_circ2_new * 100
@@ -399,21 +405,18 @@ if __name__ == "__main__":
     #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
     #             )
 
-    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 22))
-    for index_code, pct_chg, count in l2_rank_list:
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 25))
+    l1_rank_list1, l2_rank_list1, l3_rank_list1 = tree.daily_rank(pro=pro, date=datetime(2025, 9, 25))
+    print("\n\n流通市值加权涨幅|等权涨幅")
+    for index_code, pct_chg, count in l3_rank_list1:
+        pct_chg_equal = -100
+        for i in l3_rank_list:
+            if i[0] == index_code:
+                pct_chg_equal = i[1]
+        if pct_chg_equal == -100:
+            raise ValueError(f"没有对应的等权重涨幅数据: index_code={index_code}")
         print(
-            f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
-            tree.index_code_to_node[index_code].industry_name_long,
-            count,
-            [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_code].constituent_stocks],
-        )
-
-    print("\n\n")
-
-    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank(pro=pro, date=datetime(2025, 9, 22))
-    for index_code, pct_chg, count in l2_rank_list:
-        print(
-            f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%",
+            f"{'+' if pct_chg >= 0 else ''}{pct_chg:.2f}%|{'+' if pct_chg_equal >= 0 else ''}{pct_chg_equal:.2f}%",
             tree.index_code_to_node[index_code].industry_name_long,
             count,
             [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_code].constituent_stocks],
