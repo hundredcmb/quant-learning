@@ -156,7 +156,9 @@ class ShenWanIndustryTree:
                 break
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
-                pct_chg = row['pct_chg']
+                pre_close = row['pre_close']
+                close = row['close']
+                pct_chg = (close - pre_close) / pre_close * 100
                 tushare_code_to_pct_chg[ts_code] = pct_chg
 
             offset += len(df)
@@ -269,7 +271,9 @@ class ShenWanIndustryTree:
                 break
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
-                pct_chg = row['pct_chg']
+                pre_close = row['pre_close']
+                close = row['close']
+                pct_chg = (close - pre_close) / pre_close * 100
                 tushare_code_to_pct_chg[ts_code] = pct_chg
 
             offset += len(df)
@@ -351,7 +355,7 @@ class ShenWanIndustryTree:
                         raise ValueError(f"没有获取到 {ts_code} 的流通市值数据")
 
                 # 新增流通市值
-                l_circ1_new = l_circ_mv * pct_chg / 100 / (pct_chg / 100 + 1) + l_circ1
+                l_circ1_new = l_circ_mv * pct_chg / (pct_chg + 100) + l_circ1
 
                 # 当日开盘前的流通市值
                 l_circ2_new = l_circ_mv / (pct_chg / 100 + 1) + l_circ2
@@ -405,9 +409,10 @@ if __name__ == "__main__":
     #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
     #             )
 
-    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=datetime(2025, 9, 25))
-    l1_rank_list1, l2_rank_list1, l3_rank_list1 = tree.daily_rank(pro=pro, date=datetime(2025, 9, 25))
-    print("\n\n流通市值加权涨幅|等权涨幅")
+    rank_date = datetime(2025, 9, 25)
+    l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=rank_date)
+    l1_rank_list1, l2_rank_list1, l3_rank_list1 = tree.daily_rank(pro=pro, date=rank_date)
+    print(f"\n\n流通市值加权涨幅|等权涨幅 {rank_date.strftime('%Y-%m-%d')}")
     for index_code, pct_chg, count in l3_rank_list1:
         pct_chg_equal = -100
         for i in l3_rank_list:
