@@ -100,7 +100,7 @@ class ShenWanIndustryTree:
             raise RuntimeError("请先构建行业树结构")
 
         if filter_unlisted and not self.stock_basic:
-            df = pro.stock_basic(list_status='L', fields='ts_code,name')
+            df = pro.stock_basic(list_status='L', fields='ts_code,name,list_date')
             for _ix, row in df.iterrows():
                 self.stock_basic[row['ts_code']] = row.to_dict()
 
@@ -185,6 +185,13 @@ class ShenWanIndustryTree:
             stock_pool.add(ts_code)
         for ts_code in self.constituent_stock_to_l3_node:
             stock_pool.add(ts_code)
+
+        # 剔除未上市的股票
+        for ts_code, sb_row in self.stock_basic.items():
+            list_date_str = self.stock_basic[ts_code]['list_date']
+            list_date = datetime.strptime(list_date_str, "%Y%m%d")
+            if list_date >= date:
+                stock_pool.discard(ts_code)
 
         for ts_code in stock_pool:
             pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
@@ -309,6 +316,13 @@ class ShenWanIndustryTree:
         for ts_code in self.constituent_stock_to_l3_node:
             stock_pool.add(ts_code)
 
+        # 剔除未上市的股票
+        for ts_code, sb_row in self.stock_basic.items():
+            list_date_str = self.stock_basic[ts_code]['list_date']
+            list_date = datetime.strptime(list_date_str, "%Y%m%d")
+            if list_date >= date:
+                stock_pool.discard(ts_code)
+
         for ts_code in stock_pool:
             pct_chg = tushare_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
 
@@ -409,13 +423,13 @@ if __name__ == "__main__":
     #                 [tree.stock_basic[s]['name'] for s in c_child.constituent_stocks],
     #             )
 
-    rank_date = datetime(2025, 9, 25)
+    rank_date = datetime(2025, 4, 7)
     l1_rank_list, l2_rank_list, l3_rank_list = tree.daily_rank_equal_weight(pro=pro, date=rank_date)
     l1_rank_list1, l2_rank_list1, l3_rank_list1 = tree.daily_rank(pro=pro, date=rank_date)
     print(f"\n\n流通市值加权涨幅|等权涨幅 {rank_date.strftime('%Y-%m-%d')}")
-    for index_code, pct_chg, count in l3_rank_list1:
+    for index_code, pct_chg, count in l1_rank_list1:
         pct_chg_equal = -100
-        for i in l3_rank_list:
+        for i in l1_rank_list:
             if i[0] == index_code:
                 pct_chg_equal = i[1]
         if pct_chg_equal == -100:
