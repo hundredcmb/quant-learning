@@ -1,24 +1,27 @@
 import time
+import threading
 import tushare as ts
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===================== 核心配置 =====================
-#INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
-#INDEX_CODES = ["000906.SH"]     # 样本池: 中证800
-INDEX_CODES = ['399300.SZ'] # 样本池: 沪深300
+# INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
+# INDEX_CODES = ["000906.SH"]  # 样本池: 中证800
+INDEX_CODES = ['399300.SZ']  # 样本池: 沪深300
 
-INDEX_DATE = "20260331"     # 样本池成分股日期
+INDEX_DATE = "20260331"  # 样本池成分股日期
 REPORT_PERIOD = "20260331"  # 报告期
-PRICE_DATE = "20260331"     # 持仓金额统计日期
-MAX_WORKERS = 3             # 并发配置：越大越快越容易被限流，上限20
+REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
     "新华人寿": 1.0,
     "国丰兴华": 0.5
 }
+
+MAX_WORKERS = 5  # 并发配置：越大越快越容易被限流，上限20
+MAX_REQUESTS_PER_MINUTE = 200 # 配置：每分钟最大请求数
 # ====================================================
 
 # 初始化Tushare接口
@@ -28,7 +31,36 @@ if not token:
 
 pro: DataApi = ts.pro_api(token=token)
 
+# ===================== 限流全局变量（线程安全） =====================
+request_timestamps = []  # 记录所有请求的时间戳
+rate_limit_lock = threading.Lock()  # 线程锁，防止并发计数错误
 
+
+def rate_limit_control():
+    """限流控制函数：确保每分钟请求数不超过 MAX_REQUESTS_PER_MINUTE"""
+    global request_timestamps
+    current_time = time.time()
+
+    with rate_limit_lock:
+        # 过滤掉1分钟之前的历史请求时间戳
+        request_timestamps = [t for t in request_timestamps if current_time - t < 60]
+
+        # 如果达到最大请求数，等待直到窗口重置
+        while len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
+            # 计算需要等待的时间
+            wait_seconds = 60 - (current_time - request_timestamps[0]) + 0.1
+            print(f"⚠️  已达每分钟最大请求次数({MAX_REQUESTS_PER_MINUTE})，等待 {wait_seconds:.1f} 秒后继续...")
+            time.sleep(wait_seconds)
+
+            # 重新刷新时间，过滤过期请求
+            current_time = time.time()
+            request_timestamps = [t for t in request_timestamps if current_time - t < 60]
+
+        # 记录当前请求的时间戳
+        request_timestamps.append(current_time)
+
+
+# ===================== 原业务函数（仅新增限流调用） =====================
 def get_index_stocks(index_code: str) -> dict:
     """通用函数：获取单指数成分股代码+名称映射"""
     try:
@@ -72,21 +104,21 @@ def get_stock_close_price(stock_codes: list) -> dict:
     try:
         df = pro.daily(
             ts_code=",".join(stock_codes),
-            trade_date=PRICE_DATE
+            trade_date=REPORT_TRADE_DATE
         )
         return df.set_index("ts_code")["close"].to_dict()
     except Exception as e:
-        print(f"查询股价失败：{str(e)}")
+        print(f"错误：查询股价失败, {str(e)}")
         return {}
 
 
-# ===================== 新增：并发查询单元函数 =====================
 def query_single_stock(ts_code: str, stock_name: str):
     """
     单个股票的股东数据查询（并发最小单元）
     输入：股票代码、名称
     输出：匹配关键词的结果列表（空则无匹配）
     """
+    rate_limit_control()
     try:
         df = pro.top10_holders(
             ts_code=ts_code,
@@ -113,12 +145,9 @@ def query_single_stock(ts_code: str, stock_name: str):
                         "ratio": match_ratio
                     })
         return match_list
-    except Exception:
-        # 保持原代码容错：异常直接返回空列表
+    except Exception as e:
+        print(f"查询 {ts_code} 十大股东失败：{str(e)}")
         return []
-
-
-# ================================================================
 
 
 def query_xinhua_combined():
@@ -128,11 +157,10 @@ def query_xinhua_combined():
         return
 
     total = len(stock_map)
-    keyword_str = "、".join(KEY_WORD_RATIO.keys())
-    index_str = "、".join(INDEX_CODES)
+    keyword_str = ", ".join(KEY_WORD_RATIO.keys())
+    index_str = ", ".join(INDEX_CODES)
     print(f"开始查询指数【{index_str}】共 {total} 只股票，筛选2026年一季报包含「{keyword_str}」的持股...\n")
 
-    # ===================== 核心改造：并发查询替换串行循环 =====================
     stock_list = list(stock_map.items())
     match_results = []
     completed_count = 0
@@ -146,7 +174,7 @@ def query_xinhua_combined():
         for future in as_completed(task_futures):
             completed_count += 1
             # 保持原进度打印逻辑
-            if completed_count % 100 == 0:
+            if completed_count % 50 == 0:
                 print(f"查询进度：{completed_count}/{total}")
 
             # 合并匹配结果
@@ -155,7 +183,7 @@ def query_xinhua_combined():
                 match_results.extend(stock_result)
     # ========================================================================
 
-    # 批量查股价 + 计算金额（原逻辑完全不变）
+    # 批量查股价 + 计算金额
     if match_results:
         match_stock_codes = [item["ts_code"] for item in match_results]
         price_map = get_stock_close_price(match_stock_codes)
@@ -171,7 +199,6 @@ def query_xinhua_combined():
             item["original_value"] = original_val
             item["adjust_value"] = adjust_val
 
-    # ===================== 打印输出（完全不变） =====================
     print("\n" + "=" * 150)
     print(f"指数【{index_str}】查询完成！共找到 {len(match_results)} 个匹配席位")
     print("=" * 150)
@@ -182,49 +209,19 @@ def query_xinhua_combined():
 
     total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
 
-    col_formats = {
-        "ts_code": "<10",
-        "stock_name": "<8",
-        "hold_amount": "<20",
-        "hold_ratio": "<10",
-        "original_value": "<12",
-        "adjust_value": "<12",
-        "holder_name": "<35"
-    }
-
-    print(
-        f"{'代码':{col_formats['ts_code']}} "
-        f"{'名称':{col_formats['stock_name']}} "
-        f"{'股数':{col_formats['hold_amount']}} "
-        f"{'比例(%)':{col_formats['hold_ratio']}} "
-        f"{'金额(亿)':{col_formats['original_value']}} "
-        f"{'折算后(亿)':{col_formats['adjust_value']}} "
-        f"{'席位':{col_formats['holder_name']}}"
-    )
+    print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<15} {'持股比例(%)':<6} "
+          f"{'原始持仓(亿)':<8} {'折算持仓(亿)':<8} {'股东名称':<32}")
     print("-" * 150)
-
     for item in match_results:
-        print(
-            f"{item['ts_code']:{col_formats['ts_code']}} "
-            f"{item['stock_name']:{col_formats['stock_name']}} "
-            f"{item['hold_amount']:{col_formats['hold_amount']}} "
-            f"{item['hold_ratio']:{col_formats['hold_ratio']}} "
-            f"{item['original_value']:{col_formats['original_value']}} "
-            f"{item['adjust_value']:{col_formats['adjust_value']}} "
-            f"{item['holder_name']:{col_formats['holder_name']}}"
-        )
-
+        print(f"{item['ts_code']:<10} "
+              f"{item['stock_name']:<8} "
+              f"{item['hold_amount']:<20} "
+              f"{item['hold_ratio']:<10} "
+              f"{item['original_value']:<12} "
+              f"{item['adjust_value']:<12} "
+              f"{item['holder_name']:<32}")
     print("-" * 150)
-    total_text = f"【折算后总金额(亿)】{total_adjust_value}"
-    print(
-        f"{'':{col_formats['ts_code']}} "
-        f"{'':{col_formats['stock_name']}} "
-        f"{'':{col_formats['hold_amount']}} "
-        f"{'':{col_formats['hold_ratio']}} "
-        f"{'':{col_formats['original_value']}} "
-        f"{total_text:{col_formats['adjust_value']}} "
-        f"{'':{col_formats['holder_name']}}"
-    )
+    print(f"【折算后总持仓(亿)】{total_adjust_value}")
 
 
 # 执行查询
