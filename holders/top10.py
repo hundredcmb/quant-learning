@@ -1,8 +1,8 @@
+import os
 import time
+import json
 import threading
 import tushare as ts
-import json
-import os
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,12 +18,49 @@ REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
-    "新华人寿": 1.0,
-    "国丰兴华": 0.5
+    # =========T0国家队=========
+    "中央汇金投资": 0.0,
+    "中央汇金资产": 1.0,
+    "中国证券金融": 1.0,
+    "中国国新": 1.0,
+    "中国诚通": 1.0,
+    "中国信达资产": 1.0,
+    "中国东方资产": 1.0,
+    "中国长城资产": 1.0,
+
+    # =========T0社保基金=========
+    # "社保基金": 1.0,
+    # "社会保障基金": 1.0,
+
+    # =========T1平安险资=========
+    # "恒毅持盈": 1.0,
+    # "平安资管": 1.0,
+    # "平安人寿保险": 1.0,
+    # "平安养老保险": 1.0,
+    # "中国平安保险(集团)股份有限公司-": 1.0,
+
+    # =========T1国寿险资=========
+    # "国丰兴华": 0.5,
+    # "中国人寿保险股份": 1.0,
+    # "中国人寿保险(集团)公司-": 1.0,
+
+    # =========T2新华险资=========
+    # "国丰兴华": 0.5,
+    # "新华人寿保险": 1.0,
+
+    # =========T2太保险资=========
+    # "太保致远": 1.0,
+    # "太平洋人寿保险": 1.0,
+    # "太平洋财产保险": 1.0,
+
+    # =========T2人保险资=========
+    # "启元惠众": 1.0,
+    # "人民财产保险": 1.0,
+    # "人民人寿保险": 1.0,
 }
 
 MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
-MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为官方限制数减20)
+MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
 # 缓存文件：存储【Tushare原始接口数据】
 CACHE_FILE = "tushare_top10_holders_raw.json"
 # ====================================================
@@ -39,7 +76,6 @@ rate_limit_lock = threading.Lock()
 write_cache_lock = threading.Lock()
 
 
-# ===================== 核心：原始数据缓存工具 =====================
 def load_raw_cache() -> dict:
     """加载缓存：{报告期: {股票代码: [原始接口数据列表]}}"""
     if os.path.exists(CACHE_FILE):
@@ -103,7 +139,6 @@ def get_stock_top10_raw(ts_code: str, period: str) -> list:
     return raw_data
 
 
-# ===================== 原有工具函数（无修改） =====================
 def rate_limit_control():
     """限流控制函数"""
     global request_timestamps
@@ -171,7 +206,7 @@ def get_stock_close_price(stock_codes: list) -> dict:
         print(f"⚠️  查询股价失败: {str(e)}")
         os._exit(-1)
 
-# ===================== 业务函数（仅修改数据来源） =====================
+
 def query_single_stock(ts_code: str, stock_name: str):
     """
     单个股票业务处理：从【原始缓存/接口】获取数据 → 筛选关键词
@@ -201,7 +236,6 @@ def query_single_stock(ts_code: str, stock_name: str):
     return match_list
 
 
-# ===================== 主函数（简化缓存逻辑） =====================
 def query_xinhua_combined():
     """主查询函数"""
     stock_map = get_combined_stocks()
@@ -275,7 +309,6 @@ def query_xinhua_combined():
     # 最终：将所有缓存的原始数据持久化到文件
     save_raw_cache(RAW_CACHE)
     cached_count = len(RAW_CACHE.get(REPORT_PERIOD, {}))
-    print(f"💾 原始数据缓存完成：{REPORT_PERIOD} 报告期共缓存 {cached_count} 只股票")
 
 
 if __name__ == "__main__":
