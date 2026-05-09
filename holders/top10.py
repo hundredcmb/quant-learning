@@ -1,17 +1,19 @@
 import time
 import threading
 import tushare as ts
+import json
+import os
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===================== 核心配置 =====================
-# INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
+INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
 # INDEX_CODES = ["000906.SH"]  # 样本池: 中证800
-INDEX_CODES = ['399300.SZ']  # 样本池: 沪深300
+# INDEX_CODES = ['399300.SZ']  # 样本池: 沪深300
 
 INDEX_DATE = "20260331"  # 样本池成分股日期
-REPORT_PERIOD = "20260331"  # 报告期
+REPORT_PERIOD = "20260331"  # 报告期（缓存唯一标识）
 REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
 
 # 席位关键词-折算比例
@@ -20,8 +22,10 @@ KEY_WORD_RATIO = {
     "国丰兴华": 0.5
 }
 
-MAX_WORKERS = 5  # 并发配置：越大越快越容易被限流，上限20
-MAX_REQUESTS_PER_MINUTE = 200 # 配置：每分钟最大请求数
+MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
+MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为官方限制数减20)
+# 缓存文件：存储【Tushare原始接口数据】
+CACHE_FILE = "tushare_top10_holders_raw.json"
 # ====================================================
 
 # 初始化Tushare接口
@@ -30,39 +34,96 @@ if not token:
     raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
 
 pro: DataApi = ts.pro_api(token=token)
+request_timestamps = []
+rate_limit_lock = threading.Lock()
+write_cache_lock = threading.Lock()
 
-# ===================== 限流全局变量（线程安全） =====================
-request_timestamps = []  # 记录所有请求的时间戳
-rate_limit_lock = threading.Lock()  # 线程锁，防止并发计数错误
+
+# ===================== 核心：原始数据缓存工具 =====================
+def load_raw_cache() -> dict:
+    """加载缓存：{报告期: {股票代码: [原始接口数据列表]}}"""
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"⚠️ 原始缓存加载失败：{str(e)}")
+            return {}
+    return {}
 
 
+def save_raw_cache(cache_data: dict) -> None:
+    """保存原始接口数据到缓存文件"""
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ 原始缓存保存失败：{str(e)}")
+
+
+# 全局缓存对象（程序运行时常驻内存）
+RAW_CACHE = load_raw_cache()
+
+
+# =================================================================
+
+def get_stock_top10_raw(ts_code: str, period: str) -> list:
+    """
+    【核心底层函数】
+    获取单股票 原始十大股东数据（优先缓存，无则请求tushare）
+    返回：Tushare原始数据列表（空列表=无数据）
+    缓存：仅存储接口原始结果，无任何业务处理
+    """
+    # 1. 优先读缓存
+    if period in RAW_CACHE and ts_code in RAW_CACHE[period]:
+        return RAW_CACHE[period][ts_code]
+
+    # 2. 无缓存，执行限流 + 接口请求
+    rate_limit_control()
+    raw_data = []
+    try:
+        df = pro.top10_holders(
+            ts_code=ts_code,
+            period=period,
+            fields="ts_code,holder_name,hold_amount,hold_ratio"
+        )
+        # 转换为原始字典列表（标准可序列化格式）
+        raw_data = df.to_dict("records") if not df.empty else []
+    except Exception as e:
+        print(f"⚠️  大股东查询接口请求失败 {ts_code}, 请修改限流或并发参数后重试：{str(e)}")
+        with write_cache_lock:
+            save_raw_cache(RAW_CACHE)
+            os._exit(-1)
+
+    # 3. 写入内存缓存
+    if period not in RAW_CACHE:
+        RAW_CACHE[period] = {}
+    RAW_CACHE[period][ts_code] = raw_data
+
+    return raw_data
+
+
+# ===================== 原有工具函数（无修改） =====================
 def rate_limit_control():
-    """限流控制函数：确保每分钟请求数不超过 MAX_REQUESTS_PER_MINUTE"""
+    """限流控制函数"""
     global request_timestamps
     current_time = time.time()
 
     with rate_limit_lock:
-        # 过滤掉1分钟之前的历史请求时间戳
         request_timestamps = [t for t in request_timestamps if current_time - t < 60]
 
-        # 如果达到最大请求数，等待直到窗口重置
         while len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            # 计算需要等待的时间
-            wait_seconds = 60 - (current_time - request_timestamps[0]) + 0.1
+            wait_seconds = 60 - (current_time - request_timestamps[0]) + 1
             print(f"⚠️  已达每分钟最大请求次数({MAX_REQUESTS_PER_MINUTE})，等待 {wait_seconds:.1f} 秒后继续...")
             time.sleep(wait_seconds)
-
-            # 重新刷新时间，过滤过期请求
             current_time = time.time()
             request_timestamps = [t for t in request_timestamps if current_time - t < 60]
 
-        # 记录当前请求的时间戳
         request_timestamps.append(current_time)
 
 
-# ===================== 原业务函数（仅新增限流调用） =====================
 def get_index_stocks(index_code: str) -> dict:
-    """通用函数：获取单指数成分股代码+名称映射"""
+    """获取单指数成分股"""
     try:
         df = pro.index_weight(
             index_code=index_code,
@@ -82,14 +143,13 @@ def get_index_stocks(index_code: str) -> dict:
             if con_code in name_map:
                 stock_map[con_code] = name_map[con_code]
         return stock_map
-
     except Exception as e:
-        print(f"获取 {index_code} 成分股失败：{str(e)}")
-        return {}
+        print(f"⚠️  获取 {index_code} 成分股失败：{str(e)}")
+        os._exit(-1)
 
 
 def get_combined_stocks() -> dict:
-    """循环遍历指数列表，合并所有成分股，自动去重"""
+    """合并指数成分股"""
     combined_map = {}
     for index_code in INDEX_CODES:
         index_stocks = get_index_stocks(index_code)
@@ -98,7 +158,7 @@ def get_combined_stocks() -> dict:
 
 
 def get_stock_close_price(stock_codes: list) -> dict:
-    """批量查询一季度末收盘价"""
+    """批量查询收盘价"""
     if not stock_codes:
         return {}
     try:
@@ -108,48 +168,40 @@ def get_stock_close_price(stock_codes: list) -> dict:
         )
         return df.set_index("ts_code")["close"].to_dict()
     except Exception as e:
-        print(f"错误：查询股价失败, {str(e)}")
-        return {}
+        print(f"⚠️  查询股价失败: {str(e)}")
+        os._exit(-1)
 
-
+# ===================== 业务函数（仅修改数据来源） =====================
 def query_single_stock(ts_code: str, stock_name: str):
     """
-    单个股票的股东数据查询（并发最小单元）
-    输入：股票代码、名称
-    输出：匹配关键词的结果列表（空则无匹配）
+    单个股票业务处理：从【原始缓存/接口】获取数据 → 筛选关键词
+    职责：纯业务处理，不关心数据来自缓存还是接口
     """
-    rate_limit_control()
-    try:
-        df = pro.top10_holders(
-            ts_code=ts_code,
-            period=REPORT_PERIOD,
-            fields="ts_code,holder_name,hold_amount,hold_ratio"
-        )
-        match_list = []
-        if not df.empty:
-            for _, row in df.iterrows():
-                holder_name = row["holder_name"]
-                match_ratio = None
-                # 匹配关键词
-                for keyword, ratio in KEY_WORD_RATIO.items():
-                    if keyword in holder_name:
-                        match_ratio = ratio
-                        break
-                if match_ratio is not None:
-                    match_list.append({
-                        "ts_code": ts_code,
-                        "stock_name": stock_name,
-                        "holder_name": holder_name,
-                        "hold_amount": int(row["hold_amount"]),
-                        "hold_ratio": round(row["hold_ratio"], 2),
-                        "ratio": match_ratio
-                    })
-        return match_list
-    except Exception as e:
-        print(f"查询 {ts_code} 十大股东失败：{str(e)}")
-        return []
+    # 核心修改：调用底层函数获取原始数据
+    raw_holders = get_stock_top10_raw(ts_code, REPORT_PERIOD)
+    match_list = []
+
+    for row in raw_holders:
+        holder_name = row["holder_name"]
+        match_ratio = None
+        # 业务筛选逻辑
+        for keyword, ratio in KEY_WORD_RATIO.items():
+            if keyword in holder_name:
+                match_ratio = ratio
+                break
+        if match_ratio is not None:
+            match_list.append({
+                "ts_code": ts_code,
+                "stock_name": stock_name,
+                "holder_name": holder_name,
+                "hold_amount": int(row["hold_amount"]),
+                "hold_ratio": round(row["hold_ratio"], 2),
+                "ratio": match_ratio
+            })
+    return match_list
 
 
+# ===================== 主函数（简化缓存逻辑） =====================
 def query_xinhua_combined():
     """主查询函数"""
     stock_map = get_combined_stocks()
@@ -159,31 +211,26 @@ def query_xinhua_combined():
     total = len(stock_map)
     keyword_str = ", ".join(KEY_WORD_RATIO.keys())
     index_str = ", ".join(INDEX_CODES)
-    print(f"开始查询指数【{index_str}】共 {total} 只股票，筛选2026年一季报包含「{keyword_str}」的持股...\n")
+    print(f"开始查询指数【{index_str}】共 {total} 只股票，筛选{REPORT_PERIOD}报告期包含「{keyword_str}」的持股...\n")
 
     stock_list = list(stock_map.items())
     match_results = []
     completed_count = 0
 
-    # 线程池并发执行所有股票查询
+    # 线程池并发：底层自动处理缓存，上层无感知
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # 提交所有任务到线程池
         task_futures = [executor.submit(query_single_stock, code, name) for code, name in stock_list]
 
-        # 遍历完成的任务，收集结果
         for future in as_completed(task_futures):
             completed_count += 1
-            # 保持原进度打印逻辑
             if completed_count % 50 == 0:
                 print(f"查询进度：{completed_count}/{total}")
 
-            # 合并匹配结果
             stock_result = future.result()
             if stock_result:
                 match_results.extend(stock_result)
-    # ========================================================================
 
-    # 批量查股价 + 计算金额
+    # 股价计算（原有逻辑）
     if match_results:
         match_stock_codes = [item["ts_code"] for item in match_results]
         price_map = get_stock_close_price(match_stock_codes)
@@ -199,12 +246,14 @@ def query_xinhua_combined():
             item["original_value"] = original_val
             item["adjust_value"] = adjust_val
 
+    # 输出结果
     print("\n" + "=" * 150)
-    print(f"指数【{index_str}】查询完成！共找到 {len(match_results)} 个匹配席位")
+    print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配席位")
     print("=" * 150)
 
     if not match_results:
         print(f"未查询到包含「{keyword_str}」的股东数据")
+        save_raw_cache(RAW_CACHE)
         return
 
     total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
@@ -223,8 +272,12 @@ def query_xinhua_combined():
     print("-" * 150)
     print(f"【折算后总持仓(亿)】{total_adjust_value}")
 
+    # 最终：将所有缓存的原始数据持久化到文件
+    save_raw_cache(RAW_CACHE)
+    cached_count = len(RAW_CACHE.get(REPORT_PERIOD, {}))
+    print(f"💾 原始数据缓存完成：{REPORT_PERIOD} 报告期共缓存 {cached_count} 只股票")
 
-# 执行查询
+
 if __name__ == "__main__":
     start_time = time.time()
     query_xinhua_combined()
