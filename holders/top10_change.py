@@ -2,10 +2,12 @@ import os
 import time
 import json
 import threading
+import sys
 import tushare as ts
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from PIL import Image, ImageDraw, ImageFont
 
 # ===================== 核心配置 =====================
 INDEX_DATE = "20260331"  # 样本池成分股日期
@@ -22,14 +24,14 @@ REPORT_TRADE_DATE2 = "20260331"  # 报告期2交易日
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
     # =========T0国家队=========
-    "中央汇金投资": 0.0,
-    "中央汇金资产": 1.0,
-    "中国证券金融": 1.0,
-    "中国国新": 1.0,
-    "中国诚通": 1.0,
-    "中国信达资产": 1.0,
-    "中国东方资产": 1.0,
-    "中国长城资产": 1.0,
+    # "中央汇金投资": 0.0,
+    # "中央汇金资产": 1.0,
+    # "中国证券金融": 1.0,
+    # "中国国新": 1.0,
+    # "中国诚通": 1.0,
+    # "中国信达资产": 1.0,
+    # "中国东方资产": 1.0,
+    # "中国长城资产": 1.0,
 
     # =========T0社保基金=========
     # "社保基金": 1.0,
@@ -48,8 +50,8 @@ KEY_WORD_RATIO = {
     # "中国人寿保险(集团)公司-": 1.0,
 
     # =========T2新华险资=========
-    # "国丰兴华": 0.5,
-    # "新华人寿保险": 1.0,
+    "国丰兴华": 0.5,
+    "新华人寿保险": 1.0,
 
     # =========T2太保险资=========
     # "太保致远": 1.0,
@@ -311,6 +313,97 @@ def query_single_stock(ts_code: str, stock_name: str):
 
     return match_results
 
+# ===================== 新增：生成表格图片函数 =====================
+def generate_table_image(match_results, total_adj1, total_adj2, report1, report2):
+    """生成与命令行一致的持股变动UI表格图片，标题含关键词+折算比例"""
+    # 基础样式配置
+    PADDING = 10
+    ROW_HEIGHT = 30
+    FONT_SIZE = 14
+    HEADER_FONT_SIZE = 16
+    COL_WIDTHS = [100, 80, 120, 160, 90, 160, 90, 550]
+    COL_NAMES = ["股票代码", "股票名称", "变动类型", "期1持股(股)", "期1折算(亿)", "期2持股(股)", "期2折算(亿)", "股东名称"]
+
+    # 拼接关键词+折算比例文本
+    ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
+
+    # 计算画布尺寸（多一行标题说明）
+    total_rows = len(match_results) + 5
+    img_width = sum(COL_WIDTHS) + 2 * PADDING
+    img_height = total_rows * ROW_HEIGHT + 2 * PADDING
+
+    # 创建白色背景画布
+    img = Image.new("RGB", (img_width, img_height), "white")
+    draw = ImageDraw.Draw(img)
+
+    # 跨系统字体兼容
+    try:
+        if sys.platform.startswith("win"):
+            font = ImageFont.truetype("msyh.ttc", FONT_SIZE)
+            header_font = ImageFont.truetype("msyh.ttc", HEADER_FONT_SIZE)
+        elif sys.platform.startswith("darwin"):
+            font = ImageFont.truetype("Arial Unicode.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("Arial Unicode.ttf", HEADER_FONT_SIZE)
+        else:
+            font = ImageFont.truetype("DejaVuSans.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("DejaVuSans.ttf", HEADER_FONT_SIZE)
+    except:
+        # 兜底默认字体
+        font = ImageFont.load_default()
+        header_font = ImageFont.load_default()
+
+    # 第一行大标题
+    x, y = PADDING, PADDING
+    title_main = f"{report1} → {report2} 机构持股变动统计表"
+    draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
+    y += ROW_HEIGHT
+
+    # 第二行：关键词+折算比例说明
+    title_sub = f"筛选关键词及折算比例：{ratio_text}"
+    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    y += ROW_HEIGHT
+
+    # 绘制表头
+    x = PADDING
+    for i, name in enumerate(COL_NAMES):
+        draw.text((x + 5, y + 5), name, font=header_font, fill="#3498db")
+        x += COL_WIDTHS[i]
+    y += ROW_HEIGHT
+
+    # 绘制分隔线
+    draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
+    y += 8
+
+    # 绘制数据行
+    for item in match_results:
+        x = PADDING
+        row_data = [
+            item['ts_code'], item['stock_name'], item['change_type'],
+            str(item['hold1_amount']), str(item['adjust_value1']),
+            str(item['hold2_amount']), str(item['adjust_value2']),
+            item['holder_name']
+        ]
+        for i, data in enumerate(row_data):
+            draw.text((x + 5, y + 5), str(data), font=font, fill="#2c3e50")
+            x += COL_WIDTHS[i]
+        y += ROW_HEIGHT
+
+    # 绘制底部分隔线
+    draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
+    y += 15
+
+    # 绘制总计信息
+    total_change = round(total_adj2 - total_adj1, 2)
+    draw.text((PADDING, y), f"【{report1}公开总持仓(亿)】{total_adj1}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【{report2}公开总持仓(亿)】{total_adj2}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【持仓变动(亿)】{total_change}", font=font, fill="#e74c3c")
+
+    # 保存图片
+    img.save("持股变动表格.png")
+    print("\n✅ UI表格图片生成完成：持股变动表格.png")
+# ================================================================
 
 def query_top10_change():
     """主查询函数（双报告期+变动百分比+固定顺序排序）"""
@@ -395,6 +488,9 @@ def query_top10_change():
     print(f"【{REPORT_PERIOD1} 折算后总持仓(亿)】{total_adj1}")
     print(f"【{REPORT_PERIOD2} 折算后总持仓(亿)】{total_adj2}")
     print(f"【持仓变动(亿)】{round(total_adj2 - total_adj1, 2)}")
+
+    # ===================== 新增：调用图片生成函数 =====================
+    generate_table_image(match_results, total_adj1, total_adj2, REPORT_PERIOD1, REPORT_PERIOD2)
 
     save_raw_cache(RAW_CACHE)
 
