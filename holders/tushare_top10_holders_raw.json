@@ -224528,6 +224528,130 @@
         "hold_amount": 552199.0,
         "hold_ratio": 0.1227
       }
+    ],
+    "301101.SZ": [
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "上海明月实业有限公司",
+        "hold_amount": 111004500.0,
+        "hold_ratio": 55.0858
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "上海诺伟其定位投资管理有限公司-宁波梅山保税港区诺伟其定位创业投资合伙企业(有限合伙)",
+        "hold_amount": 9809564.0,
+        "hold_ratio": 4.868
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "丹阳市志明企业管理中心(有限合伙)",
+        "hold_amount": 1948400.0,
+        "hold_ratio": 0.9669
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "丹阳志远企业管理中心(有限合伙)",
+        "hold_amount": 1818500.0,
+        "hold_ratio": 0.9024
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "曾哲",
+        "hold_amount": 2474500.0,
+        "hold_ratio": 1.228
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "曾少华",
+        "hold_amount": 1027000.0,
+        "hold_ratio": 0.5096
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "王雪平",
+        "hold_amount": 657000.0,
+        "hold_ratio": 0.326
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "蒋菊珍",
+        "hold_amount": 758300.0,
+        "hold_ratio": 0.3763
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "谢公兴",
+        "hold_amount": 3899000.0,
+        "hold_ratio": 1.9349
+      },
+      {
+        "ts_code": "301101.SZ",
+        "holder_name": "谢公晚",
+        "hold_amount": 3954800.0,
+        "hold_ratio": 1.9626
+      }
+    ],
+    "688486.SH": [
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "FENGCHEN",
+        "hold_amount": 50043545.0,
+        "hold_ratio": 37.5341
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "中国工商银行股份有限公司-富国新兴产业股票型证券投资基金",
+        "hold_amount": 6372208.0,
+        "hold_ratio": 4.7793
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "中国银行股份有限公司-泰信中小盘精选股票型证券投资基金",
+        "hold_amount": 1930000.0,
+        "hold_ratio": 1.4475
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "全国社保基金一一四组合",
+        "hold_amount": 2748741.0,
+        "hold_ratio": 2.0616
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "合肥中安海创创业投资合伙企业(有限合伙)",
+        "hold_amount": 2483014.0,
+        "hold_ratio": 1.8623
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "合肥海恒控股集团有限公司",
+        "hold_amount": 3880852.0,
+        "hold_ratio": 2.9107
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "合肥芯财富信息技术中心(普通合伙)",
+        "hold_amount": 4413374.0,
+        "hold_ratio": 3.3101
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "合肥赛富合元创业投资中心(有限合伙)",
+        "hold_amount": 5378035.0,
+        "hold_ratio": 4.0336
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "安徽红土创业投资有限公司",
+        "hold_amount": 5718562.0,
+        "hold_ratio": 4.289
+      },
+      {
+        "ts_code": "688486.SH",
+        "holder_name": "邱成英",
+        "hold_amount": 4597266.0,
+        "hold_ratio": 3.448
+      }
     ]
   }
 }

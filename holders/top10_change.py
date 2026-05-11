@@ -8,17 +8,16 @@ from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ===================== 核心配置 =====================
+INDEX_DATE = "20260331"  # 样本池成分股日期
 INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
 # INDEX_CODES = ["000906.SH"]  # 样本池: 中证800
 # INDEX_CODES = ['399300.SZ']  # 样本池: 沪深300
 
-INDEX_DATE = "20260331"  # 样本池成分股日期
-REPORT_PERIOD = "20260331"  # 报告期（缓存唯一标识）
-REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
-# INDEX_DATE = "20251231"  # 样本池成分股日期
-# REPORT_PERIOD = "20251231"  # 报告期（缓存唯一标识）
-# REPORT_TRADE_DATE = "20251231"  # 报告期最后一个交易日
-
+# 双报告期配置（对比期：前一期 -> 后一期）
+REPORT_PERIOD1 = "20251231"  # 报告期1（基准期）
+REPORT_TRADE_DATE1 = "20251231"  # 报告期1交易日
+REPORT_PERIOD2 = "20260331"  # 报告期2（对比期）
+REPORT_TRADE_DATE2 = "20260331"  # 报告期2交易日
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
@@ -63,9 +62,8 @@ KEY_WORD_RATIO = {
     # "人民人寿保险": 1.0,
 }
 
-MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
-MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
-# 缓存文件：存储【Tushare原始接口数据】
+MAX_WORKERS = 5  # 并发数
+MAX_REQUESTS_PER_MINUTE = 180  # 限流
 CACHE_FILE = "tushare_top10_holders_raw.json"
 # ====================================================
 
@@ -196,52 +194,126 @@ def get_combined_stocks() -> dict:
     return combined_map
 
 
-def get_stock_close_price(stock_codes: list) -> dict:
-    """批量查询收盘价"""
+def get_stock_close_price(stock_codes: list, trade_date: str) -> dict:
+    """批量查询指定交易日收盘价"""
     if not stock_codes:
         return {}
     try:
         df = pro.daily(
             ts_code=",".join(stock_codes),
-            trade_date=REPORT_TRADE_DATE
+            trade_date=trade_date
         )
         return df.set_index("ts_code")["close"].to_dict()
     except Exception as e:
-        print(f"⚠️  查询股价失败: {str(e)}")
+        print(f"⚠️  查询{trade_date}股价失败: {str(e)}")
         os._exit(-1)
 
 
 def query_single_stock(ts_code: str, stock_name: str):
     """
-    单个股票业务处理：从【原始缓存/接口】获取数据 → 筛选关键词
-    职责：纯业务处理，不关心数据来自缓存还是接口
+    单个股票双报告期处理 + 新增持股变动百分比 + 排序权重
+    排序规则：新增0 > 增持1 > 不变2 > 减持3 > 退出4
     """
-    # 核心修改：调用底层函数获取原始数据
-    raw_holders = get_stock_top10_raw(ts_code, REPORT_PERIOD)
-    match_list = []
+    raw_holders1 = get_stock_top10_raw(ts_code, REPORT_PERIOD1)
+    raw_holders2 = get_stock_top10_raw(ts_code, REPORT_PERIOD2)
+    match_results = []
 
-    for row in raw_holders:
-        holder_name = row["holder_name"]
-        match_ratio = None
-        # 业务筛选逻辑
-        for keyword, ratio in KEY_WORD_RATIO.items():
-            if keyword in holder_name:
-                match_ratio = ratio
-                break
-        if match_ratio is not None:
-            match_list.append({
-                "ts_code": ts_code,
-                "stock_name": stock_name,
-                "holder_name": holder_name,
-                "hold_amount": int(row["hold_amount"]),
-                "hold_ratio": round(row["hold_ratio"], 2),
-                "ratio": match_ratio
+    def filter_keyword_holders(raw_data):
+        result = {}
+        for row in raw_data:
+            holder_name = row["holder_name"]
+            match_ratio = None
+            for keyword, ratio in KEY_WORD_RATIO.items():
+                if keyword in holder_name:
+                    match_ratio = ratio
+                    break
+            if match_ratio:
+                result[holder_name] = {
+                    "hold_amount": int(row["hold_amount"]),
+                    "hold_ratio": round(row["hold_ratio"], 2),
+                    "ratio": match_ratio
+                }
+        return result
+
+    holder1_map = filter_keyword_holders(raw_holders1)
+    holder2_map = filter_keyword_holders(raw_holders2)
+
+    all_holders = set(holder1_map.keys()).union(set(holder2_map.keys()))
+    for holder_name in all_holders:
+        data1 = holder1_map.get(holder_name, None)
+        data2 = holder2_map.get(holder_name, None)
+
+        base = {
+            "ts_code": ts_code,
+            "stock_name": stock_name,
+            "holder_name": holder_name,
+        }
+
+        # 1. 退出
+        if data1 and not data2:
+            base.update({
+                "change_type": "退出",
+                "sort_rank": 4,
+                "hold1_amount": data1["hold_amount"],
+                "hold1_ratio": data1["hold_ratio"],
+                "ratio1": data1["ratio"],
+                "hold2_amount": 0,
+                "hold2_ratio": 0.0,
+                "ratio2": data1["ratio"],
             })
-    return match_list
+        # 2. 新增
+        elif not data1 and data2:
+            base.update({
+                "change_type": "新增",
+                "sort_rank": 0,
+                "hold1_amount": 0,
+                "hold1_ratio": 0.0,
+                "ratio1": data2["ratio"],
+                "hold2_amount": data2["hold_amount"],
+                "hold2_ratio": data2["hold_ratio"],
+                "ratio2": data2["ratio"],
+            })
+        # 3. 两期都有：计算变动比例 + 拼接百分比 + 排序权重
+        else:
+            hold1 = data1["hold_amount"]
+            hold2 = data2["hold_amount"]
+
+            # 计算持股数量变动百分比 保留2位小数
+            if hold1 == 0:
+                pct = 0.0
+            else:
+                pct = (hold2 - hold1) / hold1 * 100
+            pct_round = round(pct, 2)
+
+            # 判断增减并赋值排序权重
+            if hold2 > hold1:
+                change = f"增持(+{pct_round}%)"
+                rank = 1
+            elif hold2 < hold1:
+                change = f"减持({pct_round}%)"
+                rank = 3
+            else:
+                change = f"不变"
+                rank = 2
+
+            base.update({
+                "change_type": change,
+                "sort_rank": rank,
+                "hold1_amount": hold1,
+                "hold1_ratio": data1["hold_ratio"],
+                "ratio1": data1["ratio"],
+                "hold2_amount": hold2,
+                "hold2_ratio": data2["hold_ratio"],
+                "ratio2": data2["ratio"],
+            })
+
+        match_results.append(base)
+
+    return match_results
 
 
-def query_top10():
-    """主查询函数"""
+def query_top10_change():
+    """主查询函数（双报告期+变动百分比+固定顺序排序）"""
     stock_map = get_combined_stocks()
     if not stock_map:
         return
@@ -249,13 +321,14 @@ def query_top10():
     total = len(stock_map)
     keyword_str = ", ".join(KEY_WORD_RATIO.keys())
     index_str = ", ".join(INDEX_CODES)
-    print(f"开始查询指数【{index_str}】共 {total} 只股票，筛选{REPORT_PERIOD}报告期包含「{keyword_str}」的持股...\n")
+    print(f"开始查询指数【{index_str}】共 {total} 只股票")
+    print(f"对比报告期：{REPORT_PERIOD1} → {REPORT_PERIOD2}")
+    print(f"筛选包含「{keyword_str}」的持股变动...\n")
 
     stock_list = list(stock_map.items())
     match_results = []
     completed_count = 0
 
-    # 线程池并发：底层自动处理缓存，上层无感知
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         task_futures = [executor.submit(query_single_stock, code, name) for code, name in stock_list]
 
@@ -268,53 +341,65 @@ def query_top10():
             if stock_result:
                 match_results.extend(stock_result)
 
-    # 股价计算（原有逻辑）
+    # 按指定顺序排序：新增0 → 增持1 → 不变2 → 减持3 → 退出4
+    match_results.sort(key=lambda x: x["sort_rank"])
+
     if match_results:
         match_stock_codes = [item["ts_code"] for item in match_results]
-        price_map = get_stock_close_price(match_stock_codes)
+        price_map1 = get_stock_close_price(match_stock_codes, REPORT_TRADE_DATE1)
+        price_map2 = get_stock_close_price(match_stock_codes, REPORT_TRADE_DATE2)
 
         for item in match_results:
-            close = price_map.get(item["ts_code"], 0)
-            hold_amount_val = item["hold_amount"]
-            ratio = item["ratio"]
+            close1 = price_map1.get(item["ts_code"], 0)
+            orig1 = round(item["hold1_amount"] * close1 / 100000000, 2) if close1 > 0 else 0
+            adj1 = round(orig1 * item["ratio1"], 2)
 
-            original_val = round(hold_amount_val * close / 100000000, 2) if close > 0 else 0
-            adjust_val = round(original_val * ratio, 2)
+            close2 = price_map2.get(item["ts_code"], 0)
+            orig2 = round(item["hold2_amount"] * close2 / 100000000, 2) if close2 > 0 else 0
+            adj2 = round(orig2 * item["ratio2"], 2)
 
-            item["original_value"] = original_val
-            item["adjust_value"] = adjust_val
+            item.update({
+                "original_value1": orig1, "adjust_value1": adj1,
+                "original_value2": orig2, "adjust_value2": adj2
+            })
 
-    # 输出结果
-    print("\n" + "=" * 150)
-    print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配席位")
-    print("=" * 150)
+    print("\n" + "=" * 210)
+    print(f"【{REPORT_PERIOD1} → {REPORT_PERIOD2}】持股变动查询完成！共找到 {len(match_results)} 条匹配数据")
+    print("=" * 210)
 
     if not match_results:
         print(f"未查询到包含「{keyword_str}」的股东数据")
         save_raw_cache(RAW_CACHE)
         return
 
-    total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
+    total_adj1 = round(sum(item["adjust_value1"] for item in match_results), 2)
+    total_adj2 = round(sum(item["adjust_value2"] for item in match_results), 2)
 
-    print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<15} {'持股比例(%)':<6} "
-          f"{'原始持仓(亿)':<8} {'折算持仓(亿)':<8} {'股东名称':<32}")
-    print("-" * 150)
+    print(f"{'股票代码':<7} {'变动类型':<10} {'股票名称':<8} "
+          f"{'期1持股(股)':<12} {'期1折算(亿)':<6} "
+          f"{'期2持股(股)':<11} {'期2折算(亿)':<6} "
+          f"{'股东名称':<32}")
+    print("-" * 210)
+
     for item in match_results:
         print(f"{item['ts_code']:<10} "
               f"{item['stock_name']:<8} "
-              f"{item['hold_amount']:<20} "
-              f"{item['hold_ratio']:<10} "
-              f"{item['original_value']:<12} "
-              f"{item['adjust_value']:<12} "
+              f"{item['change_type']:<12} "
+              f"{item['hold1_amount']:<15} "
+              f"{item['adjust_value1']:<10} "
+              f"{item['hold2_amount']:<15} "
+              f"{item['adjust_value2']:<10} "
               f"{item['holder_name']:<32}")
-    print("-" * 150)
-    print(f"【折算后总持仓(亿)】{total_adjust_value}")
 
-    # 最终：将所有缓存的原始数据持久化到文件
+    print("-" * 210)
+    print(f"【{REPORT_PERIOD1} 折算后总持仓(亿)】{total_adj1}")
+    print(f"【{REPORT_PERIOD2} 折算后总持仓(亿)】{total_adj2}")
+    print(f"【持仓变动(亿)】{round(total_adj2 - total_adj1, 2)}")
+
     save_raw_cache(RAW_CACHE)
 
 
 if __name__ == "__main__":
     start_time = time.time()
-    query_top10()
+    query_top10_change()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")
