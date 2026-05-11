@@ -11,22 +11,24 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ===================== 核心配置 =====================
 INDEX_DATE = "20260331"  # 样本池成分股日期
-INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
-# INDEX_CODES = ["000906.SH"]  # 样本池: 中证800
+# INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
+INDEX_CODES = ["000906.SH"]  # 样本池: 中证800
 # INDEX_CODES = ['399300.SZ']  # 样本池: 沪深300
 
 # 双报告期配置（对比期：前一期 -> 后一期）
-REPORT_PERIOD1 = "20251231"  # 报告期1（基准期）
-REPORT_TRADE_DATE1 = "20251231"  # 报告期1交易日
+REPORT_PERIOD1 = "20241231"  # 报告期1（基准期）
+REPORT_TRADE_DATE1 = "20260331"  # 报告期1用于市值计算的交易日
+# REPORT_PERIOD2 = "20251231"  # 报告期2（对比期）
+# REPORT_TRADE_DATE2 = "20251231"  # 报告期2用于市值计算的交易日
 REPORT_PERIOD2 = "20260331"  # 报告期2（对比期）
-REPORT_TRADE_DATE2 = "20260331"  # 报告期2交易日
+REPORT_TRADE_DATE2 = "20260331"  # 报告期2用于市值计算的交易日
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
     # =========T0国家队=========
     # "中央汇金投资": 0.0,
     # "中央汇金资产": 1.0,
-    # "中国证券金融": 1.0,
+    "中国证券金融": 1.0,
     # "中国国新": 1.0,
     # "中国诚通": 1.0,
     # "中国信达资产": 1.0,
@@ -50,8 +52,8 @@ KEY_WORD_RATIO = {
     # "中国人寿保险(集团)公司-": 1.0,
 
     # =========T2新华险资=========
-    "国丰兴华": 0.5,
-    "新华人寿保险": 1.0,
+    # "国丰兴华": 0.5,
+    # "新华人寿保险": 1.0,
 
     # =========T2太保险资=========
     # "太保致远": 1.0,
@@ -229,7 +231,7 @@ def query_single_stock(ts_code: str, stock_name: str):
                 if keyword in holder_name:
                     match_ratio = ratio
                     break
-            if match_ratio:
+            if match_ratio is not None:
                 result[holder_name] = {
                     "hold_amount": int(row["hold_amount"]),
                     "hold_ratio": round(row["hold_ratio"], 2),
@@ -285,18 +287,21 @@ def query_single_stock(ts_code: str, stock_name: str):
                 pct = 0.0
             else:
                 pct = (hold2 - hold1) / hold1 * 100
-            pct_round = round(pct, 2)
 
-            # 判断增减并赋值排序权重
-            if hold2 > hold1:
-                change = f"增持(+{pct_round}%)"
-                rank = 1
-            elif hold2 < hold1:
-                change = f"减持({pct_round}%)"
-                rank = 3
-            else:
-                change = f"不变"
+            if abs(pct) < 0.01:
+                change = "不变"
                 rank = 2
+            else:
+                pct_round = round(pct, 2)
+                if hold2 > hold1:
+                    change = f"增持(+{pct_round}%)"
+                    rank = 1
+                elif hold2 < hold1:
+                    change = f"减持({pct_round}%)"
+                    rank = 3
+                else:
+                    change = "不变"
+                    rank = 2
 
             base.update({
                 "change_type": change,
@@ -354,7 +359,7 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{report1} → {report2} 机构持股变动统计表"
+    title_main = f"{report1} → {report2} 持股变动统计表"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -468,8 +473,8 @@ def query_top10_change():
     total_adj1 = round(sum(item["adjust_value1"] for item in match_results), 2)
     total_adj2 = round(sum(item["adjust_value2"] for item in match_results), 2)
 
-    print(f"{'股票代码':<7} {'变动类型':<10} {'股票名称':<8} "
-          f"{'期1持股(股)':<12} {'期1折算(亿)':<6} "
+    print(f"{'股票代码':<7} {'股票名称':<8} {'变动类型':<11}"
+          f"{'期1持股(股)':<11} {'期1折算(亿)':<6} "
           f"{'期2持股(股)':<11} {'期2折算(亿)':<6} "
           f"{'股东名称':<32}")
     print("-" * 210)
