@@ -15,6 +15,10 @@ INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
 INDEX_DATE = "20260331"  # 样本池成分股日期
 REPORT_PERIOD = "20260331"  # 报告期（缓存唯一标识）
 REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
+# INDEX_DATE = "20251231"  # 样本池成分股日期
+# REPORT_PERIOD = "20251231"  # 报告期（缓存唯一标识）
+# REPORT_TRADE_DATE = "20251231"  # 报告期最后一个交易日
+
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
