@@ -14,11 +14,9 @@ INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
 
 INDEX_DATE = "20260331"  # 样本池成分股日期
 REPORT_PERIOD = "20260331"  # 报告期（缓存唯一标识）
-REPORT_TRADE_DATE = "20260331"  # 报告期最后一个交易日
-# INDEX_DATE = "20251231"  # 样本池成分股日期
-# REPORT_PERIOD = "20251231"  # 报告期（缓存唯一标识）
-# REPORT_TRADE_DATE = "20251231"  # 报告期最后一个交易日
-
+REPORT_TRADE_DATE = "20260331"  # 日1：原报告期交易日
+NEW_TRADE_DATE = "20260511"  # 日2：对比的新交易日
+# ============================================================
 
 # 席位关键词-折算比例
 KEY_WORD_RATIO = {
@@ -199,18 +197,18 @@ def get_combined_stocks() -> dict:
     return combined_map
 
 
-def get_stock_close_price(stock_codes: list) -> dict:
-    """批量查询收盘价"""
+def get_stock_close_price(stock_codes: list, trade_date: str) -> dict:
+    """【修改】批量查询指定交易日的收盘价"""
     if not stock_codes:
         return {}
     try:
         df = pro.daily(
             ts_code=",".join(stock_codes),
-            trade_date=REPORT_TRADE_DATE
+            trade_date=trade_date
         )
         return df.set_index("ts_code")["close"].to_dict()
     except Exception as e:
-        print(f"⚠️  查询股价失败: {str(e)}")
+        print(f"⚠️  查询{trade_date}股价失败: {str(e)}")
         os._exit(-1)
 
 
@@ -271,47 +269,72 @@ def query_top10():
             if stock_result:
                 match_results.extend(stock_result)
 
-    # 股价计算（原有逻辑）
+    # 股价计算（原有逻辑 + 新增新交易日股价）
     if match_results:
         match_stock_codes = [item["ts_code"] for item in match_results]
-        price_map = get_stock_close_price(match_stock_codes)
+        # 1. 查询原交易日收盘价
+        price_map = get_stock_close_price(match_stock_codes, REPORT_TRADE_DATE)
+        # 2. 【新增】查询新交易日收盘价
+        price_map_new = get_stock_close_price(match_stock_codes, NEW_TRADE_DATE)
 
         for item in match_results:
-            close = price_map.get(item["ts_code"], 0)
             hold_amount_val = item["hold_amount"]
             ratio = item["ratio"]
 
+            # 原交易日计算逻辑
+            close = price_map.get(item["ts_code"], 0)
             original_val = round(hold_amount_val * close / 100000000, 2) if close > 0 else 0
             adjust_val = round(original_val * ratio, 2)
 
-            item["original_value"] = original_val
-            item["adjust_value"] = adjust_val
+            # 【新增】新交易日计算逻辑
+            close_new = price_map_new.get(item["ts_code"], 0)
+            original_val_new = round(hold_amount_val * close_new / 100000000, 2) if close_new > 0 else 0
+            adjust_val_new = round(original_val_new * ratio, 2)
+
+            # 存入数据
+            item["original_value"] = original_val    # 日1原始持仓
+            item["adjust_value"] = adjust_val        # 日1折算持仓
+            item["adjust_value_new"] = adjust_val_new# 日2折算持仓
 
     # 输出结果
-    print("\n" + "=" * 150)
+    print("\n" + "=" * 200)
     print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配席位")
-    print("=" * 150)
+    print("=" * 200)
 
     if not match_results:
         print(f"未查询到包含「{keyword_str}」的股东数据")
         save_raw_cache(RAW_CACHE)
         return
 
+    # 汇总计算
     total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
+    # 【新增】新交易日总折算持仓
+    total_adjust_value_new = round(sum(item["adjust_value_new"] for item in match_results), 2)
+    # 【新增】差值计算
+    total_diff = round(total_adjust_value_new - total_adjust_value, 2)
 
-    print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<15} {'持股比例(%)':<6} "
-          f"{'原始持仓(亿)':<8} {'折算持仓(亿)':<8} {'股东名称':<32}")
-    print("-" * 150)
+    # ====================== 核心修改：新增日1原始持仓列表头 ======================
+    print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<13} {'持股比例(%)':<5} "
+          f"{'日1原始持仓(亿)':<9} {'日1折算持仓(亿)':<9} {'日2折算持仓(亿)':<9} {'股东名称':<32}")
+    print("-" * 200)
     for item in match_results:
         print(f"{item['ts_code']:<10} "
               f"{item['stock_name']:<8} "
-              f"{item['hold_amount']:<20} "
+              f"{item['hold_amount']:<18} "
               f"{item['hold_ratio']:<10} "
-              f"{item['original_value']:<12} "
-              f"{item['adjust_value']:<12} "
+              f"{item['original_value']:<14} "
+              f"{item['adjust_value']:<14} "
+              f"{item['adjust_value_new']:<14} "
               f"{item['holder_name']:<32}")
-    print("-" * 150)
-    print(f"【折算后总持仓(亿)】{total_adjust_value}")
+    # ==========================================================================
+    print("-" * 200)
+    print(f"【{REPORT_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value}")
+    print(f"【{NEW_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value_new}")
+    print(f"【公允价值变动(亿)】{total_diff}")
+    if total_adjust_value > 0:
+        print(f"【收益率】{round(total_diff / total_adjust_value * 100, 2)}%")
+    else:
+        print(f"【收益率】0.00%")
 
     # 最终：将所有缓存的原始数据持久化到文件
     save_raw_cache(RAW_CACHE)
