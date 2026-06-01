@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import threading
@@ -6,6 +7,7 @@ import tushare as ts
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from PIL import Image, ImageDraw, ImageFont
 
 # ===================== 核心配置 =====================
 INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
@@ -15,7 +17,7 @@ INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
 INDEX_DATE = "20260331"  # 样本池成分股日期
 REPORT_PERIOD = "20260331"  # 报告期（缓存唯一标识）
 REPORT_TRADE_DATE = "20260331"  # 日1：原报告期交易日
-NEW_TRADE_DATE = "20260527"  # 日2：对比的新交易日
+NEW_TRADE_DATE = "20260529"  # 日2：对比的新交易日
 # REPORT_TRADE_DATE = "20251231"  # 日1：原报告期交易日
 # NEW_TRADE_DATE = "20260331"  # 日2：对比的新交易日
 # ============================================================
@@ -53,7 +55,7 @@ KEY_WORD_RATIO = {
     "国丰兴华": 0.5,
     "新华人寿保险股份有限公司-分红": 1.0,
     "新华人寿保险股份有限公司-传统": 1.0,
-    "新华人寿保险股份有限公司-自有资金": 0.0,
+    "新华人寿保险股份有限公司-自有资金": 1.0,
 
     # =========T2太保险资=========
     # "太保致远": 1.0,
@@ -70,6 +72,10 @@ MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
 MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
 # 缓存文件：存储【Tushare原始接口数据】
 CACHE_FILE = "tushare_top10_holders_raw.json"
+# 输出图片文件名
+OUTPUT_IMAGE_FILE = f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}.png"
+# 新增：汇总版图片文件名（不带表格数据）
+OUTPUT_SUMMARY_IMAGE_FILE = f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_汇总版.png"
 # ====================================================
 
 # 初始化Tushare接口
@@ -243,6 +249,170 @@ def query_single_stock(ts_code: str, stock_name: str):
     return match_list
 
 
+def generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate):
+    """生成与命令行一致的股票组合收益UI表格图片，标题含关键词+折算比例"""
+    # 基础样式配置
+    PADDING = 10
+    ROW_HEIGHT = 30
+    FONT_SIZE = 14
+    HEADER_FONT_SIZE = 16
+    # 适配当前数据的列宽
+    COL_WIDTHS = [100, 80, 140, 100, 120, 120, 120, 400]
+    COL_NAMES = [
+        "股票代码", "股票名称", "持股数量(股)", "持股比例(%)",
+        "日1原始持仓(亿)", "日1折算持仓(亿)", "日2折算持仓(亿)", "股东名称"
+    ]
+
+    # 拼接关键词+折算比例文本
+    ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
+
+    # 计算画布尺寸（标题+关键词说明+表头+数据行+分隔线+4行汇总信息）
+    total_rows = len(match_results) + 6
+    img_width = sum(COL_WIDTHS) + 2 * PADDING
+    img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
+
+    # 创建白色背景画布
+    img = Image.new("RGB", (img_width, img_height), "white")
+    draw = ImageDraw.Draw(img)
+
+    # 跨系统字体兼容
+    try:
+        if sys.platform.startswith("win"):
+            font = ImageFont.truetype("msyh.ttc", FONT_SIZE)
+            header_font = ImageFont.truetype("msyh.ttc", HEADER_FONT_SIZE)
+        elif sys.platform.startswith("darwin"):
+            font = ImageFont.truetype("Arial Unicode.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("Arial Unicode.ttf", HEADER_FONT_SIZE)
+        else:
+            font = ImageFont.truetype("DejaVuSans.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("DejaVuSans.ttf", HEADER_FONT_SIZE)
+    except:
+        # 兜底默认字体
+        font = ImageFont.load_default()
+        header_font = ImageFont.load_default()
+
+    # 第一行大标题
+    x, y = PADDING, PADDING
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计"
+    draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
+    y += ROW_HEIGHT
+
+    # 第二行：关键词+折算比例说明
+    title_sub = f"筛选关键词及折算比例：{ratio_text}"
+    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    y += ROW_HEIGHT
+
+    # 绘制表头
+    x = PADDING
+    for i, name in enumerate(COL_NAMES):
+        draw.text((x + 5, y + 5), name, font=header_font, fill="#3498db")
+        x += COL_WIDTHS[i]
+    y += ROW_HEIGHT
+
+    # 绘制分隔线
+    draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
+    y += 8
+
+    # 绘制数据行
+    for item in match_results:
+        x = PADDING
+        row_data = [
+            item['ts_code'],
+            item['stock_name'],
+            f"{item['hold_amount']:,}",  # 千分位格式化
+            f"{item['hold_ratio']:.2f}",
+            f"{item['original_value']:.2f}",
+            f"{item['adjust_value']:.2f}",
+            f"{item['adjust_value_new']:.2f}",
+            item['holder_name']
+        ]
+        for i, data in enumerate(row_data):
+            draw.text((x + 5, y + 5), str(data), font=font, fill="#2c3e50")
+            x += COL_WIDTHS[i]
+        y += ROW_HEIGHT
+
+    # 绘制底部分隔线
+    draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
+    y += 15
+
+    # 绘制总计信息（与控制台完全一致）
+    draw.text((PADDING, y), f"【{REPORT_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【{NEW_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value_new:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【公允价值变动(亿)】{total_diff:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【收益率】{return_rate:.2f}%", font=font, fill="#e74c3c")
+
+    # 保存图片
+    img.save(OUTPUT_IMAGE_FILE)
+    print(f"\n✅ 完整表格图片生成完成：{OUTPUT_IMAGE_FILE}")
+
+
+def generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate):
+    """生成只显示汇总信息的图片（不带表格数据），样式与完整图片完全一致"""
+    # 基础样式配置（与完整图片保持完全一致）
+    PADDING = 10
+    ROW_HEIGHT = 30
+    FONT_SIZE = 14
+    HEADER_FONT_SIZE = 16
+
+    # 拼接关键词+折算比例文本
+    ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
+
+    # 计算画布尺寸（标题+关键词说明+分隔线+4行汇总信息）
+    img_width = 1000  # 固定宽度，与完整图片比例协调
+    img_height = 6 * ROW_HEIGHT + 2 * PADDING
+
+    # 创建白色背景画布
+    img = Image.new("RGB", (img_width, img_height), "white")
+    draw = ImageDraw.Draw(img)
+
+    # 跨系统字体兼容（与完整图片保持完全一致）
+    try:
+        if sys.platform.startswith("win"):
+            font = ImageFont.truetype("msyh.ttc", FONT_SIZE)
+            header_font = ImageFont.truetype("msyh.ttc", HEADER_FONT_SIZE)
+        elif sys.platform.startswith("darwin"):
+            font = ImageFont.truetype("Arial Unicode.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("Arial Unicode.ttf", HEADER_FONT_SIZE)
+        else:
+            font = ImageFont.truetype("DejaVuSans.ttf", FONT_SIZE)
+            header_font = ImageFont.truetype("DejaVuSans.ttf", HEADER_FONT_SIZE)
+    except:
+        # 兜底默认字体
+        font = ImageFont.load_default()
+        header_font = ImageFont.load_default()
+
+    # 第一行大标题（与完整图片完全一致）
+    x, y = PADDING, PADDING
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计"
+    draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
+    y += ROW_HEIGHT
+
+    # 第二行：关键词+折算比例说明（与完整图片完全一致）
+    title_sub = f"筛选关键词及折算比例：{ratio_text}"
+    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    y += ROW_HEIGHT
+
+    # 绘制分隔线（与完整图片完全一致）
+    draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
+    y += 15
+
+    # 绘制总计信息（与完整图片完全一致）
+    draw.text((PADDING, y), f"【{REPORT_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【{NEW_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value_new:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【公允价值变动(亿)】{total_diff:.2f}", font=font, fill="#e74c3c")
+    y += ROW_HEIGHT
+    draw.text((PADDING, y), f"【收益率】{return_rate:.2f}%", font=font, fill="#e74c3c")
+
+    # 保存汇总版图片
+    img.save(OUTPUT_SUMMARY_IMAGE_FILE)
+    print(f"✅ 汇总版图片生成完成：{OUTPUT_SUMMARY_IMAGE_FILE}")
+
+
 def query_top10():
     """主查询函数"""
     stock_map = get_combined_stocks()
@@ -314,6 +484,11 @@ def query_top10():
     total_adjust_value_new = round(sum(item["adjust_value_new"] for item in match_results), 2)
     # 【新增】差值计算
     total_diff = round(total_adjust_value_new - total_adjust_value, 2)
+    # 计算收益率
+    if total_adjust_value > 0:
+        return_rate = round(total_diff / total_adjust_value * 100, 2)
+    else:
+        return_rate = 0.00
 
     # ====================== 核心修改：新增日1原始持仓列表头 ======================
     print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<13} {'持股比例(%)':<5} "
@@ -333,10 +508,11 @@ def query_top10():
     print(f"【{REPORT_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value}")
     print(f"【{NEW_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value_new}")
     print(f"【公允价值变动(亿)】{total_diff}")
-    if total_adjust_value > 0:
-        print(f"【收益率】{round(total_diff / total_adjust_value * 100, 2)}%")
-    else:
-        print(f"【收益率】0.00%")
+    print(f"【收益率】{return_rate}%")
+
+    # 生成两张图片：完整表格版 + 汇总版
+    generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
+    generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate)
 
     # 最终：将所有缓存的原始数据持久化到文件
     save_raw_cache(RAW_CACHE)
