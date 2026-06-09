@@ -53,6 +53,8 @@ KEY_WORD_RATIO = {
 
     # =========T2新华险资=========
     "国丰兴华": 0.5,
+    "新华资管": 1.0,
+    "新华养老": 1.0,
     "新华人寿保险股份有限公司-分红": 1.0,
     "新华人寿保险股份有限公司-传统": 1.0,
     "新华人寿保险股份有限公司-自有资金": 1.0,
@@ -361,7 +363,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
 
     # 计算画布尺寸（标题+关键词说明+分隔线+4行汇总信息）
-    img_width = 1000  # 固定宽度，与完整图片比例协调
+    img_width = 1200  # 固定宽度，与完整图片比例协调
     img_height = 6 * ROW_HEIGHT + 2 * PADDING
 
     # 创建白色背景画布
