@@ -1,8 +1,15 @@
 from typing import Generator
-from config import DB_MYSQL_URL
 from sqlalchemy import create_engine
 from contextlib import contextmanager
 from sqlalchemy.orm import sessionmaker, Session
+from vnpy.trader.setting import SETTINGS
+
+# 数据库连接参数统一从 vnpy 全局配置动态获取（~/.vntrader/vt_setting.json 中的 database.* 字段）
+DB_MYSQL_URL = (
+    f"mysql+pymysql://{SETTINGS['database.user']}:{SETTINGS['database.password']}"
+    f"@{SETTINGS['database.host']}:{SETTINGS['database.port']}/{SETTINGS['database.database']}"
+    "?charset=utf8mb4"
+)
 
 # 创建数据库引擎
 database_engine = create_engine(

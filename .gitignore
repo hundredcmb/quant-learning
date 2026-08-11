@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# 运行产物（原始数据缓存与生成的图片）
+output/
+
+# Tushare 官方 skills（第三方仓库，已克隆到本地使用，不随本项目提交）
+skills/

@@ -72,7 +72,14 @@ KEY_WORD_RATIO = {
 
 MAX_WORKERS = 5  # 并发数
 MAX_REQUESTS_PER_MINUTE = 180  # 限流
-CACHE_FILE = "tushare_top10_holders_raw.json"
+# 输出目录：生成的图片统一输出到仓库根目录的 output/（已在 .gitignore 中忽略）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+# 缓存文件：存储【Tushare原始接口数据】（保持在脚本目录 holders/ 下，随仓库提交，请勿删除）
+CACHE_FILE = os.path.join(BASE_DIR, "tushare_top10_holders_raw.json")
+# 输出图片文件名
+OUTPUT_TABLE_IMAGE_FILE = os.path.join(OUTPUT_DIR, "持股变动表格.png")
 # ====================================================
 
 # 初始化Tushare接口
@@ -491,8 +498,8 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
     draw.text((PADDING, y), f"【持仓变动(亿)】{total_change}", font=font, fill="#e74c3c")
 
     # 保存图片
-    img.save("持股变动表格.png")
-    print("\n✅ UI表格图片生成完成：持股变动表格.png")
+    img.save(OUTPUT_TABLE_IMAGE_FILE)
+    print(f"\n✅ UI表格图片生成完成：{OUTPUT_TABLE_IMAGE_FILE}")
 
 
 # ================================================================

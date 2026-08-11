@@ -70,8 +70,12 @@ KEY_WORD_RATIO = {
 
 MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
 MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
-# 缓存文件：存储【Tushare原始接口数据】
-CACHE_FILE = "tushare_top10_holders_raw.json"
+# 输出目录：生成的图片统一输出到仓库根目录的 output/（已在 .gitignore 中忽略）
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+# 缓存文件：存储【Tushare原始接口数据】（保持在脚本目录 holders/ 下，随仓库提交，请勿删除）
+CACHE_FILE = os.path.join(BASE_DIR, "tushare_top10_holders_raw.json")
 # ====================================================
 
 # 初始化Tushare接口
