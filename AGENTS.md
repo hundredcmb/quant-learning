@@ -26,6 +26,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | --- | --- |
 | `config.py` | 仅提供全局 `logger`（配置统一从 vnpy `SETTINGS` 动态获取，无环境变量） |
 | `database/session.py` | SQLAlchemy 引擎与 `db_session` 上下文管理器（自动提交/回滚/关闭），另有 FastAPI 风格 `get_db` |
+| `holders/tushare_client.py` | 公共模块：Tushare token、原始数据缓存、限流、指数成分股、收盘价、单报告期关键词筛选、并发查询 |
 | `holders/top10_holders_value.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
 | `holders/top10_holders_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
 | `holders/top10_holders_change_merged.py` | 同 top10_holders_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
@@ -69,8 +70,8 @@ python vnpy_examples/06_ma_strategy.py
 
 ### 十大股东分析（holders/）
 
-- 四个脚本是同一套代码演化出的变体，存在大量复制粘贴，改动公共逻辑（限流、缓存、指数成分股获取）时要检查所有脚本
-- `KEY_WORD_RATIO` 是“席位关键词 -> 折算比例”，按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组；启用或停用关键词通过注释切换，注意保持各脚本一致
+- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑；修改公共逻辑只改 `tushare_client.py` 一处即可
+- `KEY_WORD_RATIO` 是“席位关键词 -> 折算比例”，按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `tushare_client.py` 中配置（改一处即可）；如需某脚本单独调整，可在该脚本 import 后重新定义覆盖
 - 生成的图片输出到仓库根目录 `output/`（已 gitignore）；缓存文件保持在 `holders/tushare_top10_holders_raw.json`（已提交进仓库，请勿删除），缓存结构为 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据、不含业务处理；修改业务逻辑时优先复用缓存，不要改变该结构
 - 十大股东接口（如 `top10_holders`）至少需要 2000 Tushare 积分才有权限调用；低于 2000 积分时没有任何接口权限，只能使用仓库缓存分析其中已包含的数据（覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后）
 - 接口失败时脚本会 `save_raw_cache()` 后 `os._exit(-1)` 退出；Tushare 有限流，默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
