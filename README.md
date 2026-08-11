@@ -25,12 +25,17 @@ quant-learning/
 ├── database/
 │   └── session.py             # SQLAlchemy 引擎与 db_session 上下文管理器
 ├── holders/
-│   ├── tushare_client.py              # 公共模块：Tushare 客户端、缓存、限流、并发查询
-│   ├── top10_holders_value.py         # 十大股东关键词筛选 + 持仓市值统计（单报告期）
-│   ├── top10_holders_change.py        # 双报告期持股变动对比
-│   ├── top10_holders_change_merged.py # 双报告期持股变动（同股多席位合并统计）
-│   ├── top10_return_between_dates.py  # 两交易日公允价值变动 + 收益率，生成图片报表
-│   └── tushare_top10_holders_raw.json # Tushare 原始数据缓存（脚本共用，随仓库提交）
+│   ├── stock/                          # 股票十大股东
+│   │   ├── tushare_client.py           # 公共模块：Tushare 客户端、缓存、限流、并发查询
+│   │   ├── top10_holders_value.py      # 十大股东关键词筛选 + 持仓市值统计（单报告期）
+│   │   ├── top10_holders_change.py     # 双报告期持股变动对比
+│   │   ├── top10_holders_change_merged.py  # 双报告期持股变动（同股多席位合并统计）
+│   │   ├── top10_return_between_dates.py   # 两交易日公允价值变动 + 收益率，生成图片报表
+│   │   └── tushare_top10_holders_raw.json  # Tushare 原始数据缓存（随仓库提交）
+│   └── etf/                            # ETF 十大持有人
+│       ├── import_etf_data.py          # 从 Excel 导入 ETF 基础信息 + 十大持有人
+│       ├── etf_top10_holders_raw.json  # 持有人缓存（结构与股票缓存一致）
+│       └── etf_basic.json              # ETF 基础信息缓存（代码、名称、成立日）
 ├── output/                    # 运行产物（生成的图片，已 gitignore）
 ├── shenwan_industry/
 │   ├── classification.py      # 申万行业树构建与行业涨幅排名
@@ -127,16 +132,16 @@ skills 中包含完整的数据接口文档（`skills/tushare/references/数据�
 
 在指定样本池（默认中证 800 + 中证 1000）中，按 `KEY_WORD_RATIO` 配置的席位关键词筛选十大股东，并按折算比例估算持仓市值（单位：亿元）。
 
-> **Tushare 积分要求**：十大股东相关接口（如 `top10_holders`）有积分门槛，**至少需要 2000 积分才有权限调用**。积分低于 2000 时**没有任何接口权限**，只能使用仓库自带的缓存文件 `holders/tushare_top10_holders_raw.json` 分析缓存中已包含的数据。该缓存针对样本池 **中证 800 + 中证 1000 成分股**（约 1800 只），完整覆盖 **2025 年年报（`20251231`）及以后**（如 `20260331`）。
+> **Tushare 积分要求**：十大股东相关接口（如 `top10_holders`）有积分门槛，**至少需要 2000 积分才有权限调用**。积分低于 2000 时**没有任何接口权限**，只能使用仓库自带的缓存文件 `holders/stock/tushare_top10_holders_raw.json` 分析缓存中已包含的数据。该缓存针对样本池 **中证 800 + 中证 1000 成分股**（约 1800 只），完整覆盖 **2025 年年报（`20251231`）及以后**（如 `20260331`）。
 
 | 脚本 | 功能 | 输出 |
 | --- | --- | --- |
-| `holders/top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
-| `holders/top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
-| `holders/top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
-| `holders/top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
+| `holders/stock/top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
+| `holders/stock/top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
+| `holders/stock/top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
+| `holders/stock/top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
 
-运行前可在脚本顶部“核心配置”区修改样本池指数、报告期、交易日和关键词。公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存仍保存在 `holders/tushare_top10_holders_raw.json`（随仓库提交，请勿删除，全量重新拉取受限流影响很慢）。
+运行前可在脚本顶部“核心配置”区修改样本池指数、报告期、交易日和关键词。公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存仍保存在 `holders/stock/tushare_top10_holders_raw.json`（随仓库提交，请勿删除，全量重新拉取受限流影响很慢）。
 
 ### 2. 申万行业涨幅
 
@@ -166,8 +171,8 @@ C:\veighna_studio\python.exe vnpy_examples\06_ma_strategy.py
 ## 重要说明
 
 - **Tushare 限流**：脚本内置每分钟请求数限制（默认 180）和线程并发控制（默认 5，上限 20）。接口失败时会先保存缓存再退出，请根据账号权限调整 `MAX_REQUESTS_PER_MINUTE` 和 `MAX_WORKERS`
-- **数据缓存**：`holders/tushare_top10_holders_raw.json` 是 Tushare 原始接口数据的本地缓存（约 8 MB，随仓库提交），结构为 `{报告期: {股票代码: [原始记录]}}`，覆盖 **中证 800 + 中证 1000 成分股** 的 **2025 年年报及以后**（积分低于 2000 时没有接口权限，只能使用该缓存，见上文）。已有缓存会优先使用，避免重复请求；请勿删除该文件（全量重新拉取受 Tushare 限流影响非常慢）。生成的图片输出到 `output/` 目录，已加入 `.gitignore`
-- **关键词切换**：`KEY_WORD_RATIO` 按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `holders/tushare_client.py` 中配置，启用或停用关键词通过注释切换，修改一处即可；如需某个脚本单独使用不同关键词，可在该脚本内重新定义覆盖
+- **数据缓存**：`holders/stock/tushare_top10_holders_raw.json` 是 Tushare 原始接口数据的本地缓存（约 8 MB，随仓库提交），结构为 `{报告期: {股票代码: [原始记录]}}`，覆盖 **中证 800 + 中证 1000 成分股** 的 **2025 年年报及以后**（积分低于 2000 时没有接口权限，只能使用该缓存，见上文）。已有缓存会优先使用，避免重复请求；请勿删除该文件（全量重新拉取受 Tushare 限流影响非常慢）。生成的图片输出到 `output/` 目录，已加入 `.gitignore`
+- **关键词切换**：`KEY_WORD_RATIO` 按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `holders/stock/tushare_client.py` 中配置，启用或停用关键词通过注释切换，修改一处即可；如需某个脚本单独使用不同关键词，可在该脚本内重新定义覆盖
 - **信息安全**：`~/.vntrader/vt_setting.json` 中包含 Tushare token 与数据库密码，切勿提交到 git。本项目已弃用 `.env` 环境变量，所有配置统一从 vnpy 全局配置读取
 - **编码**：所有代码和文本均为 UTF-8，Windows 下用编辑器或脚本读写中文时请注意编码
 

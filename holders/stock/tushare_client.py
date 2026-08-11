@@ -24,7 +24,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "tushare_top10_holders_raw.json")
 
 # 图片等运行产物统一输出到仓库根目录 output/（已在 .gitignore 中忽略）
-OUTPUT_DIR = os.path.join(os.path.dirname(BASE_DIR), "output")
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20

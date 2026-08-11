@@ -26,12 +26,17 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | --- | --- |
 | `config.py` | 仅提供全局 `logger`（配置统一从 vnpy `SETTINGS` 动态获取，无环境变量） |
 | `database/session.py` | SQLAlchemy 引擎与 `db_session` 上下文管理器（自动提交/回滚/关闭），另有 FastAPI 风格 `get_db` |
-| `holders/tushare_client.py` | 公共模块：Tushare token、原始数据缓存、限流、指数成分股、收盘价、单报告期关键词筛选、并发查询 |
-| `holders/top10_holders_value.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
-| `holders/top10_holders_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
-| `holders/top10_holders_change_merged.py` | 同 top10_holders_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
-| `holders/top10_return_between_dates.py` | 单报告期、两个交易日（`REPORT_TRADE_DATE` vs `NEW_TRADE_DATE`）的公允价值变动与收益率，生成完整表格 + 汇总两张 PNG |
-| `holders/tushare_top10_holders_raw.json` | Tushare 原始数据缓存（约 8 MB，已提交进仓库，请勿删除；覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后） |
+| `holders/stock/tushare_client.py` | 股票公共模块：Tushare token、原始数据缓存、限流、指数成分股、收盘价、单报告期关键词筛选、并发查询 |
+| `holders/stock/top10_holders_value.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
+| `holders/stock/top10_holders_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
+| `holders/stock/top10_holders_change_merged.py` | 同 top10_holders_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
+| `holders/stock/top10_return_between_dates.py` | 单报告期、两个交易日（`REPORT_TRADE_DATE` vs `NEW_TRADE_DATE`）的公允价值变动与收益率，生成完整表格 + 汇总两张 PNG |
+| `holders/stock/tushare_top10_holders_raw.json` | Tushare 原始数据缓存（约 8 MB，已提交进仓库，请勿删除；覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后） |
+| `holders/etf/import_etf_data.py` | ETF 数据导入脚本：从 Excel 导入 ETF 基础信息与十大持有人到 `holders/etf/etf_top10_holders_raw.json` 和 `holders/etf/etf_basic.json`，支持冲突策略 `--on-conflict overwrite/keep` |
+| `holders/etf/etf_top10_holders_raw.json` | ETF 持有人缓存（结构与股票缓存一致） |
+| `holders/etf/etf_basic.json` | ETF 基础信息缓存（代码、名称、成立日） |
+| `holders/etf/README.md` | ETF 模块说明：Excel 导入格式、缓存结构、更新流程 |
+| `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（已被 gitignore，不入库） |
 | `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
 | `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交） |
 | `shenwan_industry/classification.py` | `ShenWanIndustryTree`：行业树构建、成分股加载、等权/流通市值加权涨幅排名 |
@@ -42,10 +47,10 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 ```bash
 # 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
-python holders/top10_holders_value.py
-python holders/top10_holders_change.py
-python holders/top10_holders_change_merged.py
-python holders/top10_return_between_dates.py
+python holders/stock/top10_holders_value.py
+python holders/stock/top10_holders_change.py
+python holders/stock/top10_holders_change_merged.py
+python holders/stock/top10_return_between_dates.py
 
 # 申万行业涨幅示例
 python shenwan_industry/classification.py
@@ -70,12 +75,20 @@ python vnpy_examples/06_ma_strategy.py
 
 ### 十大股东分析（holders/）
 
-- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑；修改公共逻辑只改 `tushare_client.py` 一处即可
+- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑；修改公共逻辑只改 `tushare_client.py` 一处即可
 - `KEY_WORD_RATIO` 是“席位关键词 -> 折算比例”，按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `tushare_client.py` 中配置（改一处即可）；如需某脚本单独调整，可在该脚本 import 后重新定义覆盖
-- 生成的图片输出到仓库根目录 `output/`（已 gitignore）；缓存文件保持在 `holders/tushare_top10_holders_raw.json`（已提交进仓库，请勿删除），缓存结构为 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据、不含业务处理；修改业务逻辑时优先复用缓存，不要改变该结构
+- 生成的图片输出到仓库根目录 `output/`（已 gitignore）；缓存文件保持在 `holders/stock/tushare_top10_holders_raw.json`（已提交进仓库，请勿删除），缓存结构为 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据、不含业务处理；修改业务逻辑时优先复用缓存，不要改变该结构
 - 十大股东接口（如 `top10_holders`）至少需要 2000 Tushare 积分才有权限调用；低于 2000 积分时没有任何接口权限，只能使用仓库缓存分析其中已包含的数据（覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后）
 - 接口失败时脚本会 `save_raw_cache()` 后 `os._exit(-1)` 退出；Tushare 有限流，默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
 - 缓存 JSON 约 8 MB 且已提交进仓库，避免无谓地让缓存文件进一步膨胀
+
+### 股票与 ETF 十大持有人（严格区分）
+
+- **数据来源不同**：A 股股票的十大持有人可通过 Tushare 接口获取（也可以查询缓存）；**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入到缓存中
+- **代码格式相同但概念不同**：股票和 ETF 都是六位代码，但属于不同标的类型，开发和处理数据时不要混淆，务必严格区分股票与 ETF
+- **更新周期不同**：A 股 ETF 的十大持有人一年只更新两次（半年报 + 年报）；股票一年四个财报期都会公布
+- **当前阶段不从 Tushare 获取任何 ETF 数据**：由于 ETF 十大持有人信息依赖手动导入缓存，ETF 相关的所有数据——包括基础信息（代码、名称、成立日等）——一律只从缓存读取，不调用 Tushare 的基金/ETF 接口（如 `fund_basic`、`fund_daily` 等）
+- **ETF 数据缓存文件**：持有人缓存 `holders/etf/etf_top10_holders_raw.json`（结构与股票缓存完全一致：`{报告期: {代码: [{ts_code, holder_name, hold_amount(份), hold_ratio(%), rank}]}}`，rank 是 Excel 模板额外的排名字段）；基础信息缓存 `holders/etf/etf_basic.json`（`{代码: {name, found_date}}`）；均由 `holders/etf/import_etf_data.py` 从 Excel 导入维护，`hold_amount` 已统一为“份”（Excel 中为“亿份”）
 
 ### Tushare 数据获取
 
