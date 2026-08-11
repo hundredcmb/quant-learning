@@ -26,10 +26,10 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | --- | --- |
 | `config.py` | 仅提供全局 `logger`（配置统一从 vnpy `SETTINGS` 动态获取，无环境变量） |
 | `database/session.py` | SQLAlchemy 引擎与 `db_session` 上下文管理器（自动提交/回滚/关闭），另有 FastAPI 风格 `get_db` |
-| `holders/top10.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
-| `holders/top10_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
-| `holders/top10_change1.py` | 同 top10_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
-| `holders/top10_position_diff.py` | 单报告期、两个交易日（`REPORT_TRADE_DATE` vs `NEW_TRADE_DATE`）的公允价值变动与收益率，生成完整表格 + 汇总两张 PNG |
+| `holders/top10_holders_value.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
+| `holders/top10_holders_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
+| `holders/top10_holders_change_merged.py` | 同 top10_holders_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
+| `holders/top10_return_between_dates.py` | 单报告期、两个交易日（`REPORT_TRADE_DATE` vs `NEW_TRADE_DATE`）的公允价值变动与收益率，生成完整表格 + 汇总两张 PNG |
 | `holders/tushare_top10_holders_raw.json` | Tushare 原始数据缓存（约 8 MB，已提交进仓库，请勿删除；覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后） |
 | `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
 | `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交） |
@@ -41,10 +41,10 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 ```bash
 # 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
-python holders/top10.py
-python holders/top10_change.py
-python holders/top10_change1.py
-python holders/top10_position_diff.py
+python holders/top10_holders_value.py
+python holders/top10_holders_change.py
+python holders/top10_holders_change_merged.py
+python holders/top10_return_between_dates.py
 
 # 申万行业涨幅示例
 python shenwan_industry/classification.py

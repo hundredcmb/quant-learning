@@ -25,10 +25,10 @@ quant-learning/
 ├── database/
 │   └── session.py             # SQLAlchemy 引擎与 db_session 上下文管理器
 ├── holders/
-│   ├── top10.py               # 十大股东关键词筛选 + 持仓市值统计（单报告期）
-│   ├── top10_change.py        # 双报告期持股变动对比
-│   ├── top10_change1.py       # 同 top10_change，支持同股多席位合并
-│   ├── top10_position_diff.py # 两交易日公允价值变动 + 收益率，生成图片报表
+│   ├── top10_holders_value.py         # 十大股东关键词筛选 + 持仓市值统计（单报告期）
+│   ├── top10_holders_change.py        # 双报告期持股变动对比
+│   ├── top10_holders_change_merged.py # 双报告期持股变动（同股多席位合并统计）
+│   ├── top10_return_between_dates.py  # 两交易日公允价值变动 + 收益率，生成图片报表
 │   └── tushare_top10_holders_raw.json  # Tushare 原始数据缓存（脚本共用，随仓库提交）
 ├── output/                    # 运行产物（生成的图片，已 gitignore）
 ├── shenwan_industry/
@@ -107,7 +107,7 @@ C:\veighna_studio\python.exe -m pip install -r requirements.txt
 所有脚本都用 vnpy 自带 Python 运行，例如：
 
 ```powershell
-C:\veighna_studio\python.exe holders\top10.py
+C:\veighna_studio\python.exe holders\top10_holders_value.py
 ```
 
 ## 使用 AI Agent 开发
@@ -130,10 +130,10 @@ skills 中包含完整的数据接口文档（`skills/tushare/references/数据�
 
 | 脚本 | 功能 | 输出 |
 | --- | --- | --- |
-| `holders/top10.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
-| `holders/top10_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
-| `holders/top10_change1.py` | 同 top10_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
-| `holders/top10_position_diff.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
+| `holders/top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
+| `holders/top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
+| `holders/top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
+| `holders/top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
 
 运行前可在脚本顶部“核心配置”区修改样本池指数、报告期、交易日和关键词。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存仍保存在 `holders/tushare_top10_holders_raw.json`（随仓库提交，请勿删除，全量重新拉取受限流影响很慢）。
 
