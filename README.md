@@ -34,6 +34,11 @@ quant-learning/
 │   │   └── tushare_top10_holders_raw.json  # Tushare 原始数据缓存（随仓库提交）
 │   └── etf/                            # ETF 十大持有人
 │       ├── import_etf_data.py          # 从 Excel 导入 ETF 基础信息 + 十大持有人
+│       ├── etf_client.py               # 公共模块：缓存读取 + 日线直查（fund_daily）
+│       ├── etf_top10_holders_value.py  # 单报告期筛选 + 份额/市值统计
+│       ├── etf_top10_holders_change.py # 双报告期份额变动对比
+│       ├── etf_top10_holders_change_merged.py  # 变动对比（同代码多席位合并）
+│       ├── etf_top10_return_between_dates.py  # 两交易日公允价值变动 + 收益率
 │       ├── etf_top10_holders_raw.json  # 持有人缓存（结构与股票缓存一致）
 │       └── etf_basic.json              # ETF 基础信息缓存（代码、名称、成立日）
 ├── output/                    # 运行产物（生成的图片，已 gitignore）
@@ -173,6 +178,7 @@ C:\veighna_studio\python.exe vnpy_examples\06_ma_strategy.py
 - **Tushare 限流**：脚本内置每分钟请求数限制（默认 180）和线程并发控制（默认 5，上限 20）。接口失败时会先保存缓存再退出，请根据账号权限调整 `MAX_REQUESTS_PER_MINUTE` 和 `MAX_WORKERS`
 - **数据缓存**：`holders/stock/tushare_top10_holders_raw.json` 是 Tushare 原始接口数据的本地缓存（约 8 MB，随仓库提交），结构为 `{报告期: {股票代码: [原始记录]}}`，覆盖 **中证 800 + 中证 1000 成分股** 的 **2025 年年报及以后**（积分低于 2000 时没有接口权限，只能使用该缓存，见上文）。已有缓存会优先使用，避免重复请求；请勿删除该文件（全量重新拉取受 Tushare 限流影响非常慢）。生成的图片输出到 `output/` 目录，已加入 `.gitignore`
 - **关键词切换**：`KEY_WORD_RATIO` 按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `holders/stock/tushare_client.py` 中配置，启用或停用关键词通过注释切换，修改一处即可；如需某个脚本单独使用不同关键词，可在该脚本内重新定义覆盖
+- **ETF 日线行情**：`fund_daily` 接口需要**至少 5000 Tushare 积分**，按 `trade_date` 一次请求拉全市场（`etf_client.get_daily_prices`），不建缓存、不做限流；低于 5000 积分无法拉取。ETF 十大持有人与基础信息仍只从缓存读取（手动导入）
 - **信息安全**：`~/.vntrader/vt_setting.json` 中包含 Tushare token 与数据库密码，切勿提交到 git。本项目已弃用 `.env` 环境变量，所有配置统一从 vnpy 全局配置读取
 - **编码**：所有代码和文本均为 UTF-8，Windows 下用编辑器或脚本读写中文时请注意编码
 

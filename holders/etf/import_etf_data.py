@@ -4,20 +4,30 @@ Excel 模板格式（单工作表，8 列）：
     证券代码 | 证券简称 | 基金成立日 | 年度 | 持有人排名 | 持有人名称 | 持有份额 亿 | 持有比例 %
 
 说明：
-- ETF 相关数据不从 Tushare 获取，全部以本脚本导入的缓存为准
+- ETF 十大持有人与基础信息不从 Tushare 获取，全部以本脚本导入的缓存为准
+- 代码兼容规则：基础信息缓存的 key 与持有人缓存记录的 ts_code 统一为**无后缀代码**（如 `159001`）；
+  Excel 原始代码（如 `159001.OF`）保存在基础信息 value 的 `import_code` 字段，
+  tushare 代码（如 `159001.SZ`）保存在 value 的 `ts_code` 字段（拉取日线数据时更新）
 - 持有人缓存默认 `holders/etf_top10_holders_raw.json`，结构与股票缓存
   `holders/tushare_top10_holders_raw.json` 完全一致：{报告期: {代码: [持有人记录]}}
     {
       "20251231": {
-        "159001.OF": [
-          {"ts_code": "159001.OF", "rank": 1, "holder_name": "...", "hold_amount": 560800, "hold_ratio": 3.8}
+        "159001": [
+          {"ts_code": "159001", "rank": 1, "holder_name": "...", "hold_amount": 560800, "hold_ratio": 3.8}
         ]
       }
     }
   记录字段与股票一致（ts_code / holder_name / hold_amount / hold_ratio），
   仅额外多一个 rank（Excel 模板中的持有人排名，便于展示与排序）
 - ETF 基础信息单独存放 `holders/etf_basic.json`：
-    { "159001.OF": {"name": "易方达保证金A", "found_date": "2013-03-29"} }
+    {
+      "159001": {
+        "name": "易方达保证金A",
+        "found_date": "2013-03-29",
+        "import_code": "159001.OF",
+        "ts_code": ""
+      }
+    }
   （股票基础信息走 Tushare 接口、无需缓存；ETF 基础信息按约定只从缓存读取，故单独成文件）
 - 持有份额在 Excel 中是“亿份”，导入时统一转换为“份”（hold_amount = 亿份 * 1e8），
   与股票缓存语义一致，后续市值计算可直接复用 hold_amount * close / 1e8
@@ -119,7 +129,7 @@ def save_cache(cache_file: str, data: dict) -> None:
 
 def build_from_excel(excel_path: str) -> tuple[dict, dict]:
     """解析 Excel，返回 (etf_basic, holders)：
-    etf_basic: {code: {"name": str, "found_date": str}}
+    etf_basic: {无后缀代码: {"name", "found_date", "import_code", "ts_code"}}
     holders:   {period: {code: [持有人记录列表]}}
     """
     df = pd.read_excel(excel_path)
@@ -135,7 +145,8 @@ def build_from_excel(excel_path: str) -> tuple[dict, dict]:
     skipped = 0
 
     for idx, row in df.iterrows():
-        code = str(row[COL_CODE]).strip()
+        code = str(row[COL_CODE]).strip()  # 导入格式代码，如 159001.OF
+        code_key = code.split(".")[0] if "." in code else code  # 无后缀代码，如 159001
         period = parse_period(row[COL_PERIOD])
         holder_name = str(row[COL_HOLDER]).strip()
 
@@ -144,15 +155,22 @@ def build_from_excel(excel_path: str) -> tuple[dict, dict]:
             continue
 
         # ETF 基础信息（同一代码重复出现时以最后一个非空为准）
+        # key = 无后缀代码；value 记录导入格式代码（导入时更新）与 tushare 代码（拉取日线时更新）
         name = str(row[COL_NAME]).strip() if pd.notna(row[COL_NAME]) else ""
         found_date = parse_date(row[COL_FOUND_DATE])
-        if code not in etf_basic:
-            etf_basic[code] = {"name": name, "found_date": found_date or ""}
+        if code_key not in etf_basic:
+            etf_basic[code_key] = {
+                "name": name,
+                "found_date": found_date or "",
+                "import_code": code,
+                "ts_code": "",
+            }
         else:
             if name:
-                etf_basic[code]["name"] = name
+                etf_basic[code_key]["name"] = name
             if found_date:
-                etf_basic[code]["found_date"] = found_date
+                etf_basic[code_key]["found_date"] = found_date
+            etf_basic[code_key]["import_code"] = code  # 导入时更新导入格式代码
 
         if not period or not holder_name:
             skipped += 1
@@ -175,15 +193,16 @@ def build_from_excel(excel_path: str) -> tuple[dict, dict]:
             skipped += 1
             continue
 
-        # 记录字段与股票缓存一致（ts_code/holder_name/hold_amount/hold_ratio），另含 rank
+        # 记录字段与股票缓存一致（ts_code/holder_name/hold_amount/hold_ratio），另含 rank；
+        # ts_code 为无后缀代码，与 tushare 代码的映射见 etf_basic.json
         record = {
-            "ts_code": code,
+            "ts_code": code_key,
             "rank": int(row[COL_RANK]),
             "holder_name": holder_name,
             "hold_amount": hold_amount,
             "hold_ratio": hold_ratio,
         }
-        holders.setdefault(period, {}).setdefault(code, []).append(record)
+        holders.setdefault(period, {}).setdefault(code_key, []).append(record)
 
     # 按排名排序（模板偶有不足 10 行的情况，保持原样）
     for period, code_map in holders.items():

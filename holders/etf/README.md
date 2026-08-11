@@ -1,15 +1,27 @@
 # ETF 十大持有人模块
 
-本目录为 A 股 ETF 的十大持有人分析模块。**ETF 相关数据全部手动维护，不从 Tushare 获取任何数据**（包括 ETF 基础信息），与股票模块（`../stock/`）严格区分。
+本目录为 A 股 ETF 的十大持有人分析模块。**ETF 十大持有人与基础信息全部手动维护、只从缓存读取**；**ETF 日线行情从 Tushare `fund_daily` 接口直接获取（至少需要 5000 积分），按交易日一次拉全市场，不建价格缓存、不做限流**。与股票模块（`../stock/`）严格区分。
 
 ## 目录说明
 
 | 文件 | 说明 |
 | --- | --- |
 | `import_etf_data.py` | 从 Excel 导入 ETF 基础信息 + 十大持有人到缓存的脚本 |
+| `etf_client.py` | 公共模块：只读持有人/基础信息缓存；日线直查（`fund_daily`）、`ts_code` 回填、后缀枚举 |
+| `etf_top10_holders_value.py` | 单报告期关键词筛选 + 份额/市值统计（对标股票 value） |
+| `etf_top10_holders_change.py` | 双报告期份额变动对比，生成表格图片（对标股票 change） |
+| `etf_top10_holders_change_merged.py` | 同 change，另含按代码合并多席位统计（对标股票 change_merged） |
+| `etf_top10_return_between_dates.py` | 两个交易日公允价值变动 + 收益率，生成表格/汇总图（对标股票 return_between_dates） |
 | `etf_top10_holders_raw.json` | 持有人缓存（结构与股票缓存一致） |
 | `etf_basic.json` | ETF 基础信息缓存（代码、名称、成立日） |
 | `etf_data_example.xlsx` | 本地 Excel 数据源（**不入库**，由 .gitignore 忽略） |
+
+## 日线行情获取
+
+- 接口：Tushare `fund_daily`（ETF 日线行情），**至少需要 5000 积分**，8000 积分频次更高
+- 按 `trade_date` **一次请求拉全市场** ETF 日线（实测 ~1800-2100 只，单次最多 5000 行），**不建缓存、不做限流**；也可按 `ts_code` 或日期区间获取单只历史（备用）
+- `etf_client.get_daily_prices(trade_date)` 返回 `{无后缀代码: close}`，并顺带把返回的 tushare 代码回填到 `etf_basic.ts_code`
+- 需要 tushare 代码时优先用 `etf_basic.ts_code`；为空时按沪深两个市场枚举后缀（`.SH` / `.SZ`）解析（`resolve_ts_code`）
 
 ## Excel 模板格式
 
@@ -47,28 +59,37 @@ C:\veighna_studio\python.exe holders\etf\import_etf_data.py
 ```json
 {
   "20251231": {
-    "159001.OF": [
-      {"ts_code": "159001.OF", "rank": 1, "holder_name": "...", "hold_amount": 560800, "hold_ratio": 3.8}
+    "159001": [
+      {"ts_code": "159001", "rank": 1, "holder_name": "...", "hold_amount": 560800, "hold_ratio": 3.8}
     ]
   }
 }
 ```
 
-记录字段 = 股票字段（`ts_code` / `holder_name` / `hold_amount` / `hold_ratio`）+ `rank`（Excel 模板的持有人排名，保留官方顺序信息）。
+记录字段 = 股票字段（`ts_code` / `holder_name` / `hold_amount` / `hold_ratio`）+ `rank`（Excel 模板的持有人排名，保留官方顺序信息）。`ts_code` 为**无后缀代码**（如 `159001`），与 tushare 代码的映射见基础信息缓存。
 
 ### 基础信息缓存 `etf_basic.json`
 
 ```json
 {
-  "159001.OF": {"name": "易方达保证金A", "found_date": "2013-03-29"}
+  "159001": {
+    "name": "易方达保证金A",
+    "found_date": "2013-03-29",
+    "import_code": "159001.OF",
+    "ts_code": "159001.SZ"
+  }
 }
 ```
+
+key 为**无后缀代码**（兼容导入格式与 tushare 代码后缀不同的情况）；`import_code` 是 Excel 导入格式代码（导入时更新），`ts_code` 是 tushare 代码（**拉取日线时由 `etf_client.get_daily_prices` 回填**，未知时枚举 `.SH`/`.SZ` 解析）。
 
 ## 更新流程
 
 1. 把最新一期（半年报 / 年报）数据整理进 Excel，保持 8 列格式
 2. 运行导入脚本：新报告期用默认 `keep` 追加；同一报告期修正数据用 `--on-conflict overwrite` 覆盖
 3. 提交更新后的两个缓存 JSON（Excel 数据源不入库）
+
+> 若缓存结构发生变更（如代码 key 去后缀），请**删除旧的缓存 JSON 后重新导入**，避免新旧格式条目残留。
 
 ## 注意事项
 
