@@ -4,9 +4,11 @@
 
 ## 模块职责与文件
 
-- 模块内容：申万 2021 三级行业分类树 + 单日行业涨幅榜（等权 / 流通市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
+- 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 流通市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
 - 文件：
-  - `classification.py`：全部逻辑所在，含 `ShenWanIndustryNode`（行业树节点）与 `ShenWanIndustryTree`（树构建、成分股、行情、排名）
+  - `tree.py`：行业树与成分数据层，含 `ShenWanIndustryNode`（行业树节点）与 `ShenWanIndustryTree`（树构建、成分股加载、`in_date`/`delist_date` 过滤、行情/市值获取）
+  - `ranking.py`：排行榜逻辑，单日榜（`daily_rank_equal_weight` / `daily_rank_float_weight`）+ 区间累计榜（`rank_range`），`python shenwan_industry/ranking.py` 为区间榜示例入口
+  - `classification.py`：单日行业涨幅榜入口脚本（组装 tree + ranking，`python shenwan_industry/classification.py` 照常可用）
   - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，随仓库提交，勿删）
   - `price_adjust.py`：静态前复权纯算法（同花顺/东财同款，移植自 `vnpy_examples/03_datafeed.py`），当前**仅独立算法模块，未接入行业排名**；排名涨跌幅口径见第 3 节
   - `__init__.py`：空
@@ -56,7 +58,7 @@
   - `circ_mv` 单位为万元，但加权公式只用比值，单位不影响结果
   - 结果按日期存内存缓存（`ts_code_to_circ_mv_cache`）
 
-### 4. 等权涨幅 `daily_rank_equal_weight()`
+### 4. 单日等权涨幅 `ranking.daily_rank_equal_weight(tree, date)`
 
 - 股票池过滤见第 2 节；逐只取 L1/L2/L3 节点，解析失败跳过（并记入 `no_industry_stocks`）
 - 单股涨跌幅：当日有行情用实际值；**停牌（行情缺失）按 0% 计入，且计入该行业成分股数量**
@@ -64,7 +66,7 @@
 - 行业涨幅 = 成分股涨跌幅的简单算术平均；代码用增量平均实现：`new_avg = (old_avg * old_count + pct) / (old_count + 1)`，L3/L2/L1 三级同时累计
 - 排序：剔除 `count == 0` 的行业，按涨幅降序；返回 `(index_code, pct, count)` 列表（三级各一个）
 
-### 5. 流通市值加权涨幅 `daily_rank_float_weight()`
+### 5. 单日流通市值加权涨幅 `ranking.daily_rank_float_weight(tree, date)`
 
 - 单股单级公式（M = 当日收盘流通市值，p = 当日涨跌幅%）：
   - 当日新增流通市值：`ΔM = M * p / (p + 100)`
@@ -84,6 +86,15 @@
 - 示例中对每只行业指数用 `-100` 作为“等权缺失”哨兵校验，命中即报错
 - 模块暂无图片产物，仅控制台输出
 
+### 7. 区间累计涨幅榜 `ranking.rank_range(tree, start_date, end_date)`
+
+- 返回 `(等权(l1,l2,l3), 流通市值加权(l1,l2,l3))`，榜单项仍为 `(index_code, 涨跌幅%, 成分股数量)`
+- 参与股票：区间**起始日**已在成分（`in_date <= 区间起点`）**且**区间末仍在（`delist_date >= 区间终点`）**且起始日已上市**（`list_date < 区间起点`，因为 Tushare 新股的 `in_date` 可能是上市前的“预先纳入日”，早于实际上市）；中段才纳入 / 起始日尚未上市 / 区间末前已退市均剔除并 `logger.warning` 告警
+- 个股区间收益 = 区间内所有有行情日的每日官方涨跌幅（`close/pre_close`，除权参考价口径）连乘，**包含起始日当天涨跌**，隐含基准 = 区间内首个有行情日的 `pre_close`（即区间前一交易日收盘 / 停牌前收盘）；整段区间无任何行情的股票直接剔除；停牌日自动按 0% 累计（**无需逐股回退查收益**）
+- 权重：两个榜都锚定**区间起始日**——等权 = 起始成分简单平均，加权 = 起始日流通市值权重（起始日停牌按 730 天回退；仍取不到则仅参与等权榜并告警）
+- 网络策略：`trade_cal` 1 次 + 区间内每个交易日 `daily(trade_date)` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退；**不是简单重复执行 N 次单日接口**
+- 入口示例：`python shenwan_industry/ranking.py`（区间起止在文件内 `RANGE_START`/`RANGE_END` 配置）
+
 ## Tushare 接口交互明细
 
 | 接口 | 用途 | 调用参数 | 分页/批次 | 备注 |
@@ -91,6 +102,7 @@
 | `index_classify` | 行业树（备用） | `src='SW2021'` | 一次全量 | 默认用本地 `SW2021.json`，仅备用 |
 | `stock_basic` | 股票池状态过滤 | `list_status='L'/'D'/'P'`，D 带 `delist_date` | 每次调用不分页 | 上市+退市+暂停全部进 `stock_basic`；D 的 `delist_date` 进 `ts_code_to_delist_date` |
 | `index_member_all` | 行业成分股 | `offset, limit=1999` | 循环直到不足一批 | 按 `l3_code` 挂到三级节点 |
+| `trade_cal` | 区间交易日列表 | `exchange='SSE', start_date, end_date, is_open='1', fields='cal_date'` | 一次 | 区间榜取交易日用 |
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日流通市值 | `ts_code='', trade_date, fields='ts_code,circ_mv', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量 |
 | `daily_basic`（单只） | 停牌回退查流通市值 | `ts_code, fields='trade_date,circ_mv', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条 |
@@ -114,6 +126,7 @@
 11. 停牌复牌（已实测验证）：`daily` 在停牌日**没有记录**；普通复牌日 `pre_close` = 停牌前最后收盘价（实测 300862/300955），停牌期间发生除权除息时复牌日 `pre_close` = 交易所发布的除权参考价，因此复牌日涨跌幅直接用 `close/pre_close` 即为交易所口径，无需额外处理
 12. **除权参考价可能不是“免费送转”公式**（000793.SZ 实测案例）：*ST华闻 2026-06-22 复牌日为重整计划“有偿转增”（10转12，转增平均价格 2.41 元/股），交易所除权参考价 = (前收 2.63 + 2.41×1.2)/(1+1.2) = **2.51**，而非普通免费送转的 2.63/2.2≈1.20；`dividend` 接口只含转增比例、不含转增价格，**无法自行推导除权参考价**；第三方“不复权”行情（如东财显示 0.38%）未采用交易所参考价，与官方口径（Tushare `pct_chg` 5.18%）不同。**结论：当日涨跌幅/昨收一律以 `daily.pre_close`（交易所口径）为准，`dividend` 只用于了解方案本身**
 13. 历史成分口径（已修部分）：排名已按 `in_date` 过滤（分析日之后才纳入的成分不参与），且退市股已纳入并按 `delist_date` 截断（退市日后不参与），消除“未来纳入”与“退市股被整体剔除”两类偏差；**剩余缺口**：被剔除/换行业但仍上市的股票，Tushare `index_member_all` 只有当前归属（`out_date` 恒为空、`is_new` 全为 Y），需逐股历史补齐，尚未实现（完整方案见文末「未来规划」节）
+14. 区间榜口径（见第 7 节）：中段纳入/起始日尚未上市/区间末前退市/整段停牌均不参与；无法取到起始日市值的股票仅参与等权榜（告警不中断）；**区间收益包含起始日当天涨跌**（隐含基准 = 首个有行情日的 `pre_close`），单日区间（起止同日）等于当日涨跌幅
 
 ## 未来规划：自建行业指数（核心工作）
 
@@ -141,6 +154,7 @@
    - 等权平均公式、加权公式（`ΔM = M*p/(p+100)`、`M_pre = M/(1+p/100)`）是否被改动
    - 停牌按 0% 计入、流通市值回退 730 天逻辑是否保持（或已同步更新描述）
    - 股票池过滤规则（未上市、无行业、退市）是否一致
+   - 区间榜参与口径（起始日成分 ∩ 区间末成分）、连乘基准、起始日权重锚定是否与第 7 节一致
    - Tushare 接口、参数、分页、token 获取方式是否一致
 3. 若发现不一致（无论是本次改动引入，还是历史遗留），**必须在最终回复中明确列出差异**，不得静默通过；涉及算法变更时应同步更新本文件并说明变更点
 4. 本文件与实际代码冲突时，以实际代码为准，但必须把冲突点报告给用户
