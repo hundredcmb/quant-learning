@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 from etf_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
+    get_adj_factors,
     get_combined_etfs,
     get_daily_prices,
     query_single_etf,
@@ -97,7 +98,7 @@ def merge_holders_by_stock(match_results):
     """
     按 ETF 代码合并持有人数据
     相同代码合并到一行，持有人名称用分号隔开，份额/比例/市值累加
-    按日2折算市值从大到小排序，方便查看持仓最重的 ETF
+    按日1市值从大到小排序，方便查看持仓最重的 ETF
     """
     etf_groups = defaultdict(list)
     for item in match_results:
@@ -117,10 +118,11 @@ def merge_holders_by_stock(match_results):
             "hold_ratio": round(sum(item["hold_ratio"] for item in items), 2),
             "adjust_value": round(sum(item["adjust_value"] for item in items), 2),
             "adjust_value_new": round(sum(item["adjust_value_new"] for item in items), 2),
+            "has_corporate_action": any(item.get("has_corporate_action") for item in items),
         }
         merged_results.append(merged_item)
 
-    merged_results.sort(key=lambda x: x["adjust_value_new"], reverse=True)
+    merged_results.sort(key=lambda x: (-x["adjust_value"], x["ts_code"]))
     return merged_results
 
 
@@ -136,7 +138,11 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
     rows_to_show = match_results[:MAX_TABLE_ROWS]
     truncated = len(match_results) > MAX_TABLE_ROWS
-    total_rows = len(rows_to_show) + (7 if truncated else 6)
+    has_any_adj = any(item.get("has_corporate_action") for item in rows_to_show)
+    extra_rows = 7 if truncated else 6
+    if has_any_adj:
+        extra_rows += 1
+    total_rows = len(rows_to_show) + extra_rows
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
 
@@ -145,7 +151,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     font, header_font, name_font = _get_font(FONT_SIZE, HEADER_FONT_SIZE, NAME_FONT_SIZE)
 
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计（按代码合并）"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计（按代码合并，按日1市值降序）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -165,7 +171,9 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     for item in rows_to_show:
         x = PADDING
         row_data = [
-            item["ts_code"], item["etf_name"], f"{item['hold_amount']:,}",
+            item["ts_code"],
+            item["etf_name"] + ("＊" if item.get("has_corporate_action") else ""),
+            f"{item['hold_amount']:,}",
             f"{item['hold_ratio']:.2f}", f"{item['adjust_value']:.2f}",
             f"{item['adjust_value_new']:.2f}", item["holder_name"],
         ]
@@ -202,6 +210,10 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     draw.text((PADDING, y), f"【公允价值变动(亿)】{total_diff:.2f}", font=font, fill="#e74c3c")
     y += ROW_HEIGHT
     draw.text((PADDING, y), f"【收益率】{return_rate:.2f}%", font=font, fill="#e74c3c")
+    if has_any_adj:
+        # 注释说明放在最下面
+        y += ROW_HEIGHT
+        draw.text((PADDING, y), "＊ 表示期间发生分红/份额折算，日2市值已按复权因子修正", font=font, fill="#8e44ad")
 
     img.save(OUTPUT_IMAGE_FILE)
     print(f"\n✅ 完整表格图片生成完成：{OUTPUT_IMAGE_FILE}")
@@ -272,18 +284,31 @@ def query_top10():
     if not price_map_new:
         print(f"⚠️ {NEW_TRADE_DATE} 无行情数据（可能非交易日），日2市值按 0 处理")
 
+    # 拉两个交易日全市场复权因子（用于把日2价格修正到日1同一复权系数水平）
+    print(f"拉取 {REPORT_TRADE_DATE} / {NEW_TRADE_DATE} 全市场 ETF 复权因子...")
+    adj_map1 = get_adj_factors(REPORT_TRADE_DATE)
+    adj_map2 = get_adj_factors(NEW_TRADE_DATE)
+    if not adj_map1 or not adj_map2:
+        print("⚠️ 复权因子获取失败（可能非交易日/接口权限不足），本次不进行价格修正")
+
     for item in match_results:
         close = price_map.get(item["ts_code"], 0)
         original_val = round(item["hold_amount"] * close / 1e8, 2) if close > 0 else 0
         adjust_val = round(original_val * item["ratio"], 2)
 
-        close_new = price_map_new.get(item["ts_code"], 0)
+        # 复权修正：日2价格换算到日1相同复权系数水平（送转/分红时份额已变，价格需同口径）
+        factor1 = adj_map1.get(item["ts_code"], 0)
+        factor2 = adj_map2.get(item["ts_code"], 0)
+        adj_ratio = factor2 / factor1 if factor1 > 0 and factor2 > 0 else 1.0
+        close_new_raw = price_map_new.get(item["ts_code"], 0)
+        close_new = close_new_raw * adj_ratio if close_new_raw > 0 else 0
         original_val_new = round(item["hold_amount"] * close_new / 1e8, 2) if close_new > 0 else 0
         adjust_val_new = round(original_val_new * item["ratio"], 2)
 
         item["original_value"] = original_val
         item["adjust_value"] = adjust_val
         item["adjust_value_new"] = adjust_val_new
+        item["has_corporate_action"] = abs(adj_ratio - 1.0) > 1e-9
 
     print("\n" + "=" * 220)
     print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配持有人")
@@ -308,8 +333,9 @@ def query_top10():
           f"{'日1市值(亿)':<10} {'日2市值(亿)':<10} {'持有人名称':<32}")
     print("-" * 220)
     for item in merged_results:
+        name_display = item["etf_name"] + ("＊" if item.get("has_corporate_action") else "")
         print(f"{item['ts_code']:<12} "
-              f"{item['etf_name']:<12} "
+              f"{name_display:<12} "
               f"{item['hold_amount']:<16} "
               f"{item['hold_ratio']:<10.2f} "
               f"{item['adjust_value']:<12} "
@@ -320,6 +346,8 @@ def query_top10():
     print(f"【{NEW_TRADE_DATE}折算后总市值(亿)】{total_adjust_value_new}")
     print(f"【公允价值变动(亿)】{total_diff}")
     print(f"【收益率】{return_rate}%")
+    if any(item.get("has_corporate_action") for item in merged_results):
+        print("＊ 表示期间发生分红/份额折算，日2市值已按复权因子修正")
 
     generate_table_image(merged_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
     generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate)

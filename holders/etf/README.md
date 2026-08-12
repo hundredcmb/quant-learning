@@ -23,6 +23,14 @@
 - `etf_client.get_daily_prices(trade_date)` 返回 `{无后缀代码: close}`，并顺带把返回的 tushare 代码回填到 `etf_basic.ts_code`
 - 需要 tushare 代码时优先用 `etf_basic.ts_code`；为空时按沪深两个市场枚举后缀（`.SH` / `.SZ`）解析（`resolve_ts_code`）
 
+## 复权因子修正（return_between_dates）
+
+- 接口：Tushare `fund_adj`（ETF 复权因子），2000 积分可调、5000 积分以上频次更高
+- 背景：`return_between_dates` 只用报告期披露的持有份额，若两个交易日之间发生**份额折算/送转/分红**，日2价格会被机械地压低（或抬高），但缓存里没有新份额，直接计算会导致市值和收益率失真；其他 change 类脚本有双报告期份额，不受影响
+- 规则：按 `trade_date` 各拉一次全市场复权因子（`get_adj_factors`），把日2价格修正到日1相同复权系数水平：
+  `修正后日2价 = 原始日2价 × F(日2) / F(日1)`，日1市值不变；无复权事件时 F 相等，结果与旧口径一致
+- 标注：发生分红/份额折算的 ETF 在名称后以 `＊` 标注，图片与控制台均带图例说明；缺失因子时回退为不修正（比例=1）
+
 ## Excel 模板格式
 
 单工作表，8 列：

@@ -4,6 +4,8 @@
 - ETF 十大持有人与基础信息：只从本地缓存读取（手动导入，不调用 Tushare）
 - ETF 日线行情：从 Tushare `fund_daily` 直接获取（至少 5000 积分），
   按 `trade_date` 一次请求拉全市场，**不建价格缓存、不做限流**
+- ETF 复权因子：从 Tushare `fund_adj` 直接获取（2000 积分可调，5000 积分以上频次更高），
+  按 `trade_date` 一次请求拉全市场，用于把不同交易日价格修正到同一复权系数水平
 
 代码兼容规则：
 - 持有人缓存与基础信息缓存的 key 均为**无后缀代码**（如 `159001`）
@@ -49,11 +51,11 @@ KEY_WORD_RATIO = {
     # "社会保障基金": 1.0,
 
     # =========T1平安险资=========
-    "恒毅持盈": 1.0,
-    "平安资管": 1.0,
-    "平安人寿保险": 1.0,
-    "平安养老保险": 1.0,
-    "中国平安保险(集团)股份有限公司-": 0.0,
+    # "恒毅持盈": 1.0,
+    # "平安资管": 1.0,
+    # "平安人寿保险": 1.0,
+    # "平安养老保险": 1.0,
+    # "中国平安保险(集团)股份有限公司-": 0.0,
 
     # =========T1国寿险资=========
     # "国丰兴华": 0.5,
@@ -61,12 +63,12 @@ KEY_WORD_RATIO = {
     # "中国人寿保险(集团)公司-": 1.0,
 
     # =========T2新华险资=========
-    # "国丰兴华": 0.5,
-    # "新华资管": 1.0,
-    # "新华养老": 1.0,
-    # "新华人寿保险股份有限公司-分红": 1.0,
-    # "新华人寿保险股份有限公司-传统": 1.0,
-    # "新华人寿保险股份有限公司-自有资金": 1.0,
+    "国丰兴华": 0.5,
+    "新华资管": 1.0,
+    "新华养老": 1.0,
+    "新华人寿保险股份有限公司-分红": 1.0,
+    "新华人寿保险股份有限公司-传统": 1.0,
+    "新华人寿保险股份有限公司-自有资金": 1.0,
 
     # =========T2太保险资=========
     # "太保致远": 1.0,
@@ -229,6 +231,29 @@ def get_daily_prices(trade_date: str) -> dict:
     if basic_updated:
         save_basic_cache()
     return price_map
+
+
+def get_adj_factors(trade_date: str) -> dict:
+    """获取指定交易日全市场 ETF 复权因子：{无后缀代码: adj_factor}。
+
+    - 按 trade_date 一次请求拉全市场（fund_adj），单次上限 2000 行，超限自动翻页
+    - 不建缓存、不做限流；非交易日/无数据返回空 dict
+    - 复权因子随份额折算/分红变化，用于把不同交易日价格修正到同一系数水平
+    """
+    factors: dict = {}
+    offset = 0
+    for _ in range(10):  # 翻页保护：最多 10 页
+        df = _call_with_retry(
+            lambda o=offset: pro.fund_adj(trade_date=trade_date, offset=o, fields="ts_code,adj_factor")
+        )
+        if df is None or df.empty:
+            break
+        for row_ts_code, adj in zip(df["ts_code"], df["adj_factor"]):
+            factors[_strip_suffix(str(row_ts_code))] = float(adj)
+        if len(df) < 2000:
+            break
+        offset += len(df)
+    return factors
 
 
 def get_etf_daily(code: str, start_date: str, end_date: str) -> list:

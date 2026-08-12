@@ -8,6 +8,7 @@ from tushare_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
     RAW_CACHE,
+    get_adj_factors,
     get_combined_stocks,
     get_stock_close_price,
     query_single_stock,
@@ -84,7 +85,8 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
 
     # 计算画布尺寸（标题+关键词说明+表头+数据行+分隔线+4行汇总信息）
-    total_rows = len(match_results) + 6
+    has_any_adj = any(item.get("has_corporate_action") for item in match_results)
+    total_rows = len(match_results) + 6 + (1 if has_any_adj else 0)
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
 
@@ -114,7 +116,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按日1折算持仓降序）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -139,7 +141,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
         x = PADDING
         row_data = [
             item['ts_code'],
-            item['stock_name'],
+            item['stock_name'] + ("＊" if item.get("has_corporate_action") else ""),
             f"{item['hold_amount']:,}",  # 千分位格式化
             f"{item['hold_ratio']:.2f}",
             f"{item['original_value']:.2f}",
@@ -174,6 +176,10 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     draw.text((PADDING, y), f"【公允价值变动(亿)】{total_diff:.2f}", font=font, fill="#e74c3c")
     y += ROW_HEIGHT
     draw.text((PADDING, y), f"【收益率】{return_rate:.2f}%", font=font, fill="#e74c3c")
+    if has_any_adj:
+        # 注释说明放在最下面
+        y += ROW_HEIGHT
+        draw.text((PADDING, y), "＊ 表示期间发生分红/送转，日2折算持仓已按复权因子修正", font=font, fill="#8e44ad")
 
     # 保存图片
     img.save(OUTPUT_IMAGE_FILE)
@@ -268,6 +274,13 @@ def query_top10():
         # 2. 查询新交易日收盘价
         price_map_new = get_stock_close_price(match_stock_codes, NEW_TRADE_DATE)
 
+        # 3. 查询两个交易日全市场复权因子（用于把日2价格修正到日1同一复权系数水平）
+        print(f"拉取 {REPORT_TRADE_DATE} / {NEW_TRADE_DATE} 全市场股票复权因子...")
+        adj_map1 = get_adj_factors(REPORT_TRADE_DATE)
+        adj_map2 = get_adj_factors(NEW_TRADE_DATE)
+        if not adj_map1 or not adj_map2:
+            print("⚠️ 复权因子获取失败（可能非交易日/接口权限不足），本次不进行价格修正")
+
         for item in match_results:
             hold_amount_val = item["hold_amount"]
             ratio = item["ratio"]
@@ -278,7 +291,12 @@ def query_top10():
             adjust_val = round(original_val * ratio, 2)
 
             # 新交易日计算逻辑
-            close_new = price_map_new.get(item["ts_code"], 0)
+            # 复权修正：日2价格换算到日1相同复权系数水平（送转/分红时股数已变，价格需同口径）
+            factor1 = adj_map1.get(item["ts_code"], 0)
+            factor2 = adj_map2.get(item["ts_code"], 0)
+            adj_ratio = factor2 / factor1 if factor1 > 0 and factor2 > 0 else 1.0
+            close_new_raw = price_map_new.get(item["ts_code"], 0)
+            close_new = close_new_raw * adj_ratio if close_new_raw > 0 else 0
             original_val_new = round(hold_amount_val * close_new / 100000000, 2) if close_new > 0 else 0
             adjust_val_new = round(original_val_new * ratio, 2)
 
@@ -286,6 +304,11 @@ def query_top10():
             item["original_value"] = original_val    # 日1原始持仓
             item["adjust_value"] = adjust_val        # 日1折算持仓
             item["adjust_value_new"] = adjust_val_new  # 日2折算持仓
+            item["has_corporate_action"] = abs(adj_ratio - 1.0) > 1e-9
+
+    # 表格按日1折算持仓降序排序（控制台与图片一致）
+    if match_results:
+        match_results.sort(key=lambda x: (-x["adjust_value"], x["ts_code"]))
 
     # 输出结果
     print("\n" + "=" * 200)
@@ -310,8 +333,9 @@ def query_top10():
           f"{'日1原始持仓(亿)':<9} {'日1折算持仓(亿)':<9} {'日2折算持仓(亿)':<9} {'股东名称':<32}")
     print("-" * 200)
     for item in match_results:
+        name_display = item['stock_name'] + ("＊" if item.get("has_corporate_action") else "")
         print(f"{item['ts_code']:<10} "
-              f"{item['stock_name']:<8} "
+              f"{name_display:<8} "
               f"{item['hold_amount']:<18} "
               f"{item['hold_ratio']:<10} "
               f"{item['original_value']:<14} "
@@ -323,6 +347,8 @@ def query_top10():
     print(f"【{NEW_TRADE_DATE}折算后总持仓(亿)】{total_adjust_value_new}")
     print(f"【公允价值变动(亿)】{total_diff}")
     print(f"【收益率】{return_rate}%")
+    if any(item.get("has_corporate_action") for item in match_results):
+        print("＊ 表示期间发生分红/送转，日2折算持仓已按复权因子修正")
 
     # 生成两张图片：完整表格版 + 汇总版
     generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)

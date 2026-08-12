@@ -232,6 +232,23 @@ def get_stock_close_price(stock_codes: list, trade_date: str) -> dict:
         os._exit(-1)
 
 
+def get_adj_factors(trade_date: str) -> dict:
+    """批量查询指定交易日全市场股票复权因子：{ts_code: adj_factor}
+
+    - 按 trade_date 一次请求拉全市场（adj_factor），不建缓存
+    - 复权因子随送转/分红变化，用于把不同交易日价格修正到同一系数水平
+    - 非交易日/无数据返回空 dict；请求失败时退出（与股价查询一致）
+    """
+    try:
+        df = pro.adj_factor(trade_date=trade_date)
+        if df is None or df.empty:
+            return {}
+        return dict(zip(df["ts_code"], df["adj_factor"]))
+    except Exception as e:
+        print(f"⚠️  查询{trade_date}复权因子失败: {str(e)}")
+        os._exit(-1)
+
+
 def query_single_stock(
     ts_code: str,
     stock_name: str,
