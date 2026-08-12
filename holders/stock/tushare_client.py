@@ -10,6 +10,7 @@
 """
 import json
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +18,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import tushare as ts
 from tushare.pro.client import DataApi
 from vnpy.trader.setting import SETTINGS
+
+# Windows 控制台编码兼容：避免 GBK 下 emoji 打印崩溃
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 # ===================== 公共配置 =====================
 # 缓存文件保持在脚本目录 holders/ 下，随仓库提交（全量重拉受限流影响很慢）

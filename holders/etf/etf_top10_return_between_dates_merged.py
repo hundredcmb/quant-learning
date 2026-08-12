@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -24,9 +25,9 @@ REPORT_PERIOD = "20251231"  # 报告期（半年报 0630 / 年报 1231）
 REPORT_TRADE_DATE = "20251231"  # 日1：原报告期交易日
 NEW_TRADE_DATE = "20260630"  # 日2：对比的新交易日
 
-# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR）
-OUTPUT_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}.png")
-OUTPUT_SUMMARY_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_汇总版.png")
+# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR；合并版与普通版文件名区分）
+OUTPUT_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版.png")
+OUTPUT_SUMMARY_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版汇总.png")
 MAX_TABLE_ROWS = 500  # 图片最多展示行数（避免匹配过多时图片过大），完整数据见控制台
 # 持有人名称列样式
 NAME_FONT_SIZE = 12
@@ -92,8 +93,39 @@ def _wrap_text(text, draw, font, max_width, max_lines):
     return result
 
 
+def merge_holders_by_stock(match_results):
+    """
+    按 ETF 代码合并持有人数据
+    相同代码合并到一行，持有人名称用分号隔开，份额/比例/市值累加
+    按日2折算市值从大到小排序，方便查看持仓最重的 ETF
+    """
+    etf_groups = defaultdict(list)
+    for item in match_results:
+        etf_groups[item["ts_code"]].append(item)
+
+    merged_results = []
+    for ts_code, items in etf_groups.items():
+        etf_name = items[0]["etf_name"]
+        holder_names = [item["holder_name"] for item in items]
+        merged_holder_names = "; ".join(holder_names)
+
+        merged_item = {
+            "ts_code": ts_code,
+            "etf_name": etf_name,
+            "holder_name": merged_holder_names,
+            "hold_amount": sum(item["hold_amount"] for item in items),
+            "hold_ratio": round(sum(item["hold_ratio"] for item in items), 2),
+            "adjust_value": round(sum(item["adjust_value"] for item in items), 2),
+            "adjust_value_new": round(sum(item["adjust_value_new"] for item in items), 2),
+        }
+        merged_results.append(merged_item)
+
+    merged_results.sort(key=lambda x: x["adjust_value_new"], reverse=True)
+    return merged_results
+
+
 def generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate):
-    """生成与命令行一致的 ETF 组合收益表格图片，标题含关键词+折算比例"""
+    """生成与命令行一致的 ETF 组合收益表格图片（按代码合并），标题含关键词+折算比例"""
     PADDING = 10
     ROW_HEIGHT = 40
     FONT_SIZE = 14
@@ -113,7 +145,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     font, header_font, name_font = _get_font(FONT_SIZE, HEADER_FONT_SIZE, NAME_FONT_SIZE)
 
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计（按代码合并）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -191,7 +223,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     font, header_font, _name_font = _get_font(FONT_SIZE, HEADER_FONT_SIZE, NAME_FONT_SIZE)
 
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计（按代码合并）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -215,7 +247,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
 
 def query_top10():
-    """主查询函数：单报告期筛选 + 两交易日公允价值变动与收益率"""
+    """主查询函数：单报告期筛选 + 两交易日公允价值变动与收益率（按代码合并）"""
     etf_map = get_combined_etfs()
     if not etf_map:
         print("❌ ETF 基础信息缓存为空，请先运行 import_etf_data.py 导入数据")
@@ -255,14 +287,17 @@ def query_top10():
 
     print("\n" + "=" * 220)
     print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配持有人")
+
+    merged_results = merge_holders_by_stock(match_results)
+    print(f"按代码合并后：共 {len(merged_results)} 只 ETF")
     print("=" * 220)
 
-    if not match_results:
+    if not merged_results:
         print(f"未查询到包含「{keyword_str}」的持有人数据（可调整 etf_client.KEY_WORD_RATIO）")
         return
 
-    total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
-    total_adjust_value_new = round(sum(item["adjust_value_new"] for item in match_results), 2)
+    total_adjust_value = round(sum(item["adjust_value"] for item in merged_results), 2)
+    total_adjust_value_new = round(sum(item["adjust_value_new"] for item in merged_results), 2)
     total_diff = round(total_adjust_value_new - total_adjust_value, 2)
     if total_adjust_value > 0:
         return_rate = round(total_diff / total_adjust_value * 100, 2)
@@ -272,7 +307,7 @@ def query_top10():
     print(f"{'代码':<10} {'ETF名称':<12} {'份额(份)':<15} {'比例(%)':<8} "
           f"{'日1市值(亿)':<10} {'日2市值(亿)':<10} {'持有人名称':<32}")
     print("-" * 220)
-    for item in match_results:
+    for item in merged_results:
         print(f"{item['ts_code']:<12} "
               f"{item['etf_name']:<12} "
               f"{item['hold_amount']:<16} "
@@ -286,7 +321,7 @@ def query_top10():
     print(f"【公允价值变动(亿)】{total_diff}")
     print(f"【收益率】{return_rate}%")
 
-    generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
+    generate_table_image(merged_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
     generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate)
 
 

@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -14,6 +15,13 @@ from tushare_client import (
     run_parallel_queries,
     save_raw_cache,
 )
+
+# Windows 控制台编码兼容：避免 GBK 下 emoji 打印崩溃
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 # ===================== 核心配置 =====================
 INDEX_CODES = ["000906.SH", "000852.SH"]  # 样本池: 中证800 + 中证1000
@@ -30,9 +38,9 @@ NEW_TRADE_DATE = "20260529"  # 日2：对比的新交易日
 # 席位关键词-折算比例（公共配置见 tushare_client.KEY_WORD_RATIO；
 # 如需本脚本单独调整，可在此处重新定义 KEY_WORD_RATIO 覆盖）
 
-# 输出图片文件名（输出目录见 tushare_client.OUTPUT_DIR）
-OUTPUT_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}.png")
-OUTPUT_SUMMARY_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_汇总版.png")
+# 输出图片文件名（输出目录见 tushare_client.OUTPUT_DIR；合并版与普通版文件名区分）
+OUTPUT_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版.png")
+OUTPUT_SUMMARY_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版汇总.png")
 # ====================================================
 
 
@@ -63,8 +71,40 @@ def _wrap_text(text, draw, font, max_width, max_lines):
     return result
 
 
+def merge_holders_by_stock(match_results):
+    """
+    按股票代码合并股东数据
+    相同代码合并到一行，股东名称用分号隔开，持股数量/比例/持仓市值累加
+    按日2折算持仓从大到小排序，方便查看持仓最重的股票
+    """
+    stock_groups = defaultdict(list)
+    for item in match_results:
+        stock_groups[item["ts_code"]].append(item)
+
+    merged_results = []
+    for ts_code, items in stock_groups.items():
+        stock_name = items[0]["stock_name"]
+        holder_names = [item["holder_name"] for item in items]
+        merged_holder_names = "; ".join(holder_names)
+
+        merged_item = {
+            "ts_code": ts_code,
+            "stock_name": stock_name,
+            "holder_name": merged_holder_names,
+            "hold_amount": sum(item["hold_amount"] for item in items),
+            "hold_ratio": round(sum(item["hold_ratio"] for item in items), 2),
+            "original_value": round(sum(item["original_value"] for item in items), 2),
+            "adjust_value": round(sum(item["adjust_value"] for item in items), 2),
+            "adjust_value_new": round(sum(item["adjust_value_new"] for item in items), 2),
+        }
+        merged_results.append(merged_item)
+
+    merged_results.sort(key=lambda x: x["adjust_value_new"], reverse=True)
+    return merged_results
+
+
 def generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate):
-    """生成与命令行一致的股票组合收益UI表格图片，标题含关键词+折算比例"""
+    """生成与命令行一致的股票组合收益UI表格图片（按代码合并），标题含关键词+折算比例"""
     # 基础样式配置
     PADDING = 10
     ROW_HEIGHT = 40
@@ -114,7 +154,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按代码合并）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -217,7 +257,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
     # 第一行大标题（与完整图片完全一致）
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按代码合并）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -245,7 +285,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
 
 def query_top10():
-    """主查询函数"""
+    """主查询函数：单报告期筛选 + 两交易日公允价值变动与收益率（按股票代码合并）"""
     stock_map = get_combined_stocks(INDEX_CODES, INDEX_DATE)
     if not stock_map:
         return
@@ -290,16 +330,20 @@ def query_top10():
     # 输出结果
     print("\n" + "=" * 200)
     print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配席位")
+
+    # 按股票代码合并股东
+    merged_results = merge_holders_by_stock(match_results)
+    print(f"按股票代码合并后：共 {len(merged_results)} 只股票")
     print("=" * 200)
 
-    if not match_results:
+    if not merged_results:
         print(f"未查询到包含「{keyword_str}」的股东数据")
         save_raw_cache(RAW_CACHE)
         return
 
     # 汇总计算
-    total_adjust_value = round(sum(item["adjust_value"] for item in match_results), 2)
-    total_adjust_value_new = round(sum(item["adjust_value_new"] for item in match_results), 2)
+    total_adjust_value = round(sum(item["adjust_value"] for item in merged_results), 2)
+    total_adjust_value_new = round(sum(item["adjust_value_new"] for item in merged_results), 2)
     total_diff = round(total_adjust_value_new - total_adjust_value, 2)
     if total_adjust_value > 0:
         return_rate = round(total_diff / total_adjust_value * 100, 2)
@@ -309,7 +353,7 @@ def query_top10():
     print(f"{'股票代码':<7} {'股票名称':<8} {'持股数量(股)':<13} {'持股比例(%)':<5} "
           f"{'日1原始持仓(亿)':<9} {'日1折算持仓(亿)':<9} {'日2折算持仓(亿)':<9} {'股东名称':<32}")
     print("-" * 200)
-    for item in match_results:
+    for item in merged_results:
         print(f"{item['ts_code']:<10} "
               f"{item['stock_name']:<8} "
               f"{item['hold_amount']:<18} "
@@ -325,7 +369,7 @@ def query_top10():
     print(f"【收益率】{return_rate}%")
 
     # 生成两张图片：完整表格版 + 汇总版
-    generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
+    generate_table_image(merged_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
     generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate)
 
     # 最终：将所有缓存的原始数据持久化到文件

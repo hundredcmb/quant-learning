@@ -138,14 +138,55 @@ def query_single_etf(ts_code: str, etf_name: str):
     return match_results
 
 
+def _truncate_text(text, draw, font, max_width):
+    """按像素宽度截断文本，超出列宽时以省略号结尾"""
+    text = str(text)
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    ellipsis = "…"
+    while text and draw.textlength(text + ellipsis, font=font) > max_width:
+        text = text[:-1]
+    return text + ellipsis
+
+
+def _wrap_text(text, draw, font, max_width, max_lines):
+    """按像素宽度换行，最多 max_lines 行，超出的最后一行以省略号结尾"""
+    text = str(text)
+    lines = []
+    current = ""
+    for ch in text:
+        if current and draw.textlength(current + ch, font=font) > max_width:
+            lines.append(current)
+            current = ch
+        else:
+            current += ch
+    if current:
+        lines.append(current)
+
+    if len(lines) <= max_lines:
+        return lines
+
+    # 超出行数上限：保留前 max_lines-1 行，最后一行截断并加省略号
+    result = lines[:max_lines - 1]
+    last = lines[max_lines - 1]
+    ellipsis = "…"
+    while last and draw.textlength(last + ellipsis, font=font) > max_width:
+        last = last[:-1]
+    result.append(last + ellipsis)
+    return result
+
+
 def generate_table_image(match_results, total_adj1, total_adj2, report1, report2):
     """生成与命令行一致的 ETF 持股变动表格图片，标题含关键词+折算比例"""
     # 基础样式配置
     PADDING = 10
-    ROW_HEIGHT = 30
+    ROW_HEIGHT = 40
     FONT_SIZE = 14
     HEADER_FONT_SIZE = 16
-    COL_WIDTHS = [100, 120, 140, 150, 120, 150, 120, 360]
+    NAME_FONT_SIZE = 12  # 持有人名称列字号（略小，配合换行）
+    NAME_MAX_LINES = 2  # 持有人名称列最多显示行数
+    NAME_LINE_HEIGHT = 17  # 持有人名称列行高
+    COL_WIDTHS = [100, 240, 90, 150, 120, 150, 120, 440]
     COL_NAMES = ["代码", "ETF名称", "变动类型", "期1份额(份)", "期1市值(亿)", "期2份额(份)", "期2市值(亿)", "持有人名称"]
 
     # 拼接关键词+折算比例文本
@@ -166,15 +207,19 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
         if sys.platform.startswith("win"):
             font = ImageFont.truetype("msyh.ttc", FONT_SIZE)
             header_font = ImageFont.truetype("msyh.ttc", HEADER_FONT_SIZE)
+            name_font = ImageFont.truetype("msyh.ttc", NAME_FONT_SIZE)
         elif sys.platform.startswith("darwin"):
             font = ImageFont.truetype("Arial Unicode.ttf", FONT_SIZE)
             header_font = ImageFont.truetype("Arial Unicode.ttf", HEADER_FONT_SIZE)
+            name_font = ImageFont.truetype("Arial Unicode.ttf", NAME_FONT_SIZE)
         else:
             font = ImageFont.truetype("DejaVuSans.ttf", FONT_SIZE)
             header_font = ImageFont.truetype("DejaVuSans.ttf", HEADER_FONT_SIZE)
+            name_font = ImageFont.truetype("DejaVuSans.ttf", NAME_FONT_SIZE)
     except:
         font = ImageFont.load_default()
         header_font = ImageFont.load_default()
+        name_font = ImageFont.load_default()
 
     # 第一行大标题
     x, y = PADDING, PADDING
@@ -208,7 +253,21 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
             item["holder_name"],
         ]
         for i, data in enumerate(row_data):
-            draw.text((x + 5, y + 5), str(data), font=font, fill="#2c3e50")
+            if i == len(COL_NAMES) - 1:
+                # 持有人名称列：小号字体 + 换行，最多 NAME_MAX_LINES 行，垂直居中
+                name_lines = _wrap_text(data, draw, name_font, COL_WIDTHS[i] - 10, NAME_MAX_LINES)
+                lines_height = len(name_lines) * NAME_LINE_HEIGHT
+                start_y = y + (ROW_HEIGHT - lines_height) // 2
+                for line_index, line in enumerate(name_lines):
+                    draw.text((x + 5, start_y + line_index * NAME_LINE_HEIGHT), line,
+                              font=name_font, fill="#2c3e50")
+                x += COL_WIDTHS[i]
+                continue
+            cell_text = str(data)
+            if i == 1:
+                # ETF名称列：超出列宽时截断
+                cell_text = _truncate_text(cell_text, draw, font, COL_WIDTHS[i] - 10)
+            draw.text((x + 5, y + 5), cell_text, font=font, fill="#2c3e50")
             x += COL_WIDTHS[i]
         y += ROW_HEIGHT
 
