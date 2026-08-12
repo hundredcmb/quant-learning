@@ -62,17 +62,18 @@ KEY_WORD_RATIO = {
     # "平安资管": 1.0,
     # "平安人寿保险": 1.0,
     # "平安养老保险": 1.0,
-    # "中国平安保险(集团)股份有限公司-": 0.0,
+    # "中国平安保险(集团)股份有限公司": 0.0,
 
     # =========T1国寿险资=========
     # "国丰兴华": 0.5,
     # "中国人寿保险股份": 1.0,
-    # "中国人寿保险(集团)公司-": 1.0,
+    # "中国人寿保险(集团)公司": 1.0,
 
     # =========T2新华险资=========
     "国丰兴华": 0.5,
     "新华资管": 1.0,
     "新华养老": 1.0,
+    "新华人寿保险股份有限公司": 1.0,
     "新华人寿保险股份有限公司-分红": 1.0,
     "新华人寿保险股份有限公司-传统": 1.0,
     "新华人寿保险股份有限公司-自有资金": 1.0,
@@ -249,6 +250,31 @@ def get_adj_factors(trade_date: str) -> dict:
         os._exit(-1)
 
 
+def _sorted_keywords(key_word_ratio: dict) -> list:
+    """按关键词长度降序排序（同长度保持配置顺序），实现最长关键词优先匹配"""
+    order = {k: i for i, k in enumerate(key_word_ratio)}
+    return sorted(key_word_ratio, key=lambda k: (-len(k), order[k]))
+
+
+_checked_keyword_ids: set = set()
+
+
+def _validate_keywords_once(key_word_ratio: dict) -> None:
+    """启动校验（每个配置只检查一次）：检测互为子串的关键词并告警，避免权重歧义"""
+    ratio_id = id(key_word_ratio)
+    if ratio_id in _checked_keyword_ids:
+        return
+    _checked_keyword_ids.add(ratio_id)
+
+    keys = list(key_word_ratio)
+    for i, k1 in enumerate(keys):
+        for k2 in keys[i + 1:]:
+            if k1 in k2 or k2 in k1:
+                shorter, longer = (k1, k2) if len(k1) < len(k2) else (k2, k1)
+                print(f"⚠️ KEY_WORD_RATIO 存在子串关键词：{shorter} 是 {longer} 的子串，"
+                      f"匹配时将按最长关键词「{longer}」优先（权重 {key_word_ratio[longer]}）")
+
+
 def query_single_stock(
     ts_code: str,
     stock_name: str,
@@ -256,19 +282,23 @@ def query_single_stock(
     key_word_ratio: dict,
 ) -> list:
     """
-    单个股票单报告期业务处理：从【原始缓存/接口】获取数据 → 筛选关键词
+    单个股票单报告期业务处理：从【原始缓存/接口】获取数据 → 筛选关键词（最长关键词优先）
     职责：纯业务处理，不关心数据来自缓存还是接口
     """
+    _validate_keywords_once(key_word_ratio)
+    sorted_keywords = _sorted_keywords(key_word_ratio)
     raw_holders = get_stock_top10_raw(ts_code, period)
     match_list = []
 
     for row in raw_holders:
         holder_name = row["holder_name"]
         match_ratio = None
-        # 业务筛选逻辑
-        for keyword, ratio in key_word_ratio.items():
+        match_keyword = None
+        # 业务筛选逻辑：最长关键词优先，避免子串歧义
+        for keyword in sorted_keywords:
             if keyword in holder_name:
-                match_ratio = ratio
+                match_ratio = key_word_ratio[keyword]
+                match_keyword = keyword
                 break
         if match_ratio is not None:
             match_list.append({
@@ -277,7 +307,8 @@ def query_single_stock(
                 "holder_name": holder_name,
                 "hold_amount": int(row["hold_amount"]),
                 "hold_ratio": round(row["hold_ratio"], 2),
-                "ratio": match_ratio
+                "ratio": match_ratio,
+                "match_keyword": match_keyword,
             })
     return match_list
 

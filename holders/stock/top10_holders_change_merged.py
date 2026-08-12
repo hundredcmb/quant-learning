@@ -299,7 +299,10 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
 
     # 第二行：关键词+折算比例说明
     title_sub = f"筛选关键词及折算比例：{ratio_text}"
-    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    # 关键词说明过长时按像素宽度换行（最多两行，两行共 40px 与 ROW_HEIGHT 一致）
+    sub_lines = _wrap_text(title_sub, draw, font, img_width - 2 * PADDING, 2)
+    for line_index, line in enumerate(sub_lines):
+        draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
     # 绘制表头

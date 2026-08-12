@@ -163,7 +163,10 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
 
     # 第二行：关键词+折算比例说明
     title_sub = f"筛选关键词及折算比例：{ratio_text}"
-    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    # 关键词说明过长时按像素宽度换行（最多两行，两行共 40px 与 ROW_HEIGHT 一致）
+    sub_lines = _wrap_text(title_sub, draw, font, img_width - 2 * PADDING, 2)
+    for line_index, line in enumerate(sub_lines):
+        draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
     # 绘制表头
@@ -240,7 +243,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
     # 计算画布尺寸（标题+关键词说明+分隔线+4行汇总信息）
     img_width = 1200  # 固定宽度，与完整图片比例协调
-    img_height = 6 * ROW_HEIGHT + 2 * PADDING
+    img_height = 6 * ROW_HEIGHT + 2 * PADDING + 20  # 预留关键词说明换行空间
 
     # 创建白色背景画布
     img = Image.new("RGB", (img_width, img_height), "white")
@@ -270,8 +273,11 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
     # 第二行：关键词+折算比例说明（与完整图片完全一致）
     title_sub = f"筛选关键词及折算比例：{ratio_text}"
-    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
-    y += ROW_HEIGHT
+    # 关键词说明过长时按像素宽度换行（最多两行）
+    sub_lines = _wrap_text(title_sub, draw, font, img_width - 2 * PADDING, 2)
+    for line_index, line in enumerate(sub_lines):
+        draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+    y += len(sub_lines) * 20
 
     # 绘制分隔线（与完整图片完全一致）
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)

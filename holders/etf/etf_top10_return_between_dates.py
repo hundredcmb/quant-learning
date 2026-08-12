@@ -123,7 +123,10 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     y += ROW_HEIGHT
 
     title_sub = f"筛选关键词及折算比例：{ratio_text}"
-    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
+    # 关键词说明过长时按像素宽度换行（最多两行，两行共 40px 与 ROW_HEIGHT 一致）
+    sub_lines = _wrap_text(title_sub, draw, font, img_width - 2 * PADDING, 2)
+    for line_index, line in enumerate(sub_lines):
+        draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
     x = PADDING
@@ -195,7 +198,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
 
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
     img_width = 1200
-    img_height = 6 * ROW_HEIGHT + 2 * PADDING
+    img_height = 6 * ROW_HEIGHT + 2 * PADDING + 20  # 预留关键词说明换行空间
 
     img = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(img)
@@ -207,8 +210,11 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     y += ROW_HEIGHT
 
     title_sub = f"筛选关键词及折算比例：{ratio_text}"
-    draw.text((x, y), title_sub, font=font, fill="#8e44ad")
-    y += ROW_HEIGHT
+    # 关键词说明过长时按像素宽度换行（最多两行）
+    sub_lines = _wrap_text(title_sub, draw, font, img_width - 2 * PADDING, 2)
+    for line_index, line in enumerate(sub_lines):
+        draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+    y += len(sub_lines) * 20
 
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
     y += 15
