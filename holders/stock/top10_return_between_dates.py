@@ -8,6 +8,7 @@ from tushare_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
     RAW_CACHE,
+    format_specific_ratio_summary,
     get_adj_factors,
     get_combined_stocks,
     get_stock_close_price,
@@ -85,8 +86,9 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
 
     # 计算画布尺寸（标题+关键词说明+表头+数据行+分隔线+4行汇总信息）
+    ratio_summary_text = format_specific_ratio_summary()
     has_any_adj = any(item.get("has_corporate_action") for item in match_results)
-    total_rows = len(match_results) + 6 + (1 if has_any_adj else 0)
+    total_rows = len(match_results) + 6 + (1 if has_any_adj else 0) + (1 if ratio_summary_text else 0)
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
 
@@ -128,6 +130,13 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
         draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
+    # 标的特殊设定提示（位于关键词说明下方，最多两行）
+    if ratio_summary_text:
+        ratio_lines = _wrap_text(ratio_summary_text, draw, font, img_width - 2 * PADDING, 2)
+        for line_index, line in enumerate(ratio_lines):
+            draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+        y += ROW_HEIGHT  # 提示块占一整行，与下方表头留出间距
+
     # 绘制表头
     x = PADDING
     for i, name in enumerate(COL_NAMES):
@@ -140,7 +149,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     y += 8
 
     # 绘制数据行
-    for item in match_results:
+    for row_index, item in enumerate(match_results):
         x = PADDING
         row_data = [
             item['ts_code'],
@@ -165,6 +174,9 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
                 continue
             draw.text((x + 5, y + 5), str(data), font=font, fill="#2c3e50")
             x += COL_WIDTHS[i]
+        # 行间浅色分隔线（辅助对齐，不抢主内容；第一行与表头间已有分隔线）
+        if row_index > 0:
+            draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#e8e8e8", width=1)
         y += ROW_HEIGHT
 
     # 绘制底部分隔线
@@ -203,6 +215,9 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     # 计算画布尺寸（标题+关键词说明+分隔线+4行汇总信息）
     img_width = 1200  # 固定宽度，与完整图片比例协调
     img_height = 6 * ROW_HEIGHT + 2 * PADDING + 20  # 预留关键词说明换行空间
+    ratio_summary_text = format_specific_ratio_summary()
+    if ratio_summary_text:
+        img_height += 40  # 预留标的特殊设定提示空间
 
     # 创建白色背景画布
     img = Image.new("RGB", (img_width, img_height), "white")
@@ -237,6 +252,13 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     for line_index, line in enumerate(sub_lines):
         draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += len(sub_lines) * 20
+
+    # 标的特殊设定提示（位于关键词说明下方，最多两行）
+    if ratio_summary_text:
+        ratio_lines = _wrap_text(ratio_summary_text, draw, font, img_width - 2 * PADDING, 2)
+        for line_index, line in enumerate(ratio_lines):
+            draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+        y += 40  # 提示块固定高度，与下方分隔线留出间距
 
     # 绘制分隔线（与完整图片完全一致）
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)

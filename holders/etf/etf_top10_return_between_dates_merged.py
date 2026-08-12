@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 from etf_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
+    format_specific_ratio_summary,
     get_adj_factors,
     get_combined_etfs,
     get_daily_prices,
@@ -119,6 +120,7 @@ def merge_holders_by_stock(match_results):
             "adjust_value": round(sum(item["adjust_value"] for item in items), 2),
             "adjust_value_new": round(sum(item["adjust_value_new"] for item in items), 2),
             "has_corporate_action": any(item.get("has_corporate_action") for item in items),
+            "ratio_source": "标的覆盖" if any(item.get("ratio_source") == "标的覆盖" for item in items) else "关键词默认",
         }
         merged_results.append(merged_item)
 
@@ -142,6 +144,9 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     extra_rows = 7 if truncated else 6
     if has_any_adj:
         extra_rows += 1
+    ratio_summary_text = format_specific_ratio_summary()
+    if ratio_summary_text:
+        extra_rows += 1
     total_rows = len(rows_to_show) + extra_rows
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
@@ -162,6 +167,13 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
         draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
+    # 标的特殊设定提示（位于关键词说明下方，最多两行）
+    if ratio_summary_text:
+        ratio_lines = _wrap_text(ratio_summary_text, draw, font, img_width - 2 * PADDING, 2)
+        for line_index, line in enumerate(ratio_lines):
+            draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+        y += ROW_HEIGHT  # 提示块占一整行，与下方表头留出间距
+
     x = PADDING
     for i, name in enumerate(COL_NAMES):
         draw.text((x + 5, y + 5), name, font=header_font, fill="#3498db")
@@ -171,7 +183,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
     y += 8
 
-    for item in rows_to_show:
+    for row_index, item in enumerate(rows_to_show):
         x = PADDING
         row_data = [
             item["ts_code"],
@@ -197,6 +209,9 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
                 cell_text = _truncate_text(cell_text, draw, font, COL_WIDTHS[i] - 10)
             draw.text((x + 5, y + 5), cell_text, font=font, fill="#2c3e50")
             x += COL_WIDTHS[i]
+        # 行间浅色分隔线（辅助对齐，不抢主内容；第一行与表头间已有分隔线）
+        if row_index > 0:
+            draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#e8e8e8", width=1)
         y += ROW_HEIGHT
 
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
@@ -232,6 +247,9 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
     img_width = 1200
     img_height = 6 * ROW_HEIGHT + 2 * PADDING + 20  # 预留关键词说明换行空间
+    ratio_summary_text = format_specific_ratio_summary()
+    if ratio_summary_text:
+        img_height += 40  # 预留标的特殊设定提示空间
 
     img = Image.new("RGB", (img_width, img_height), "white")
     draw = ImageDraw.Draw(img)
@@ -248,6 +266,13 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     for line_index, line in enumerate(sub_lines):
         draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += len(sub_lines) * 20
+
+    # 标的特殊设定提示（位于关键词说明下方，最多两行）
+    if ratio_summary_text:
+        ratio_lines = _wrap_text(ratio_summary_text, draw, font, img_width - 2 * PADDING, 2)
+        for line_index, line in enumerate(ratio_lines):
+            draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+        y += 40  # 提示块固定高度，与下方分隔线留出间距
 
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
     y += 15

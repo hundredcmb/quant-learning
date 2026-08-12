@@ -9,6 +9,7 @@ from tushare_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
     RAW_CACHE,
+    format_specific_ratio_summary,
     get_combined_stocks,
     get_stock_close_price,
     get_stock_top10_raw,
@@ -207,7 +208,8 @@ def merge_holders_by_stock(match_results):
             "hold1_amount": total_hold1,
             "hold2_amount": total_hold2,
             "adjust_value1": round(total_adjust1, 2),
-            "adjust_value2": round(total_adjust2, 2)
+            "adjust_value2": round(total_adjust2, 2),
+            "ratio_source": "标的覆盖" if any(item.get("ratio_source") == "标的覆盖" for item in items) else "关键词默认",
         }
 
         merged_results.append(merged_item)
@@ -262,8 +264,9 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
     # 拼接关键词+折算比例文本
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
 
-    # 计算画布尺寸（多一行标题说明）
-    total_rows = len(match_results) + 5
+    # 计算画布尺寸（多一行标题说明，有标的特殊设定时再加一行）
+    ratio_summary_text = format_specific_ratio_summary()
+    total_rows = len(match_results) + 5 + (1 if ratio_summary_text else 0)
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING
 
@@ -305,6 +308,13 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
         draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
     y += ROW_HEIGHT
 
+    # 标的特殊设定提示（位于关键词说明下方，最多两行）
+    if ratio_summary_text:
+        ratio_lines = _wrap_text(ratio_summary_text, draw, font, img_width - 2 * PADDING, 2)
+        for line_index, line in enumerate(ratio_lines):
+            draw.text((x, y + line_index * 20), line, font=font, fill="#8e44ad")
+        y += ROW_HEIGHT  # 提示块占一整行，与下方表头留出间距
+
     # 绘制表头
     x = PADDING
     for i, name in enumerate(COL_NAMES):
@@ -317,7 +327,7 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
     y += 8
 
     # 绘制数据行
-    for item in match_results:
+    for row_index, item in enumerate(match_results):
         x = PADDING
         row_data = [
             item['ts_code'], item['stock_name'], item['change_type'],
@@ -338,6 +348,9 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
                 continue
             draw.text((x + 5, y + 5), str(data), font=font, fill="#2c3e50")
             x += COL_WIDTHS[i]
+        # 行间浅色分隔线（辅助对齐，不抢主内容；第一行与表头间已有分隔线）
+        if row_index > 0:
+            draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#e8e8e8", width=1)
         y += ROW_HEIGHT
 
     # 绘制底部分隔线

@@ -58,11 +58,11 @@ KEY_WORD_RATIO = {
     # "社会保障基金": 1.0,
 
     # =========T1平安险资=========
-    # "恒毅持盈": 1.0,
-    # "平安资管": 1.0,
-    # "平安人寿保险": 1.0,
-    # "平安养老保险": 1.0,
-    # "中国平安保险(集团)股份有限公司": 0.0,
+    "恒毅持盈": 0.0,
+    "平安资管": 1.0,
+    "平安人寿保险": 1.0,
+    "平安养老保险": 1.0,
+    "中国平安保险(集团)股份有限公司": 0.0,
 
     # =========T1国寿险资=========
     # "国丰兴华": 0.5,
@@ -70,13 +70,13 @@ KEY_WORD_RATIO = {
     # "中国人寿保险(集团)公司": 1.0,
 
     # =========T2新华险资=========
-    "国丰兴华": 0.5,
-    "新华资管": 1.0,
-    "新华养老": 1.0,
-    "新华人寿保险股份有限公司": 1.0,
-    "新华人寿保险股份有限公司-分红": 1.0,
-    "新华人寿保险股份有限公司-传统": 1.0,
-    "新华人寿保险股份有限公司-自有资金": 1.0,
+    # "国丰兴华": 0.5,
+    # "新华资管": 1.0,
+    # "新华养老": 1.0,
+    # "新华人寿保险股份有限公司": 1.0,
+    # "新华人寿保险股份有限公司-分红": 1.0,
+    # "新华人寿保险股份有限公司-传统": 1.0,
+    # "新华人寿保险股份有限公司-自有资金": 1.0,
 
     # =========T2太保险资=========
     # "太保致远": 1.0,
@@ -87,6 +87,25 @@ KEY_WORD_RATIO = {
     # "启元惠众": 1.0,
     # "人民财产保险": 1.0,
     # "人民人寿保险": 1.0,
+}
+# ====================================================
+
+# ===================== 标的级精细化比例覆盖 =====================
+# 仅当席位先命中 KEY_WORD_RATIO 关键词后，再按标的代码覆盖该关键词的比例。
+# 键为带后缀股票代码（与 tushare 代码一致）：
+#   {"*": 比例}                     该标的所有关键词统一覆盖
+#   {关键词: 比例}                  仅该关键词覆盖（优先于 "*"）
+# 示例：
+#   SPECIFIC_RATIO = {
+#       "601318.SH": {"国丰兴华": 0.3},
+#       "600036.SH": {"*": 0.5},
+#   }
+SPECIFIC_RATIO: dict = {
+    "601288.SH" : {"*": 0.0},
+    "600900.SH": {"*": 0.0},
+    "000001.SZ": {"*": 0.0},
+    "601658.SH": {"*": 0.0},
+    "601816.SH": {"*": 0.0},
 }
 # ====================================================
 
@@ -275,40 +294,113 @@ def _validate_keywords_once(key_word_ratio: dict) -> None:
                       f"匹配时将按最长关键词「{longer}」优先（权重 {key_word_ratio[longer]}）")
 
 
+_checked_specific_ids: set = set()
+
+
+def _validate_specific_ratio_once(key_word_ratio: dict, specific_ratio: dict) -> None:
+    """标的级覆盖校验（每个配置只检查一次）：关键词有效性、标的存在性，并打印覆盖汇总"""
+    config_id = (id(key_word_ratio), id(specific_ratio))
+    if config_id in _checked_specific_ids:
+        return
+    _checked_specific_ids.add(config_id)
+
+    if not specific_ratio:
+        return
+
+    # 关键词有效性：覆盖中的具体关键词必须存在于 KEY_WORD_RATIO（"*" 表示全部，恒合法）
+    for code, overrides in specific_ratio.items():
+        for keyword in overrides:
+            if keyword != "*" and keyword not in key_word_ratio:
+                print(f"⚠️ SPECIFIC_RATIO 关键词 {keyword} 不在 KEY_WORD_RATIO 中（{code}），该覆盖不会生效")
+
+    # 标的存在性：检查原始缓存（软告警，防拼错）
+    known_codes = set()
+    for period_data in RAW_CACHE.values():
+        known_codes.update(period_data.keys())
+    for code in specific_ratio:
+        if code not in known_codes:
+            print(f"⚠️ SPECIFIC_RATIO 标的 {code} 不在原始缓存中，请检查代码是否拼错")
+
+    # 覆盖汇总（简化显示：一行）
+    summary = format_specific_ratio_summary(specific_ratio)
+    if summary:
+        print(summary)
+
+
+def format_specific_ratio_summary(specific_ratio: dict | None = None) -> str:
+    """生成标的特殊设定汇总文本（无覆盖时返回空串），用于控制台与图片提示"""
+    if specific_ratio is None:
+        specific_ratio = SPECIFIC_RATIO
+    if not specific_ratio:
+        return ""
+
+    parts = []
+    for code, overrides in specific_ratio.items():
+        if set(overrides) == {"*"}:
+            parts.append(f"{code}→全部 {overrides['*']}")
+        else:
+            keyword_parts = []
+            if "*" in overrides:
+                keyword_parts.append(f"全部 {overrides['*']}")
+            for keyword, value in overrides.items():
+                if keyword != "*":
+                    keyword_parts.append(f"{keyword} {value}")
+            parts.append(f"{code}→{'、'.join(keyword_parts)}")
+    return f"标的特殊设定（共 {len(specific_ratio)} 个）：{'；'.join(parts)}"
+
+
+def _resolve_ratio(key_word_ratio: dict, specific_ratio: dict, ts_code: str, match_keyword: str):
+    """解析最终比例：标的+关键词精确覆盖 > 标的全量(*) > 关键词默认"""
+    overrides = (specific_ratio or {}).get(ts_code)
+    if overrides:
+        if match_keyword in overrides:
+            return overrides[match_keyword], "标的覆盖"
+        if "*" in overrides:
+            return overrides["*"], "标的覆盖"
+    return key_word_ratio[match_keyword], "关键词默认"
+
+
 def query_single_stock(
     ts_code: str,
     stock_name: str,
     period: str,
     key_word_ratio: dict,
+    specific_ratio: dict | None = None,
 ) -> list:
     """
     单个股票单报告期业务处理：从【原始缓存/接口】获取数据 → 筛选关键词（最长关键词优先）
     职责：纯业务处理，不关心数据来自缓存还是接口
+
+    specific_ratio：标的级精细化覆盖（{代码: {"*" 或 关键词: 比例}}），
+    仅当席位命中关键词后生效；未传时使用模块级 SPECIFIC_RATIO。
     """
+    if specific_ratio is None:
+        specific_ratio = SPECIFIC_RATIO
     _validate_keywords_once(key_word_ratio)
+    _validate_specific_ratio_once(key_word_ratio, specific_ratio)
     sorted_keywords = _sorted_keywords(key_word_ratio)
     raw_holders = get_stock_top10_raw(ts_code, period)
     match_list = []
 
     for row in raw_holders:
         holder_name = row["holder_name"]
-        match_ratio = None
         match_keyword = None
         # 业务筛选逻辑：最长关键词优先，避免子串歧义
         for keyword in sorted_keywords:
             if keyword in holder_name:
-                match_ratio = key_word_ratio[keyword]
                 match_keyword = keyword
                 break
-        if match_ratio is not None:
+        if match_keyword is not None:
+            final_ratio, ratio_source = _resolve_ratio(key_word_ratio, specific_ratio, ts_code, match_keyword)
             match_list.append({
                 "ts_code": ts_code,
                 "stock_name": stock_name,
                 "holder_name": holder_name,
                 "hold_amount": int(row["hold_amount"]),
                 "hold_ratio": round(row["hold_ratio"], 2),
-                "ratio": match_ratio,
+                "ratio": final_ratio,
                 "match_keyword": match_keyword,
+                "ratio_source": ratio_source,
             })
     return match_list
 
