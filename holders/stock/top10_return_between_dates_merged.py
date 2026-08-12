@@ -77,7 +77,7 @@ def merge_holders_by_stock(match_results):
     """
     按股票代码合并股东数据
     相同代码合并到一行，股东名称用分号隔开，持股数量/比例/持仓市值累加
-    按日1折算持仓从大到小排序，方便查看持仓最重的股票
+    按日1原始持仓（折算前）从大到小排序，方便查看持仓最重的股票
     """
     stock_groups = defaultdict(list)
     for item in match_results:
@@ -103,7 +103,7 @@ def merge_holders_by_stock(match_results):
         }
         merged_results.append(merged_item)
 
-    merged_results.sort(key=lambda x: (-x["adjust_value"], x["ts_code"]))
+    merged_results.sort(key=lambda x: (-x["original_value"], x["ts_code"]))
     return merged_results
 
 
@@ -160,7 +160,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按代码合并，按日1折算持仓降序）"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按代码合并，按日1原始持仓降序）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 

@@ -118,7 +118,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按日1折算持仓降序）"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的股票组合收益统计（按日1原始持仓降序）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -334,9 +334,9 @@ def query_top10():
             item["adjust_value_new"] = adjust_val_new  # 日2折算持仓
             item["has_corporate_action"] = abs(adj_ratio - 1.0) > 1e-9
 
-    # 表格按日1折算持仓降序排序（控制台与图片一致）
+    # 表格按日1原始持仓（折算前）降序排序（控制台与图片一致）
     if match_results:
-        match_results.sort(key=lambda x: (-x["adjust_value"], x["ts_code"]))
+        match_results.sort(key=lambda x: (-x["original_value"], x["ts_code"]))
 
     # 输出结果
     print("\n" + "=" * 200)

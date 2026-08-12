@@ -100,20 +100,32 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     ROW_HEIGHT = 40
     FONT_SIZE = 14
     HEADER_FONT_SIZE = 16
-    COL_WIDTHS = [100, 240, 150, 100, 130, 130, 440]
-    COL_NAMES = ["代码", "ETF名称", "份额(份)", "比例(%)", "日1市值(亿)", "日2市值(亿)", "持有人名称"]
+    COL_WIDTHS = [100, 240, 150, 100, 130, 130, 130, 440]
+    COL_NAMES = ["代码", "ETF名称", "份额(份)", "比例(%)", "日1市值(亿)", "日1折算市值(亿)", "日2折算市值(亿)", "持有人名称"]
 
     ratio_text = ", ".join([f"{k}({v})" for k, v in KEY_WORD_RATIO.items()])
     rows_to_show = match_results[:MAX_TABLE_ROWS]
     truncated = len(match_results) > MAX_TABLE_ROWS
     has_any_adj = any(item.get("has_corporate_action") for item in rows_to_show)
+    # 日1原始（折算前）市值小于 1 亿的行折叠为一行汇总（非市值列留空）
+    main_rows = [item for item in rows_to_show if item.get("original_value", 0) >= 1.0]
+    small_rows = [item for item in rows_to_show if item.get("original_value", 0) < 1.0]
+    has_small_rows = bool(small_rows)
+    small_count = len(small_rows)
+    small_orig_value1 = round(sum(item["original_value"] for item in small_rows), 2)
+    small_value1 = round(sum(item["adjust_value"] for item in small_rows), 2)
+    small_value2 = round(sum(item["adjust_value_new"] for item in small_rows), 2)
+    small_has_adj = any(item.get("has_corporate_action") for item in small_rows)
+    display_rows = list(main_rows)
+    if has_small_rows:
+        display_rows.append(None)  # None 表示小市值汇总行
     extra_rows = 7 if truncated else 6
     if has_any_adj:
         extra_rows += 1
     ratio_summary_text = format_specific_ratio_summary()
     if ratio_summary_text:
         extra_rows += 1
-    total_rows = len(rows_to_show) + extra_rows
+    total_rows = len(display_rows) + extra_rows
     img_width = sum(COL_WIDTHS) + 2 * PADDING
     img_height = total_rows * ROW_HEIGHT + 2 * PADDING + ROW_HEIGHT * 2
 
@@ -149,17 +161,33 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     draw.line([(PADDING, y), (img_width - PADDING, y)], fill="#95a5a6", width=1)
     y += 8
 
-    for row_index, item in enumerate(rows_to_show):
+    for row_index, item in enumerate(display_rows):
         x = PADDING
-        row_data = [
-            item["ts_code"],
-            item["etf_name"] + ("＊" if item.get("has_corporate_action") else ""),
-            f"{item['hold_amount']:,}",
-            f"{item['hold_ratio']:.2f}", f"{item['adjust_value']:.2f}",
-            f"{item['adjust_value_new']:.2f}", item["holder_name"],
-        ]
+        if item is None:
+            # 小市值汇总行：非市值列无意义，留空
+            row_data = [
+                "",
+                f"其他小市值（{small_count} 只）" + ("＊" if small_has_adj else ""),
+                "", "",
+                f"{small_orig_value1:.2f}", f"{small_value1:.2f}", f"{small_value2:.2f}",
+                "",
+            ]
+        else:
+            row_data = [
+                item["ts_code"],
+                item["etf_name"] + ("＊" if item.get("has_corporate_action") else ""),
+                f"{item['hold_amount']:,}",
+                f"{item['hold_ratio']:.2f}",
+                f"{item['original_value']:.2f}",
+                f"{item['adjust_value']:.2f}",
+                f"{item['adjust_value_new']:.2f}", item["holder_name"],
+            ]
         for i, data in enumerate(row_data):
             if i == len(COL_NAMES) - 1:
+                if item is None:
+                    # 汇总行持有人名称留空
+                    x += COL_WIDTHS[i]
+                    continue
                 # 持有人名称列：小号字体 + 换行，最多 NAME_MAX_LINES 行，垂直居中
                 name_lines = _wrap_text(data, draw, name_font, COL_WIDTHS[i] - 10, NAME_MAX_LINES)
                 lines_height = len(name_lines) * NAME_LINE_HEIGHT
@@ -307,8 +335,8 @@ def query_top10():
         item["adjust_value_new"] = adjust_val_new
         item["has_corporate_action"] = abs(adj_ratio - 1.0) > 1e-9
 
-    # 表格按日1市值降序排序（控制台与图片一致）
-    match_results.sort(key=lambda x: (-x["adjust_value"], x["ts_code"]))
+    # 表格按日1市值（原始）降序排序（控制台与图片一致）
+    match_results.sort(key=lambda x: (-x["original_value"], x["ts_code"]))
 
     print("\n" + "=" * 220)
     print(f"【{REPORT_PERIOD}】报告期查询完成！共找到 {len(match_results)} 个匹配持有人")
@@ -327,7 +355,7 @@ def query_top10():
         return_rate = 0.00
 
     print(f"{'代码':<10} {'ETF名称':<12} {'份额(份)':<15} {'比例(%)':<8} "
-          f"{'日1市值(亿)':<10} {'日2市值(亿)':<10} {'持有人名称':<32}")
+          f"{'日1市值(亿)':<10} {'日1折算市值(亿)':<14} {'日2折算市值(亿)':<10} {'持有人名称':<32}")
     print("-" * 220)
     for item in match_results:
         name_display = item["etf_name"] + ("＊" if item.get("has_corporate_action") else "")
@@ -335,6 +363,7 @@ def query_top10():
               f"{name_display:<12} "
               f"{item['hold_amount']:<16} "
               f"{item['hold_ratio']:<10.2f} "
+              f"{item['original_value']:<12} "
               f"{item['adjust_value']:<12} "
               f"{item['adjust_value_new']:<12} "
               f"{item['holder_name']:<32}")
