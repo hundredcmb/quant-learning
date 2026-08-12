@@ -15,6 +15,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
 - 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（pymysql、sqlalchemy）
+- 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 - 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取：
   - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型；`holders/` 和申万示例都从这里读 token
   - 数据库连接（`database.user` / `database.password` / `database.host` / `database.port` / `database.database`）同样从 vnpy 配置动态获取，`database/session.py` 据此构建 SQLAlchemy 连接串
@@ -112,6 +113,8 @@ python vnpy_examples/06_ma_strategy.py
 
 - 行业树优先用本地 `SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
+- **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/AGENTS.md`「未来规划」节
+- 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 
 ### vnpy 示例（vnpy_examples/）
 

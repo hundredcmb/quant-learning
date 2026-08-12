@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import warnings
 from datetime import datetime, timedelta
 
@@ -37,6 +38,8 @@ class ShenWanIndustryTree:
         self.no_industry_stocks: set[str] = set()  # 没有行业代码的股票集合
         self.ts_code_to_pct_chg_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股涨跌幅数据
         self.ts_code_to_circ_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股流通市值数据
+        self.ts_code_to_in_date: dict[str, str] = {}  # 成分股 -> 纳入申万行业的日期(YYYYMMDD), 用于历史日期过滤
+        self.ts_code_to_delist_date: dict[str, str] = {}  # 成分股 -> 退市日期(YYYYMMDD), 用于历史日期过滤
 
     def build_industries(self):
         """从本地 JSON 数据源构建申万三级行业树"""
@@ -104,9 +107,20 @@ class ShenWanIndustryTree:
             raise RuntimeError("请先构建行业树结构")
 
         if filter_unlisted and not self.stock_basic:
-            df = self.pro.stock_basic(list_status='L', fields='ts_code,name,list_date')
-            for _ix, row in df.iterrows():
+            df_l = self.pro.stock_basic(list_status='L', fields='ts_code,name,list_date')
+            for _ix, row in df_l.iterrows():
                 self.stock_basic[row['ts_code']] = row.to_dict()
+            # 退市/暂停上市股票也纳入, 供历史日期分析使用(按退市日期截断)
+            for status in ('D', 'P'):
+                df_status = self.pro.stock_basic(
+                    list_status=status,
+                    fields='ts_code,name,list_date,delist_date',
+                )
+                for _ix, row in df_status.iterrows():
+                    self.stock_basic[row['ts_code']] = row.to_dict()
+                    delist_date = row['delist_date']
+                    if delist_date is not None and not pd.isna(delist_date):
+                        self.ts_code_to_delist_date[row['ts_code']] = str(delist_date)
 
         count = 0
         offset = 0
@@ -119,6 +133,10 @@ class ShenWanIndustryTree:
                 ts_code = row['ts_code']
                 if filter_unlisted and (ts_code not in self.stock_basic):
                     continue
+
+                in_date = row.get('in_date')
+                if in_date is not None and not pd.isna(in_date):
+                    self.ts_code_to_in_date[ts_code] = str(in_date)
 
                 l3_code = row['l3_code']
                 if l3_node := self.index_code_to_node.get(l3_code):
@@ -158,9 +176,9 @@ class ShenWanIndustryTree:
                         [self.stock_basic[s]['name'] for s in c_child.constituent_stocks],
                     )
 
-    def get_ts_code_to_pct_chg(self, date: datetime) -> dict[str, float]:
-        """获取某日的行情数据: ts_code -> 涨跌幅(%)"""
-        ts_code_to_pct_chg: dict[str, float] = self.ts_code_to_pct_chg_cache.get(date) or {}
+    def get_ts_code_to_pct_chg(self, date: datetime) -> dict[str, float | None]:
+        """获取某日的行情数据: ts_code -> 涨跌幅(%), 数据异常时为 None"""
+        ts_code_to_pct_chg: dict[str, float | None] = self.ts_code_to_pct_chg_cache.get(date) or {}
         if ts_code_to_pct_chg:
             return ts_code_to_pct_chg
 
@@ -175,7 +193,23 @@ class ShenWanIndustryTree:
                 ts_code = row['ts_code']
                 pre_close = row['pre_close']
                 close = row['close']
-                pct_chg = (close - pre_close) / pre_close * 100
+                if pd.isna(pre_close) or pd.isna(close):
+                    warnings.warn(
+                        f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
+                        RuntimeWarning,
+                    )
+                    ts_code_to_pct_chg[ts_code] = None
+                    continue
+                pre_close_f = float(pre_close)
+                close_f = float(close)
+                if not (math.isfinite(pre_close_f) and pre_close_f > 0 and math.isfinite(close_f)):
+                    warnings.warn(
+                        f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
+                        RuntimeWarning,
+                    )
+                    ts_code_to_pct_chg[ts_code] = None
+                    continue
+                pct_chg = (close_f - pre_close_f) / pre_close_f * 100
                 ts_code_to_pct_chg[ts_code] = pct_chg
 
             offset += len(df)
@@ -194,7 +228,7 @@ class ShenWanIndustryTree:
             return ts_code_to_circ_mv
 
         offset = 0
-        batch_size = 999
+        batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
         date_str = date.strftime("%Y%m%d")
         while True:
             df = self.pro.daily_basic(
@@ -207,6 +241,8 @@ class ShenWanIndustryTree:
             for _ix, row in df.iterrows():
                 ts_code = row['ts_code']
                 circ_mv = row['circ_mv']
+                if pd.isna(circ_mv):
+                    continue
                 ts_code_to_circ_mv[ts_code] = circ_mv
 
             offset += len(df)
@@ -220,14 +256,30 @@ class ShenWanIndustryTree:
 
     def filter_stock_pool(self, date: datetime, stock_pool: set[str]) -> None:
         """过滤股票池"""
+        date_str = date.strftime("%Y%m%d")
+
         # 剔除缓存中记录的无行业分类的股票
         for no_industry_stock in self.no_industry_stocks:
             stock_pool.discard(no_industry_stock)
 
+        # 剔除分析日期之后才纳入行业的成分(避免前视偏差)
+        for ts_code in list(stock_pool):
+            in_date = self.ts_code_to_in_date.get(ts_code)
+            if in_date is not None and in_date > date_str:
+                stock_pool.discard(ts_code)
+
+        # 剔除分析日期晚于退市日的股票(退市后不再参与, 退市日当天及之前正常参与)
+        for ts_code in list(stock_pool):
+            delist_date = self.ts_code_to_delist_date.get(ts_code)
+            if delist_date is not None and delist_date < date_str:
+                stock_pool.discard(ts_code)
+
         # 剔除未上市的股票
-        for ts_code, sb_row in self.stock_basic.items():
+        for ts_code in self.stock_basic:
             list_date_str = self.stock_basic[ts_code]['list_date']
-            list_date = datetime.strptime(list_date_str, "%Y%m%d")
+            if pd.isna(list_date_str) or str(list_date_str).strip() == "":
+                continue
+            list_date = datetime.strptime(str(list_date_str), "%Y%m%d")
             if list_date >= date:
                 stock_pool.discard(ts_code)
 
@@ -294,6 +346,8 @@ class ShenWanIndustryTree:
                 continue
 
             pct_chg = ts_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
+            if pct_chg is None:
+                continue  # 数据异常(涨跌幅非有限值), 不计入
             for l_node, l_chg_map in [(l3_node, l3_chg_map), (l2_node, l2_chg_map), (l1_node, l1_chg_map)]:
                 l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
                 l_count_new = l_count + 1
@@ -381,6 +435,8 @@ class ShenWanIndustryTree:
             ]
 
             pct_chg = ts_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
+            if pct_chg is None:
+                continue  # 数据异常(涨跌幅非有限值), 不计入
             for l_node, l_chg_map, l_circ_map in data_list:
                 l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
                 l_circ1, l_circ2 = l_circ_map.get(l_node.index_code)
@@ -388,7 +444,7 @@ class ShenWanIndustryTree:
                 l_circ_mv = ts_code_to_circ_mv.get(ts_code)
 
                 # 处理当日停牌的情况: 需要获取停牌前的流通市值(最多支持连续停牌 2 年)
-                if l_circ_mv is None:
+                if l_circ_mv is None or pd.isna(l_circ_mv):
                     df = self.pro.daily_basic(
                         ts_code=ts_code,
                         fields='trade_date,circ_mv',
@@ -400,11 +456,14 @@ class ShenWanIndustryTree:
                     for _ix, row in df.iterrows():
                         d_str = row['trade_date']
                         if datetime.strptime(d_str, "%Y%m%d") <= date:
-                            l_circ_mv = row['circ_mv']
+                            cand = row['circ_mv']
+                            if pd.isna(cand):
+                                continue  # 该日市值缺失, 继续往前找最近的有效值
+                            l_circ_mv = float(cand)
                             ts_code_to_circ_mv[ts_code] = l_circ_mv
                             break
 
-                    if l_circ_mv is None:
+                    if l_circ_mv is None or pd.isna(l_circ_mv):
                         raise ValueError(f"没有获取到 {ts_code} 的流通市值数据")
 
                 # 新增流通市值
