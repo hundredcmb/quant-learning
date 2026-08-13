@@ -4,7 +4,7 @@
 - 行业树构建: 本地 SW2021.json 优先, tushare index_classify 备用
 - 成分加载: index_member_all + stock_basic(L/D/P), 记录 in_date / delist_date 供历史日期过滤
 - 行情/市值获取: daily / daily_basic, 带按日内存缓存
-- 排行榜逻辑见 ranking.py (单日榜 + 区间榜)
+- 排行榜算法见 industry_ranking.py (单日榜 + 区间榜), 入口脚本见 daily_ranking.py / range_ranking.py
 """
 
 import os
@@ -63,8 +63,8 @@ class ShenWanIndustryTree:
     def build_industries_by_tushare(self) -> None:
         """从 tushare 数据源构建申万三级行业树, 数据长期不变, 更推荐使用 build_industries"""
         df = self.pro.index_classify(src='SW2021')
-        for _ix, row in df.iterrows():
-            self.parse_industry_row(row)
+        for row in df.itertuples(index=False):
+            self.parse_industry_row(row._asdict())
         self.build_industry_names()
 
     def build_industry_names(self):
@@ -117,19 +117,19 @@ class ShenWanIndustryTree:
 
         if filter_unlisted and not self.stock_basic:
             df_l = self.pro.stock_basic(list_status='L', fields='ts_code,name,list_date')
-            for _ix, row in df_l.iterrows():
-                self.stock_basic[row['ts_code']] = row.to_dict()
+            for row in df_l.itertuples(index=False):
+                self.stock_basic[row.ts_code] = row._asdict()
             # 退市/暂停上市股票也纳入, 供历史日期分析使用(按退市日期截断)
             for status in ('D', 'P'):
                 df_status = self.pro.stock_basic(
                     list_status=status,
                     fields='ts_code,name,list_date,delist_date',
                 )
-                for _ix, row in df_status.iterrows():
-                    self.stock_basic[row['ts_code']] = row.to_dict()
-                    delist_date = row['delist_date']
+                for row in df_status.itertuples(index=False):
+                    self.stock_basic[row.ts_code] = row._asdict()
+                    delist_date = row.delist_date
                     if delist_date is not None and not pd.isna(delist_date):
-                        self.ts_code_to_delist_date[row['ts_code']] = str(delist_date)
+                        self.ts_code_to_delist_date[row.ts_code] = str(delist_date)
 
         count = 0
         offset = 0
@@ -138,16 +138,16 @@ class ShenWanIndustryTree:
             df = self.pro.index_member_all(offset=offset, limit=batch_size)
             if len(df) == 0:
                 break
-            for _ix, row in df.iterrows():
-                ts_code = row['ts_code']
+            for row in df.itertuples(index=False):
+                ts_code = row.ts_code
                 if filter_unlisted and (ts_code not in self.stock_basic):
                     continue
 
-                in_date = row.get('in_date')
+                in_date = getattr(row, 'in_date', None)
                 if in_date is not None and not pd.isna(in_date):
                     self.ts_code_to_in_date[ts_code] = str(in_date)
 
-                l3_code = row['l3_code']
+                l3_code = row.l3_code
                 if l3_node := self.index_code_to_node.get(l3_code):
                     l3_node.constituent_stocks.add(ts_code)
                     l3_node.parent.constituent_stocks.add(ts_code)
@@ -198,10 +198,10 @@ class ShenWanIndustryTree:
             df = self.pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
             if len(df) == 0:
                 break
-            for _ix, row in df.iterrows():
-                ts_code = row['ts_code']
-                pre_close = row['pre_close']
-                close = row['close']
+            for row in df.itertuples(index=False):
+                ts_code = row.ts_code
+                pre_close = row.pre_close
+                close = row.close
                 if pd.isna(pre_close) or pd.isna(close):
                     warnings.warn(
                         f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
@@ -247,9 +247,9 @@ class ShenWanIndustryTree:
                 offset=offset,
                 limit=batch_size,
             )
-            for _ix, row in df.iterrows():
-                ts_code = row['ts_code']
-                circ_mv = row['circ_mv']
+            for row in df.itertuples(index=False):
+                ts_code = row.ts_code
+                circ_mv = row.circ_mv
                 if pd.isna(circ_mv):
                     continue
                 ts_code_to_circ_mv[ts_code] = circ_mv

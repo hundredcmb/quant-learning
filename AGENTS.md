@@ -45,9 +45,10 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（已被 gitignore，不入库） |
 | `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
 | `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交） |
-| `shenwan_industry/tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、行情/市值获取 |
-| `shenwan_industry/ranking.py` | 排行榜逻辑：单日榜 + 区间累计涨幅榜（等权 / 流通市值加权） |
-| `shenwan_industry/classification.py` | 单日行业涨幅榜入口脚本（组装 tree + ranking） |
+| `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、行情/市值获取 |
+| `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 区间累计涨幅榜（等权 / 流通市值加权），含耗时/调用次数统计工具 |
+| `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
+| `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
 | `shenwan_industry/SW2021.json` | 申万 2021 行业分类本地数据（推荐的数据源） |
 | `vnpy_examples/` | vnpy 学习示例目录（配置、数据、图表、指标、回测等），按编号顺序学习 |
 
@@ -68,8 +69,8 @@ python holders/etf/etf_top10_holders_change_merged.py
 python holders/etf/etf_top10_return_between_dates.py
 
 # 申万行业涨幅示例
-python shenwan_industry/classification.py
-python shenwan_industry/ranking.py   # 区间涨幅榜示例（区间在文件内配置）
+python shenwan_industry/daily_ranking.py
+python shenwan_industry/range_ranking.py   # 区间涨幅榜示例（区间在文件内配置）
 
 # vnpy 示例（需先配置好数据库与 tushare）
 python vnpy_examples/01_settings.py

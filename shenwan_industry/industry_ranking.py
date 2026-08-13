@@ -1,8 +1,9 @@
 """
 申万行业排行榜: 单日榜 + 区间榜
 
-- daily_rank_equal_weight / daily_rank_float_weight: 单日榜 (自 classification.py 迁移, 逻辑不变)
-- rank_range: 区间累计涨幅榜
+- daily_rank_equal_weight / daily_rank_float_weight: 单日榜 (逻辑与原 classification.py 一致, 未改动)
+- rank_range: 区间累计涨幅榜, 支持 timings 参数记录各阶段耗时
+- wrap_api_counter / print_timing: 入口脚本用的接口调用计数与耗时输出工具
 
 区间榜网络策略: 区间内每个交易日拉一次 daily(trade_date), 用每日官方涨跌幅
 (close/pre_close, 除权除息日即除权参考价口径) 连乘得到个股区间收益;
@@ -12,22 +13,69 @@
 
 import logging
 import math
+import threading
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 import pandas as pd
 
 try:
-    from .tree import ShenWanIndustryTree
+    from .industry_tree import ShenWanIndustryTree
 except ImportError:  # 直接运行本文件时
-    from tree import ShenWanIndustryTree
+    from industry_tree import ShenWanIndustryTree
 
-logger = logging.getLogger("shenwan_industry.ranking")
+logger = logging.getLogger("shenwan_industry.industry_ranking")
 
 # 榜单项: (行业 index_code, 涨跌幅%, 成分股数量)
 RankList = list[tuple[str, float, int]]
 
+# 并发与限流: 本账号 5000 积分实测单接口 500 次/分钟(60 秒滚动窗口)。
+# 逐日行情并发拉取时按固定速率平摊请求, 避免瞬时爆发与官方窗口微小不对齐触发 429。
+MAX_DAILY_FETCH_WORKERS = 8   # 并发线程数
+MAX_DAILY_FETCH_RATE = 7.5    # 请求开始速率上限(次/秒), 约 450 次/分钟, 留 10% 余量
+DAILY_FETCH_RETRY = 3         # 单日失败重试次数(网络抖动/瞬时 429)
 
+
+def wrap_api_counter(pro) -> dict[str, int]:
+    """包装 tushare pro 常用接口以统计调用次数, 返回按接口名计数的 dict"""
+    counter: dict[str, int] = {}
+    for name in ("stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal"):
+        orig = getattr(pro, name)
+
+        def make_wrapper(n: str, o):
+            def wrapper(**kw):
+                counter[n] = counter.get(n, 0) + 1
+                return o(**kw)
+            return wrapper
+
+        setattr(pro, name, make_wrapper(name, orig))
+    return counter
+
+
+def print_timing(
+    groups: list[tuple[str, list[tuple[str, float]]]],
+    api_calls: dict[str, int] | None = None,
+) -> None:
+    """
+    控制台输出耗时分析(按主次分组)
+
+    groups: [(组名, [(阶段名, 秒数), ...]), ...], 每组显示小计与占比, 可选附 API 调用次数
+    """
+    total = sum(secs for _, items in groups for _, secs in items)
+    print("\n===== 耗时分析 =====")
+    for group_name, items in groups:
+        group_total = sum(secs for _, secs in items)
+        group_pct = group_total / total * 100 if total > 0 else 0.0
+        print(f"[{group_name}] 小计 {group_total:6.2f}s ({group_pct:5.1f}%)")
+        for name, secs in items:
+            pct = secs / total * 100 if total > 0 else 0.0
+            print(f"  {name:<28s} {secs:8.2f}s  {pct:5.1f}%")
+    print(f"总计 {total:8.2f}s")
+    if api_calls:
+        detail = ", ".join(f"{k} {v}次" for k, v in api_calls.items() if v)
+        print(f"  API 调用: {detail}")
 def daily_rank_equal_weight(
     tree: ShenWanIndustryTree,
     date: datetime,
@@ -108,10 +156,10 @@ def _resolve_circ_mv(
         end_date=date_str,
     )
     # 响应的数据默认按日期降序
-    for _ix, row in df.iterrows():
-        d_str = row['trade_date']
+    for row in df.itertuples(index=False):
+        d_str = row.trade_date
         if datetime.strptime(d_str, "%Y%m%d") <= date:
-            cand = row['circ_mv']
+            cand = row.circ_mv
             if pd.isna(cand):
                 continue  # 该日市值缺失, 继续往前找最近的有效值
             return float(cand)
@@ -121,6 +169,7 @@ def _resolve_circ_mv(
 def daily_rank_float_weight(
     tree: ShenWanIndustryTree,
     date: datetime,
+    timings: dict[str, float] | None = None,
 ) -> tuple[RankList, RankList, RankList]:
     """获取指定日期的行业涨幅(流通市值加权)排名"""
     if not tree.root.children:
@@ -184,7 +233,13 @@ def daily_rank_float_weight(
 
             # 处理当日停牌的情况: 需要获取停牌前的流通市值(最多支持连续停牌 2 年)
             if l_circ_mv is None or pd.isna(l_circ_mv):
+                if timings is not None:
+                    _t0 = time.perf_counter()
                 l_circ_mv = _resolve_circ_mv(tree, ts_code, date, date_str)
+                if timings is not None:
+                    timings["circ_fallback"] = timings.get("circ_fallback", 0.0) + (
+                        time.perf_counter() - _t0
+                    )
                 if l_circ_mv is None:
                     raise ValueError(f"没有获取到 {ts_code} 的流通市值数据")
                 ts_code_to_circ_mv[ts_code] = l_circ_mv
@@ -245,10 +300,10 @@ def _fetch_daily_by_date(pro, date_str: str) -> dict[str, tuple[float, float]]:
         )
         if len(df) == 0:
             break
-        for _ix, row in df.iterrows():
-            ts_code = row['ts_code']
-            pre_close = row['pre_close']
-            close = row['close']
+        for row in df.itertuples(index=False):
+            ts_code = row.ts_code
+            pre_close = row.pre_close
+            close = row.close
             if pd.isna(pre_close) or pd.isna(close):
                 warnings.warn(
                     f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
@@ -272,20 +327,63 @@ def _fetch_daily_by_date(pro, date_str: str) -> dict[str, tuple[float, float]]:
     return result
 
 
+def _fetch_daily_batch(
+    pro,
+    trading_days: list[str],
+) -> dict[str, dict[str, tuple[float, float]]]:
+    """
+    并发拉取多日 daily, 返回 {日期: {ts_code: (close, pre_close)}}
+
+    - 线程池并发 + 全局请求节流: 请求开始时刻按 MAX_DAILY_FETCH_RATE 平摊,
+      60 秒滚动窗口内请求数 ≈ 交易日数, 远低于 500 次/分钟, 且不集中爆发
+    - 单日失败自动重试 DAILY_FETCH_RETRY 次, 仍失败则抛错(不静默改变结果)
+    """
+    results: dict[str, dict[str, tuple[float, float]]] = {}
+    lock = threading.Lock()
+    next_start = [0.0]
+    interval = 1.0 / MAX_DAILY_FETCH_RATE
+
+    def fetch_one(day_str: str) -> tuple[str, dict[str, tuple[float, float]]]:
+        with lock:
+            wait = next_start[0] - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            next_start[0] = time.perf_counter() + interval
+        last_err: Exception | None = None
+        for attempt in range(1, DAILY_FETCH_RETRY + 1):
+            try:
+                return day_str, _fetch_daily_by_date(pro, day_str)
+            except Exception as err:
+                last_err = err
+                time.sleep(0.5 * attempt)
+        raise RuntimeError(
+            f"拉取 {day_str} 行情连续失败 {DAILY_FETCH_RETRY} 次: {last_err}"
+        )
+
+    with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
+        for day_str, data in executor.map(fetch_one, trading_days):
+            results[day_str] = data
+    return results
+
+
 def rank_range(
     tree: ShenWanIndustryTree,
     start_date: datetime,
     end_date: datetime,
+    timings: dict[str, float] | None = None,
 ) -> tuple[tuple[RankList, RankList, RankList], tuple[RankList, RankList, RankList]]:
     """
     区间累计涨幅榜, 返回 (等权(l1,l2,l3), 流通市值加权(l1,l2,l3))
 
     口径:
     - 参与股票 = 区间起始日已在成分(in_date <= 起点) 且 区间末仍在(delist_date >= 终点);
-      中段才纳入的剔除并告警, 区间末前已退市的不参与; 起始日尚未上市(list_date >= 起点)的剔除并告警
+      中段才纳入/起始日尚未上市(list_date >= 起点)/区间末前已退市均剔除;
+      同类剔除告警按类型汇总为一行(数量 + 少量样例), 避免大量日志刷屏
     - 个股区间收益 = 区间内所有有行情日的每日官方涨跌幅连乘(除权除息自动修正),
       隐含基准 = 区间内首个有行情日的 pre_close(即区间前一交易日收盘/停牌前收盘), **包含起始日当天涨跌**
     - 权重 = 区间起始日流通市值(起始日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
+    - timings: 可选 dict, 记录各阶段耗时
+      (trade_cal/participate/daily_fetch/accumulate/circ_fetch/circ_fallback/compute/trading_days)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -298,40 +396,75 @@ def rank_range(
     if start_str > end_str:
         raise ValueError(f"区间起点不能晚于终点: {start_str} > {end_str}")
 
+    if timings is not None:
+        _t0 = time.perf_counter()
     trading_days = _get_trading_days(tree.pro, start_str, end_str)
+    if timings is not None:
+        timings["trade_cal"] = time.perf_counter() - _t0
+        timings["trading_days"] = float(len(trading_days))
     if not trading_days:
         raise ValueError(f"区间内没有交易日: {start_str} ~ {end_str}")
 
     # 1) 参与股票: 起始日已在成分 且 区间末仍在
+    if timings is not None:
+        _t0 = time.perf_counter()
     participating: set[str] = set()
+    excluded_before_listing: list[str] = []  # 起始日尚未上市
+    excluded_mid_range: list[str] = []       # 中段才纳入
     for ts_code in tree.constituent_stock_to_l3_node:
         in_date = tree.ts_code_to_in_date.get(ts_code)
         delist_date = tree.ts_code_to_delist_date.get(ts_code)
         list_date = tree.stock_basic.get(ts_code, {}).get('list_date')
         if list_date is not None and not pd.isna(list_date) and str(list_date) >= start_str:
-            logger.warning(
-                f"区间榜剔除起始日尚未上市股票: {ts_code} list_date={list_date} 晚于区间起点 {start_str}"
-            )
+            excluded_before_listing.append(ts_code)
             continue
         if in_date is not None and in_date > start_str:
-            logger.warning(
-                f"区间榜剔除中段纳入股票: {ts_code} in_date={in_date} 晚于区间起点 {start_str}"
-            )
+            excluded_mid_range.append(ts_code)
             continue
         if delist_date is not None and delist_date < end_str:
             continue  # 区间末前已退市, 按区间末成分口径不参与
         participating.add(ts_code)
+    # 剔除告警按类型汇总为一行, 避免大量同类日志刷屏
+    if excluded_before_listing:
+        samples = ", ".join(
+            f"{c}(list_date={tree.stock_basic.get(c, {}).get('list_date')})"
+            for c in excluded_before_listing[:3]
+        )
+        logger.warning(
+            f"区间榜剔除起始日尚未上市股票 {len(excluded_before_listing)} 只"
+            f"(如 {samples}{'...' if len(excluded_before_listing) > 3 else ''})"
+        )
+    if excluded_mid_range:
+        samples = ", ".join(
+            f"{c}(in_date={tree.ts_code_to_in_date.get(c)})" for c in excluded_mid_range[:3]
+        )
+        logger.warning(
+            f"区间榜剔除中段纳入股票 {len(excluded_mid_range)} 只"
+            f"(如 {samples}{'...' if len(excluded_mid_range) > 3 else ''})"
+        )
+    if timings is not None:
+        timings["participate"] = time.perf_counter() - _t0
 
-    # 2) 逐日拉行情, 连乘区间累计收益(含起始日当天涨跌, 隐含基准=首个有行情日的 pre_close)
+    # 2) 逐日拉行情(并发+限流平摊), 再连乘区间累计收益(含起始日当天涨跌,
+    #    隐含基准=首个有行情日的 pre_close)
+    if timings is not None:
+        _t0 = time.perf_counter()
+    batch_data = _fetch_daily_batch(tree.pro, trading_days)
+    if timings is not None:
+        timings["daily_fetch"] = time.perf_counter() - _t0
+    if timings is not None:
+        _t0 = time.perf_counter()
     stock_prod: dict[str, float] = {}
     for day_str in trading_days:
-        day_data = _fetch_daily_by_date(tree.pro, day_str)
+        day_data = batch_data[day_str]
         if not day_data:
             continue
         for ts_code, (close, pre_close) in day_data.items():
             if ts_code not in participating:
                 continue
             stock_prod[ts_code] = stock_prod.get(ts_code, 1.0) * (close / pre_close)
+    if timings is not None:
+        timings["accumulate"] = time.perf_counter() - _t0
 
     # 区间累计收益(%): 整段区间无任何行情的股票直接剔除
     stock_ret: dict[str, float] = {}
@@ -340,18 +473,35 @@ def rank_range(
             stock_ret[ts_code] = (stock_prod.get(ts_code, 1.0) - 1.0) * 100.0
 
     # 3) 权重: 区间起始日(=区间内第一个交易日)流通市值, 停牌回退
+    if timings is not None:
+        _t0 = time.perf_counter()
     weight_date_str = trading_days[0]
     weight_date = datetime.strptime(weight_date_str, "%Y%m%d")
     ts_code_to_circ_mv: dict[str, float] = tree.get_ts_code_to_circ_mv(weight_date)
+    if timings is not None:
+        timings["circ_fetch"] = time.perf_counter() - _t0
+    if timings is not None:
+        _t0 = time.perf_counter()
+    no_circ_mv_stocks: list[str] = []
     for ts_code in stock_ret:
         if ts_code_to_circ_mv.get(ts_code) is None or pd.isna(ts_code_to_circ_mv.get(ts_code)):
             circ_mv = _resolve_circ_mv(tree, ts_code, weight_date, weight_date_str)
             if circ_mv is None:
-                logger.warning(f"区间榜无法获取 {ts_code} 起始日流通市值, 仅参与等权榜")
+                no_circ_mv_stocks.append(ts_code)
                 continue
             ts_code_to_circ_mv[ts_code] = circ_mv
+    if no_circ_mv_stocks:
+        samples = ", ".join(no_circ_mv_stocks[:3])
+        logger.warning(
+            f"区间榜无法获取 {len(no_circ_mv_stocks)} 只股票起始日流通市值"
+            f"(如 {samples}{'...' if len(no_circ_mv_stocks) > 3 else ''}), 仅参与等权榜"
+        )
+    if timings is not None:
+        timings["circ_fallback"] = time.perf_counter() - _t0
 
     # 4) 聚合三级行业: 等权 = 起始成分简单平均; 加权 = 起始流通市值加权
+    if timings is not None:
+        _t0 = time.perf_counter()
     l1_ew: dict[str, list] = {}  # index_code -> [count, 收益和]
     l2_ew: dict[str, list] = {}
     l3_ew: dict[str, list] = {}
@@ -411,43 +561,10 @@ def rank_range(
     l1_ew_list, l1_fw_list = _finalize(l1_ew, l1_fw)
     l2_ew_list, l2_fw_list = _finalize(l2_ew, l2_fw)
     l3_ew_list, l3_fw_list = _finalize(l3_ew, l3_fw)
+    if timings is not None:
+        timings["compute"] = time.perf_counter() - _t0
 
     return (
         (l1_ew_list, l2_ew_list, l3_ew_list),
         (l1_fw_list, l2_fw_list, l3_fw_list),
     )
-
-
-if __name__ == "__main__":
-    """区间榜示例: 计算一个交易日区间的申万行业区间累计涨幅"""
-    import tushare as ts
-    from vnpy.trader.setting import SETTINGS
-
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
-
-    RANGE_START = datetime(2024, 9, 24)
-    RANGE_END = datetime(2024, 12, 31)
-
-    token: str = SETTINGS["datafeed.password"]
-    if not token:
-        raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
-
-    pro = ts.pro_api(token=token)
-    tree = ShenWanIndustryTree(tushare_pro=pro)
-    tree.build_industries()
-    tree.build_constituent_stocks_by_tushare()
-
-    (l1_ew, l2_ew, l3_ew), (l1_fw, l2_fw, l3_fw) = rank_range(tree, RANGE_START, RANGE_END)
-
-    for level, ew, fw in ((3, l3_ew, l3_fw), (2, l2_ew, l2_fw), (1, l1_ew, l1_fw)):
-        print(f"\n\n{RANGE_START.strftime('%Y-%m-%d')} ~ {RANGE_END.strftime('%Y-%m-%d')} 申万{level}级行业区间涨幅榜")
-        print("流通市值加权涨幅|等权涨幅|行业名称|成分股数量")
-        for index_ts_code, fw_pct, count in fw:
-            ew_pct = next((x[1] for x in ew if x[0] == index_ts_code), None)
-            if ew_pct is None:
-                raise ValueError(f"没有获取到等权重区间涨幅数据: index_code={index_ts_code}")
-            print(
-                f"{'+' if fw_pct >= 0 else ''}{fw_pct:.2f}%|"
-                f"{'+' if ew_pct >= 0 else ''}{ew_pct:.2f}%|"
-                f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{count}"
-            )

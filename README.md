@@ -43,7 +43,10 @@ quant-learning/
 │       └── etf_basic.json              # ETF 基础信息缓存（代码、名称、成立日）
 ├── output/                    # 运行产物（生成的图片，已 gitignore）
 ├── shenwan_industry/
-│   ├── classification.py      # 申万行业树构建与行业涨幅排名
+│   ├── industry_tree.py       # 申万行业树与成分数据层
+│   ├── industry_ranking.py    # 排行榜算法（单日 + 区间）
+│   ├── daily_ranking.py       # 单日涨幅榜入口（含耗时分析）
+│   ├── range_ranking.py       # 区间涨幅榜入口（含耗时分析）
 │   └── SW2021.json            # 申万 2021 行业分类本地数据
 ├── skills/                    # Tushare 官方 skills（接口文档，供 AI Agent 查阅；已 gitignore）
 └── vnpy_examples/
@@ -151,10 +154,11 @@ skills 中包含完整的数据接口文档（`skills/tushare/references/数据�
 ### 2. 申万行业涨幅
 
 ```powershell
-C:\veighna_studio\python.exe shenwan_industry/classification.py
+C:\veighna_studio\python.exe shenwan_industry/daily_ranking.py
+C:\veighna_studio\python.exe shenwan_industry/range_ranking.py   # 区间涨幅榜（区间在文件内配置）
 ```
 
-示例默认计算指定日期的申万一级 / 二级 / 三级行业涨幅榜（等权与流通市值加权两种口径），行业树从本地 `SW2021.json` 构建。
+示例默认计算指定日期（或区间）的申万一级 / 二级 / 三级行业涨幅榜（等权与流通市值加权两种口径），行业树从本地 `SW2021.json` 构建；两个入口运行结束都会在控制台输出耗时分析与 API 调用次数。
 
 ### 3. vnpy 示例
 
