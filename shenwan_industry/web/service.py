@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
@@ -10,6 +11,7 @@ import time
 import warnings
 from contextlib import contextmanager
 from datetime import date, datetime, time as datetime_time, timedelta
+from pathlib import Path
 from typing import Any, Iterator
 
 import tushare as ts
@@ -26,6 +28,15 @@ from ..industry_tree import ShenWanIndustryTree
 
 logger = logging.getLogger("shenwan_industry.web.service")
 _NO_INDUSTRY_STOCKS: set[str] = set()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_SW2021_PATH = _REPO_ROOT / "shenwan_industry" / "SW2021.json"
+
+with _SW2021_PATH.open("r", encoding="utf-8") as _fp:
+    _L1_INDEXES = {
+        row["index_code"]: row["industry_name"]
+        for row in json.load(_fp)
+        if row["level"] == "L1"
+    }
 
 
 @contextmanager
@@ -101,6 +112,61 @@ def get_default_dates() -> dict[str, str]:
         "range_start": prev_month_first.strftime("%Y-%m-%d"),
         "range_end": prev_month_last.strftime("%Y-%m-%d"),
     }
+
+
+def get_index_kline(
+    index_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
+    """获取申万一级行业官方指数日 K 线。"""
+    index_code = index_code.strip()
+    if index_code not in _L1_INDEXES:
+        raise ValueError(f"不是有效的申万一级行业指数代码: {index_code}")
+
+    pro = ts.pro_api(token=_get_token())
+    kwargs: dict[str, Any] = {"ts_code": index_code}
+    if start_date:
+        kwargs["start_date"] = start_date
+    if end_date:
+        kwargs["end_date"] = end_date
+
+    df = pro.sw_daily(**kwargs)
+    if df is None or len(df) == 0:
+        raise ValueError(f"没有获取到 {index_code} 的 K 线数据")
+
+    df = df.sort_values("trade_date")
+    bars = []
+    for row in df.itertuples(index=False):
+        bars.append(
+            {
+                "date": str(row.trade_date),
+                "open": _safe_float(row.open),
+                "high": _safe_float(row.high),
+                "low": _safe_float(row.low),
+                "close": _safe_float(row.close),
+                "vol": _safe_float(getattr(row, "vol", None)),
+                "amount": _safe_float(getattr(row, "amount", None)),
+            }
+        )
+
+    return {
+        "index_code": index_code,
+        "name": _L1_INDEXES[index_code],
+        "bars": bars,
+    }
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
 
 
 class PreparedContext:

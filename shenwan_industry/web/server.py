@@ -45,6 +45,18 @@ def defaults() -> dict:
     return service.get_default_dates()
 
 
+@app.get("/api/index/{index_code}/kline")
+def get_index_kline(
+    index_code: str,
+    start_date: str | None = Query(default=None, pattern=r"^\d{8}$"),
+    end_date: str | None = Query(default=None, pattern=r"^\d{8}$"),
+) -> dict:
+    try:
+        return service.get_index_kline(index_code, start_date, end_date)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
 @app.post("/api/rankings/daily")
 def submit_daily(request: DailyRankingRequest) -> dict:
     job = job_manager.submit("daily", request.model_dump())

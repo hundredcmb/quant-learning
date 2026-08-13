@@ -291,6 +291,16 @@ tbody tr:hover {
   font-size: 13px;
 }
 
+.index-link {
+  color: var(--primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.index-link:hover {
+  text-decoration: underline;
+}
+
 .modal-mask {
   position: fixed;
   inset: 0;
@@ -308,6 +318,10 @@ tbody tr:hover {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.kline-modal {
+  width: min(1200px, 96vw);
 }
 
 .modal-header {
@@ -338,6 +352,41 @@ tbody tr:hover {
 .sub-table-wrap {
   overflow: auto;
   padding: 0 8px 8px;
+}
+
+.kline-toolbar {
+  padding: 12px 22px 0;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.segmented button {
+  padding: 7px 16px;
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: #fff;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segmented button:last-child {
+  border-right: 0;
+}
+
+.segmented button.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.kline-chart {
+  width: 100%;
+  height: 560px;
+  min-height: 360px;
 }
 
 .loading {

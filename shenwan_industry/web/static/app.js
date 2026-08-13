@@ -13,6 +13,9 @@ const state = {
   subRows: [],
   subSort: { key: "pct_chg", dir: "desc" },
   currentIndustry: null,
+  klineData: null,
+  klineSubchart: "amount",
+  klineChart: null,
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -96,7 +99,25 @@ function bindEvents() {
   $("#query-btn").addEventListener("click", submit);
   $("#cancel-btn").addEventListener("click", cancelTask);
   $("#sub-close").addEventListener("click", closeSubPanel);
+  $("#kline-close").addEventListener("click", closeKlinePanel);
   $("#result-back-btn").addEventListener("click", backToQuery);
+
+  $$(".segmented button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.klineSubchart = button.dataset.subchart;
+      $$(".segmented button").forEach((item) => item.classList.remove("active"));
+      button.classList.add("active");
+      if (state.klineData) {
+        renderKlineChart();
+      }
+    });
+  });
+
+  window.addEventListener("resize", () => {
+    if (state.klineChart) {
+      state.klineChart.resize();
+    }
+  });
 
   bindSortableHeaders("#main-table", state.mainSort, renderMainTable);
   bindSortableHeaders("#sub-table", state.subSort, renderSubTable);
@@ -278,10 +299,16 @@ function renderMainTable() {
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const tr = document.createElement("tr");
+    const indexCodeHtml = state.level === 1
+      ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.index_code)}</a>`
+      : escapeHtml(row.index_code);
+    const industryNameHtml = state.level === 1
+      ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.industry_name)}</a>`
+      : escapeHtml(row.industry_name);
     tr.innerHTML = `
       <td>${row.rank}</td>
-      <td>${escapeHtml(row.index_code)}</td>
-      <td>${escapeHtml(row.industry_name)}</td>
+      <td>${indexCodeHtml}</td>
+      <td>${industryNameHtml}</td>
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
       <td>${row.count}</td>
       <td>
@@ -297,6 +324,12 @@ function renderMainTable() {
 }
 
 function handleMainTableClick(event) {
+  const klineLink = event.target.closest("[data-kline-code]");
+  if (klineLink) {
+    openKlinePanel(klineLink.dataset.klineCode, klineLink.textContent.trim());
+    return;
+  }
+
   const button = event.target.closest("[data-index-code]");
   if (!button) {
     return;
@@ -353,6 +386,177 @@ function closeSubPanel() {
   hideElement("#sub-panel");
   state.currentIndustry = null;
   state.subRows = [];
+}
+
+function openKlinePanel(indexCode, industryName) {
+  state.klineData = null;
+  state.klineSubchart = "amount";
+  $$(".segmented button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.subchart === "amount");
+  });
+  $("#kline-title").textContent = `${industryName} · 指数 K 线`;
+  $("#kline-subtitle").textContent = indexCode;
+  $("#kline-chart").innerHTML = "";
+  hideElement("#kline-error");
+  showElement("#kline-loading");
+  showElement("#kline-panel");
+
+  fetch(`/api/index/${encodeURIComponent(indexCode)}/kline`)
+    .then(handleFetchError)
+    .then((data) => {
+      state.klineData = data;
+      hideElement("#kline-loading");
+      renderKlineChart();
+    })
+    .catch((error) => {
+      hideElement("#kline-loading");
+      $("#kline-error").textContent = error.message;
+      showElement("#kline-error");
+    });
+}
+
+function closeKlinePanel() {
+  hideElement("#kline-panel");
+  state.klineData = null;
+  if (state.klineChart) {
+    state.klineChart.dispose();
+    state.klineChart = null;
+  }
+}
+
+function renderKlineChart() {
+  if (!state.klineData || !window.echarts) {
+    return;
+  }
+
+  const bars = state.klineData.bars || [];
+  if (bars.length === 0) {
+    $("#kline-error").textContent = "暂无 K 线数据";
+    showElement("#kline-error");
+    return;
+  }
+
+  if (state.klineChart) {
+    state.klineChart.dispose();
+  }
+  const chart = window.echarts.init(document.getElementById("kline-chart"));
+  state.klineChart = chart;
+
+  const dates = bars.map((bar) => formatDateText(bar.date));
+  const candleData = bars.map((bar) => [bar.open, bar.close, bar.low, bar.high]);
+  const isAmount = state.klineSubchart === "amount";
+  const subValues = bars.map((bar) => (isAmount ? bar.amount : bar.vol));
+  const subColors = bars.map((bar) => {
+    if (bar.close >= bar.open) {
+      return "#d92d20";
+    }
+    return "#12995b";
+  });
+
+  chart.setOption({
+    animation: false,
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter(params) {
+        const candle = params.find((item) => item.seriesType === "candlestick");
+        if (!candle) {
+          return "";
+        }
+        const index = candle.dataIndex;
+        const bar = bars[index];
+        const value = subValues[index];
+        const subLabel = isAmount ? "成交额" : "成交量";
+        const subText = isAmount ? formatAmount(bar.amount) : formatVolume(bar.vol);
+        return [
+          `<strong>${dates[index]}</strong>`,
+          `开盘：${formatNumber(bar.open)}`,
+          `最高：${formatNumber(bar.high)}`,
+          `最低：${formatNumber(bar.low)}`,
+          `收盘：${formatNumber(bar.close)}`,
+          `${subLabel}：${subText}`,
+        ].join("<br>");
+      },
+    },
+    axisPointer: {
+      link: [{ xAxisIndex: "all" }],
+    },
+    grid: [
+      { left: 70, right: 24, top: 30, height: "62%" },
+      { left: 70, right: 24, top: "74%", height: "18%" },
+    ],
+    xAxis: [
+      {
+        type: "category",
+        data: dates,
+        boundaryGap: true,
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
+        axisLabel: { show: false },
+        min: "dataMin",
+        max: "dataMax",
+      },
+      {
+        type: "category",
+        gridIndex: 1,
+        data: dates,
+        boundaryGap: true,
+        axisLine: { lineStyle: { color: "#cbd5e1" } },
+        axisLabel: { show: true },
+        min: "dataMin",
+        max: "dataMax",
+      },
+    ],
+    yAxis: [
+      {
+        scale: true,
+        splitLine: { lineStyle: { color: "#edf0f4" } },
+        axisLabel: { color: "#64748b" },
+      },
+      {
+        gridIndex: 1,
+        scale: true,
+        splitLine: { show: false },
+        axisLabel: { color: "#64748b" },
+      },
+    ],
+    dataZoom: [
+      {
+        type: "inside",
+        xAxisIndex: [0, 1],
+        start: Math.max(0, 100 - (250 / bars.length) * 100),
+        end: 100,
+      },
+      {
+        type: "slider",
+        xAxisIndex: [0, 1],
+        top: "94%",
+        height: 24,
+        start: Math.max(0, 100 - (250 / bars.length) * 100),
+        end: 100,
+      },
+    ],
+    series: [
+      {
+        name: "K线",
+        type: "candlestick",
+        data: candleData,
+        itemStyle: {
+          color: "#d92d20",
+          color0: "#12995b",
+          borderColor: "#d92d20",
+          borderColor0: "#12995b",
+        },
+      },
+      {
+        name: isAmount ? "成交额" : "成交量",
+        type: "bar",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: subValues,
+        itemStyle: { color: (params) => subColors[params.dataIndex] },
+      },
+    ],
+  });
 }
 
 function backToQuery() {
@@ -469,6 +673,27 @@ function formatPrice(value) {
     return "—";
   }
   return Number(value).toFixed(2);
+}
+
+function formatNumber(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return Number(value).toFixed(2);
+}
+
+function formatAmount(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return `${(Number(value) / 10000).toFixed(2)} 亿元`;
+}
+
+function formatVolume(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return `${Number(value).toFixed(2)} 万股`;
 }
 
 function pctClass(value) {

@@ -131,6 +131,28 @@
     </div>
   </div>
 
+  <div id="kline-panel" class="modal-mask hidden">
+    <div class="modal kline-modal">
+      <div class="modal-header">
+        <div>
+          <h2 id="kline-title">指数 K 线</h2>
+          <div id="kline-subtitle"></div>
+        </div>
+        <button id="kline-close" class="close-btn">关闭</button>
+      </div>
+      <div class="kline-toolbar">
+        <div class="segmented">
+          <button data-subchart="amount" class="active">成交额</button>
+          <button data-subchart="vol">成交量</button>
+        </div>
+      </div>
+      <div id="kline-loading" class="loading hidden">正在加载 K 线...</div>
+      <div id="kline-error" class="error-panel hidden"></div>
+      <div id="kline-chart" class="kline-chart"></div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/echarts.min.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

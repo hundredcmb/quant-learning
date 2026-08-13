@@ -13,7 +13,7 @@
   - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，随仓库提交，勿删）
   - `qfq_adjust.py`：静态前复权纯算法（同花顺/东财同款，移植自 `vnpy_examples/03_datafeed.py`），当前**仅独立算法模块，未接入行业排名**；排名涨跌幅口径见第 3 节
   - `__init__.py`：空
-  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）。后台单 worker 串行执行任务，前端轮询进度，支持单日榜 / 区间榜、主表升降序和成分股子表；`desktop.pyw` 为 Qt WebEngine 桌面窗口启动器，负责后台启动服务、加载前端并在窗口关闭时清理后端进程
+  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）。后台单 worker 串行执行任务，前端轮询进度，支持单日榜 / 区间榜、主表升降序和成分股子表；`desktop.pyw` 为 Qt WebEngine 桌面窗口启动器，负责后台启动服务、加载前端并在窗口关闭时清理后端进程。一级行业官方指数 K 线通过 `sw_daily` 获取，前端使用 `static/vendor/echarts.min.js` 绘制
 
 ## 运行环境与数据源
 

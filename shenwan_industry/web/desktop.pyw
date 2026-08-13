@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import subprocess
@@ -78,6 +79,7 @@ class DesktopWindow(QMainWindow):
         self.backend_process: subprocess.Popen | None = None
         self.backend_log_file: object | None = None
         self.started_by_us = False
+        self._backend_stopped = False
         self.web_view: QWebEngineView | None = None
 
         self.setWindowTitle("申万行业排行榜")
@@ -104,14 +106,16 @@ class DesktopWindow(QMainWindow):
         self.setCentralWidget(self.web_view)
 
     def stop_owned_backend(self) -> None:
-        if not self.started_by_us or self.backend_process is None:
+        if self._backend_stopped or not self.started_by_us or self.backend_process is None:
             return
+        self._backend_stopped = True
         if self.backend_process.poll() is None:
             self.backend_process.terminate()
             try:
                 self.backend_process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 self.backend_process.kill()
+                self.backend_process.wait(timeout=3)
         if self.backend_log_file is not None:
             try:
                 self.backend_log_file.close()
@@ -151,6 +155,8 @@ def main() -> int:
 
     window.attach_backend(process, log_file, started_by_us)
     window.show_frontend()
+    app.aboutToQuit.connect(window.stop_owned_backend)
+    atexit.register(window.stop_owned_backend)
     return app.exec()
 
 
