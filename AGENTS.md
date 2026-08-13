@@ -54,6 +54,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | `shenwan_industry/web/jobs.py` | Web 后台单 worker 任务队列与 Job 状态/进度管理 |
 | `shenwan_industry/web/service.py` | Web 接口与现有行业排行算法的适配层 |
 | `shenwan_industry/web/static/` | Web 前端页面：查询表单、进度条、主表和成分股子表 |
+| `shenwan_industry/web/desktop.pyw` | 桌面窗口启动器：后台自动启动 FastAPI，并用 Qt WebEngine 打开前端页面 |
 | `vnpy_examples/` | vnpy 学习示例目录（配置、数据、图表、指标、回测等），按编号顺序学习 |
 
 ## 常用命令
@@ -78,6 +79,9 @@ python shenwan_industry/range_ranking.py   # 区间涨幅榜示例（区间在�
 
 # 申万行业本地 Web 服务
 C:\veighna_studio\python.exe -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
+
+# 申万行业桌面窗口客户端（后台自动启动后端）
+C:\veighna_studio\pythonw.exe shenwan_industry\web\desktop.pyw
 
 # vnpy 示例（需先配置好数据库与 tushare）
 python vnpy_examples/01_settings.py
@@ -127,6 +131,7 @@ python vnpy_examples/06_ma_strategy.py
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/AGENTS.md`「未来规划」节
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/AGENTS.md`「Web 服务未来优化」
+- 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，使用 `pythonw.exe` 双击启动会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
 
 ### vnpy 示例（vnpy_examples/）
 
