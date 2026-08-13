@@ -1,4 +1,4 @@
-"""申万行业排行榜的本地 FastAPI 服务。"""
+"""申万行业研究台的本地 FastAPI 服务。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .schemas import DailyRankingRequest, RangeRankingRequest
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="申万行业排行榜", version="0.1.0")
+app = FastAPI(title="申万行业研究台", version="0.1.0")
 job_manager = JobManager(service.run_worker)
 
 
@@ -110,7 +110,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="启动申万行业排行榜本地 Web 服务")
+    parser = argparse.ArgumentParser(description="启动申万行业研究台本地 Web 服务")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     args = parser.parse_args()

@@ -264,8 +264,8 @@ function renderResult() {
   }
 
   const baseText = state.result.mode === "daily"
-    ? `单日榜 · ${formatDateText(state.result.date)}`
-    : `区间榜 · ${formatDateText(state.result.start_date)} ~ ${formatDateText(state.result.end_date)}`;
+    ? `单日排行 · ${formatDateText(state.result.date)}`
+    : `区间排行 · ${formatDateText(state.result.start_date)} ~ ${formatDateText(state.result.end_date)}`;
   const elapsed = elapsedText(state.jobSnapshot);
   $("#summary-text").textContent = elapsed ? `${baseText} · ${elapsed}` : baseText;
   $("#result-back-btn").classList.remove("hidden");

@@ -1,4 +1,4 @@
-"""申万行业排行榜桌面窗口启动器。
+"""申万行业研究台桌面窗口启动器。
 
 双击本文件时：
 1. 检查本机 8080 端口是否已有可用的申万行业 Web 服务；
@@ -19,7 +19,7 @@ import urllib.request
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
@@ -29,6 +29,7 @@ BASE_URL = f"http://{HOST}:{PORT}"
 HEALTH_URL = f"{BASE_URL}/api/health"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_PATH = REPO_ROOT / "output" / "desktop_backend.log"
+LOADING_HTML = Path(__file__).resolve().parent / "static" / "loading.html"
 
 
 def is_backend_ready() -> bool:
@@ -82,13 +83,13 @@ class DesktopWindow(QMainWindow):
         self._backend_stopped = False
         self.web_view: QWebEngineView | None = None
 
-        self.setWindowTitle("申万行业排行榜")
+        self.setWindowTitle("申万行业研究台")
         self.resize(1280, 800)
         self.setMinimumSize(960, 640)
 
-        self.loading_label = QLabel("正在启动后端服务...")
-        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setCentralWidget(self.loading_label)
+        self.web_view = QWebEngineView()
+        self.web_view.load(QUrl.fromLocalFile(str(LOADING_HTML)))
+        self.setCentralWidget(self.web_view)
 
     def attach_backend(
         self,
@@ -101,9 +102,10 @@ class DesktopWindow(QMainWindow):
         self.started_by_us = started_by_us
 
     def show_frontend(self) -> None:
-        self.web_view = QWebEngineView()
+        if self.web_view is None:
+            self.web_view = QWebEngineView()
+            self.setCentralWidget(self.web_view)
         self.web_view.load(QUrl(f"{BASE_URL}/"))
-        self.setCentralWidget(self.web_view)
 
     def stop_owned_backend(self) -> None:
         if self._backend_stopped or not self.started_by_us or self.backend_process is None:
@@ -130,7 +132,7 @@ class DesktopWindow(QMainWindow):
 def main() -> int:
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv)
-    app.setApplicationName("申万行业排行榜")
+    app.setApplicationName("申万行业研究台")
 
     window = DesktopWindow()
     window.show()
