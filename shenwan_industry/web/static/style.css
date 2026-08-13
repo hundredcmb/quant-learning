@@ -184,7 +184,7 @@ button:disabled {
 
 .result-panel {
   margin-top: 18px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .result-summary {
@@ -244,6 +244,10 @@ th {
   background: #f8fafc;
   color: #334155;
   font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  box-shadow: 0 1px 0 #e5eaf0;
 }
 
 th.sortable {
