@@ -46,6 +46,7 @@ class ShenWanIndustryTree:
         self.stock_basic: dict[str, dict[str, str]] = {}  # 上市状态的股票 tushare 代码到信息的映射
         self.no_industry_stocks: set[str] = set()  # 没有行业代码的股票集合
         self.ts_code_to_pct_chg_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股涨跌幅数据
+        self.ts_code_to_close_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股收盘价数据
         self.ts_code_to_circ_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股流通市值数据
         self.ts_code_to_in_date: dict[str, str] = {}  # 成分股 -> 纳入申万行业的日期(YYYYMMDD), 用于历史日期过滤
         self.ts_code_to_delist_date: dict[str, str] = {}  # 成分股 -> 退市日期(YYYYMMDD), 用于历史日期过滤
@@ -188,7 +189,8 @@ class ShenWanIndustryTree:
     def get_ts_code_to_pct_chg(self, date: datetime) -> dict[str, float | None]:
         """获取某日的行情数据: ts_code -> 涨跌幅(%), 数据异常时为 None"""
         ts_code_to_pct_chg: dict[str, float | None] = self.ts_code_to_pct_chg_cache.get(date) or {}
-        if ts_code_to_pct_chg:
+        ts_code_to_close: dict[str, float] = self.ts_code_to_close_cache.get(date) or {}
+        if ts_code_to_pct_chg and ts_code_to_close:
             return ts_code_to_pct_chg
 
         offset = 0
@@ -220,6 +222,7 @@ class ShenWanIndustryTree:
                     continue
                 pct_chg = (close_f - pre_close_f) / pre_close_f * 100
                 ts_code_to_pct_chg[ts_code] = pct_chg
+                ts_code_to_close[ts_code] = close_f
 
             offset += len(df)
             if batch_size > len(df):
@@ -227,8 +230,14 @@ class ShenWanIndustryTree:
 
         if ts_code_to_pct_chg:
             self.ts_code_to_pct_chg_cache[date] = ts_code_to_pct_chg
+            self.ts_code_to_close_cache[date] = ts_code_to_close
 
         return ts_code_to_pct_chg
+
+    def get_ts_code_to_close(self, date: datetime) -> dict[str, float]:
+        """获取某日的收盘价数据: ts_code -> 收盘价"""
+        self.get_ts_code_to_pct_chg(date)
+        return self.ts_code_to_close_cache.get(date) or {}
 
     def get_ts_code_to_circ_mv(self, date: datetime) -> dict[str, float]:
         """获取A股某日的流通市值数据: ts_code -> 流通市值"""

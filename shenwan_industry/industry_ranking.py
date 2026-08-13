@@ -18,6 +18,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from typing import Callable
 
 import pandas as pd
 
@@ -30,6 +31,9 @@ logger = logging.getLogger("shenwan_industry.industry_ranking")
 
 # 榜单项: (行业 index_code, 涨跌幅%, 成分股数量)
 RankList = list[tuple[str, float, int]]
+
+# 进度回调: (0~100 的百分比, 阶段说明)
+ProgressCallback = Callable[[float, str], None]
 
 # 并发与限流: 本账号 5000 积分实测单接口 500 次/分钟(60 秒滚动窗口)。
 # 逐日行情并发拉取时按固定速率平摊请求, 避免瞬时爆发与官方窗口微小不对齐触发 429。
@@ -330,6 +334,7 @@ def _fetch_daily_by_date(pro, date_str: str) -> dict[str, tuple[float, float]]:
 def _fetch_daily_batch(
     pro,
     trading_days: list[str],
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, dict[str, tuple[float, float]]]:
     """
     并发拉取多日 daily, 返回 {日期: {ts_code: (close, pre_close)}}
@@ -342,6 +347,8 @@ def _fetch_daily_batch(
     lock = threading.Lock()
     next_start = [0.0]
     interval = 1.0 / MAX_DAILY_FETCH_RATE
+    total = len(trading_days)
+    completed = 0
 
     def fetch_one(day_str: str) -> tuple[str, dict[str, tuple[float, float]]]:
         with lock:
@@ -363,6 +370,10 @@ def _fetch_daily_batch(
     with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
         for day_str, data in executor.map(fetch_one, trading_days):
             results[day_str] = data
+            completed += 1
+            if progress_callback is not None:
+                pct = completed / total * 100.0 if total else 100.0
+                progress_callback(pct, f"已拉取 {completed}/{total} 个交易日行情")
     return results
 
 
@@ -371,6 +382,8 @@ def rank_range(
     start_date: datetime,
     end_date: datetime,
     timings: dict[str, float] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    detail: dict[str, dict[str, float]] | None = None,
 ) -> tuple[tuple[RankList, RankList, RankList], tuple[RankList, RankList, RankList]]:
     """
     区间累计涨幅榜, 返回 (等权(l1,l2,l3), 流通市值加权(l1,l2,l3))
@@ -384,6 +397,8 @@ def rank_range(
     - 权重 = 区间起始日流通市值(起始日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
     - timings: 可选 dict, 记录各阶段耗时
       (trade_cal/participate/daily_fetch/accumulate/circ_fetch/circ_fallback/compute/trading_days)
+    - progress_callback: 可选进度回调 (0~100, 阶段说明), 不影响计算结果
+    - detail: 可选 dict, 写入 stock_ret(个股区间收益) 与 last_close(区间末日收盘价), 供子表展示
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -396,6 +411,11 @@ def rank_range(
     if start_str > end_str:
         raise ValueError(f"区间起点不能晚于终点: {start_str} > {end_str}")
 
+    def _notify(percent: float, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(max(0.0, min(100.0, percent)), message)
+
+    _notify(2.0, "拉取交易日历")
     if timings is not None:
         _t0 = time.perf_counter()
     trading_days = _get_trading_days(tree.pro, start_str, end_str)
@@ -404,6 +424,7 @@ def rank_range(
         timings["trading_days"] = float(len(trading_days))
     if not trading_days:
         raise ValueError(f"区间内没有交易日: {start_str} ~ {end_str}")
+    _notify(6.0, f"区间内共 {len(trading_days)} 个交易日")
 
     # 1) 参与股票: 起始日已在成分 且 区间末仍在
     if timings is not None:
@@ -444,14 +465,21 @@ def rank_range(
         )
     if timings is not None:
         timings["participate"] = time.perf_counter() - _t0
+    _notify(8.0, "筛选参与股票完成")
 
     # 2) 逐日拉行情(并发+限流平摊), 再连乘区间累计收益(含起始日当天涨跌,
     #    隐含基准=首个有行情日的 pre_close)
     if timings is not None:
         _t0 = time.perf_counter()
-    batch_data = _fetch_daily_batch(tree.pro, trading_days)
+    _notify(9.0, "开始拉取区间行情")
+    batch_data = _fetch_daily_batch(
+        tree.pro,
+        trading_days,
+        progress_callback=lambda pct, message: _notify(9.0 + pct * 0.72, message),
+    )
     if timings is not None:
         timings["daily_fetch"] = time.perf_counter() - _t0
+    _notify(81.0, "区间行情拉取完成")
     if timings is not None:
         _t0 = time.perf_counter()
     stock_prod: dict[str, float] = {}
@@ -465,6 +493,7 @@ def rank_range(
             stock_prod[ts_code] = stock_prod.get(ts_code, 1.0) * (close / pre_close)
     if timings is not None:
         timings["accumulate"] = time.perf_counter() - _t0
+    _notify(84.0, "收益累计完成")
 
     # 区间累计收益(%): 整段区间无任何行情的股票直接剔除
     stock_ret: dict[str, float] = {}
@@ -480,6 +509,7 @@ def rank_range(
     ts_code_to_circ_mv: dict[str, float] = tree.get_ts_code_to_circ_mv(weight_date)
     if timings is not None:
         timings["circ_fetch"] = time.perf_counter() - _t0
+    _notify(86.0, "流通市值拉取完成")
     if timings is not None:
         _t0 = time.perf_counter()
     no_circ_mv_stocks: list[str] = []
@@ -498,8 +528,10 @@ def rank_range(
         )
     if timings is not None:
         timings["circ_fallback"] = time.perf_counter() - _t0
+    _notify(89.0, "停牌市值回退完成")
 
     # 4) 聚合三级行业: 等权 = 起始成分简单平均; 加权 = 起始流通市值加权
+    _notify(90.0, "聚合行业涨幅")
     if timings is not None:
         _t0 = time.perf_counter()
     l1_ew: dict[str, list] = {}  # index_code -> [count, 收益和]
@@ -563,6 +595,18 @@ def rank_range(
     l3_ew_list, l3_fw_list = _finalize(l3_ew, l3_fw)
     if timings is not None:
         timings["compute"] = time.perf_counter() - _t0
+    _notify(98.0, "计算完成")
+
+    if detail is not None:
+        last_day_str = trading_days[-1]
+        last_day_data = batch_data.get(last_day_str, {})
+        detail["stock_ret"] = stock_ret
+        detail["last_close"] = {
+            ts_code: close
+            for ts_code, (close, _pre_close) in last_day_data.items()
+            if ts_code in participating
+        }
+        detail["ts_code_to_circ_mv"] = ts_code_to_circ_mv
 
     return (
         (l1_ew_list, l2_ew_list, l3_ew_list),

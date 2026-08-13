@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>申万行业排行榜</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>申万行业排行榜</h1>
+    <p class="subtitle">单日榜 / 区间榜，本地 FastAPI 服务</p>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="control-row">
+        <label class="radio">
+          <input type="radio" name="mode" value="daily" checked>
+          <span>单日榜</span>
+        </label>
+        <label class="radio">
+          <input type="radio" name="mode" value="range">
+          <span>区间榜</span>
+        </label>
+      </div>
+
+      <div class="control-row">
+        <label class="field" id="daily-field">
+          <span>日期</span>
+          <input type="date" id="daily-date">
+        </label>
+        <label class="field range-field" id="range-start-field">
+          <span>开始日期</span>
+          <input type="date" id="range-start">
+        </label>
+        <label class="field range-field" id="range-end-field">
+          <span>结束日期</span>
+          <input type="date" id="range-end">
+        </label>
+      </div>
+
+      <div class="control-row">
+        <label class="field">
+          <span>加权方式</span>
+          <select id="weight">
+            <option value="float" selected>流通市值加权</option>
+            <option value="equal">等权</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>行业层级</span>
+          <select id="level">
+            <option value="1" selected>L1</option>
+            <option value="2">L2</option>
+            <option value="3">L3</option>
+          </select>
+        </label>
+        <button id="query-btn">开始查询</button>
+      </div>
+    </section>
+
+    <section id="progress-panel" class="progress-panel hidden">
+      <div class="progress-meta">
+        <span id="progress-phase">排队中</span>
+        <span id="progress-percent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div id="progress-bar" class="progress-bar"></div>
+      </div>
+      <div id="progress-message" class="progress-message"></div>
+    </section>
+
+    <section id="error-panel" class="error-panel hidden"></section>
+
+    <section id="result-panel" class="result-panel hidden">
+      <div class="result-summary">
+        <span id="summary-text"></span>
+        <button id="result-back-btn" class="ghost-btn hidden">返回查询条件</button>
+      </div>
+
+      <div class="table-card">
+        <div class="table-title">
+          <h2 id="table-title">行业排行</h2>
+          <span id="table-count"></span>
+        </div>
+        <table id="main-table">
+          <thead>
+            <tr>
+              <th data-sort="rank">排名</th>
+              <th data-sort="index_code">行业代码</th>
+              <th data-sort="industry_name">行业名称</th>
+              <th data-sort="pct">所选加权涨幅</th>
+              <th data-sort="count">成分股数量</th>
+              <th>成分股</th>
+            </tr>
+          </thead>
+          <tbody id="main-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <div id="sub-panel" class="modal-mask hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <div>
+          <h2 id="sub-title">成分股</h2>
+          <div id="sub-subtitle"></div>
+        </div>
+        <button id="sub-close" class="close-btn">关闭</button>
+      </div>
+      <div id="sub-loading" class="loading hidden">正在加载成分股...</div>
+      <div id="sub-error" class="error-panel hidden"></div>
+      <div class="sub-table-wrap">
+        <table id="sub-table">
+          <thead>
+            <tr>
+              <th data-sort="ts_code">代码</th>
+              <th data-sort="name">名称</th>
+              <th data-sort="pct_chg">涨跌幅</th>
+              <th data-sort="close">收盘价</th>
+            </tr>
+          </thead>
+          <tbody id="sub-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -6,13 +6,14 @@
 
 - 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 流通市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
 - 文件：
-  - `industry_tree.py`：行业树与成分数据层，含 `ShenWanIndustryNode`（行业树节点）与 `ShenWanIndustryTree`（树构建、成分股加载、`in_date`/`delist_date` 过滤、行情/市值获取）
+  - `industry_tree.py`：行业树与成分数据层，含 `ShenWanIndustryNode`（行业树节点）与 `ShenWanIndustryTree`（树构建、成分股加载、`in_date`/`delist_date` 过滤、行情/市值获取；单日行情同时缓存涨跌幅和收盘价，`get_ts_code_to_close` 供 Web 子表使用）
   - `industry_ranking.py`：排行榜算法库，单日榜（`daily_rank_equal_weight` / `daily_rank_float_weight`）+ 区间累计榜（`rank_range`），另含耗时/调用次数统计工具（`wrap_api_counter` / `print_timing`）
   - `daily_ranking.py`：单日行业涨幅榜入口脚本（组装 tree + ranking 并输出耗时分析）
   - `range_ranking.py`：区间累计涨幅榜入口脚本（区间在文件内 `RANGE_START`/`RANGE_END` 配置，输出耗时分析）
   - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，随仓库提交，勿删）
   - `qfq_adjust.py`：静态前复权纯算法（同花顺/东财同款，移植自 `vnpy_examples/03_datafeed.py`），当前**仅独立算法模块，未接入行业排名**；排名涨跌幅口径见第 3 节
   - `__init__.py`：空
+  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）。后台单 worker 串行执行任务，前端轮询进度，支持单日榜 / 区间榜、主表升降序和成分股子表
 
 ## 运行环境与数据源
 
@@ -88,7 +89,7 @@
 - 两个入口脚本（`daily_ranking.py` / `range_ranking.py`）运行结束都会在控制台输出**耗时分析**（按主次分组：组小计、各阶段耗时/占比、总耗时与 API 调用次数），统计工具为 `industry_ranking.print_timing` / `wrap_api_counter`；秒级以下的零碎阶段合并展示，行情拉取/市值拉取等大阶段按“接口拉取 vs 本地计算/回退”拆分
 - 模块暂无图片产物，仅控制台输出
 
-### 7. 区间累计涨幅榜 `industry_ranking.rank_range(tree, start_date, end_date, timings=None)`
+### 7. 区间累计涨幅榜 `industry_ranking.rank_range(tree, start_date, end_date, timings=None, progress_callback=None, detail=None)`
 
 - 返回 `(等权(l1,l2,l3), 流通市值加权(l1,l2,l3))`，榜单项仍为 `(index_code, 涨跌幅%, 成分股数量)`
 - 参与股票：区间**起始日**已在成分（`in_date <= 区间起点`）**且**区间末仍在（`delist_date >= 区间终点`）**且起始日已上市**（`list_date < 区间起点`，因为 Tushare 新股的 `in_date` 可能是上市前的“预先纳入日”，早于实际上市）；中段才纳入 / 起始日尚未上市 / 区间末前已退市均剔除；同类剔除告警**按类型汇总为一行**（显示数量与少量样例），避免大量日志刷屏
@@ -96,7 +97,9 @@
 - 权重：两个榜都锚定**区间起始日**——等权 = 起始成分简单平均，加权 = 起始日流通市值权重（起始日停牌按 730 天回退；仍取不到则仅参与等权榜，告警汇总为一行）
 - 网络策略：`trade_cal` 1 次 + 区间内每个交易日 `daily(trade_date)` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退；**不是简单重复执行 N 次单日接口**；逐日 `daily` 用线程池并发拉取（8 worker），并按固定速率（`MAX_DAILY_FETCH_RATE=7.5 次/秒`，约 450 次/分钟，留 10% 余量）平摊请求开始时刻，避免瞬时爆发与官方 60 秒滚动窗口的微小不对齐触发 429；单日失败自动重试 3 次，仍失败则抛错（不静默改变结果）
 - 入口示例：`python shenwan_industry/range_ranking.py`（区间起止在文件内 `RANGE_START`/`RANGE_END` 配置）
-- `timings`：可选 dict，`rank_range` 会把各阶段耗时写入（`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`circ_fetch`/`circ_fallback`/`compute`/`trading_days`），供入口脚本输出耗时分析；`daily_rank_float_weight` 的 `timings` 记录 `circ_fallback`（停牌市值回退耗时）
+  - `timings`：可选 dict，`rank_range` 会把各阶段耗时写入（`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`circ_fetch`/`circ_fallback`/`compute`/`trading_days`），供入口脚本输出耗时分析；`daily_rank_float_weight` 的 `timings` 记录 `circ_fallback`（停牌市值回退耗时）
+  - `progress_callback`：可选 `(percent: float, message: str) -> None`，仅在拉取交易日历、逐日行情、累计收益、市值权重、聚合计算等阶段回调，不参与任何数值计算
+  - `detail`：可选 dict，`rank_range` 会写入 `stock_ret`（参与股票的区间收益）、`last_close`（区间末日收盘价）和 `ts_code_to_circ_mv`（起始日流通市值，含停牌回退），供 Web 成分股子表使用；传入 `None` 时行为与旧版完全一致
 
 ## Tushare 接口交互明细
 
@@ -147,6 +150,11 @@
   - 缓存结构建议：`shenwan_industry/historical_membership.json`，`{ts_code: [{index_code, in_date, out_date}]}`；过去日期永久有效，每半年增量刷新新增调整（每批约 60~110 只）
   - 接入方式：`filter_stock_pool` 按分析日期落在哪个行业区间决定归属，与现有 `in_date`/`delist_date` 过滤整合
 - **指数构建（后续另行规划）**：逐日链式累乘 `指数点位 = 前日点位 × (1 + 当日加权涨幅)`；涨跌幅用 `daily.pre_close`（交易所除权参考价口径，见第 3 节）；成分历史、加权口径（流通 vs 自由流通）、新股纳入规则需与官方指数对账
+
+## Web 服务未来优化
+
+- 当前 `web/jobs.py` 采用单 worker 串行队列，主要为了避免 Tushare 接口限流和 `ShenWanIndustryTree` 可变状态并发冲突。后续若改为多 worker，需要先把行业树/行情缓存改成线程安全访问，并增加按 Tushare 每分钟调用上限的全局限流器。
+- 任务取消当前未实现。后续可在 `rank_range` 的逐日拉取循环、`daily_rank_float_weight` 的停牌市值回退循环等位置加入协作式取消检查，由 JobManager 设置取消标记并返回 `cancelled` 状态。
 
 ## 强制核对流程（任务完成通知前必做）
 
