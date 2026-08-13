@@ -94,6 +94,7 @@ function bindEvents() {
   });
 
   $("#query-btn").addEventListener("click", submit);
+  $("#cancel-btn").addEventListener("click", cancelTask);
   $("#sub-close").addEventListener("click", closeSubPanel);
   $("#result-back-btn").addEventListener("click", backToQuery);
 
@@ -116,6 +117,7 @@ function submit() {
   state.jobSnapshot = null;
   hideElement("#result-panel");
   hideElement("#error-panel");
+  hideElement("#cancel-btn");
 
   const payload = state.mode === "daily" ? buildDailyPayload() : buildRangePayload();
   if (!payload) {
@@ -134,6 +136,8 @@ function submit() {
     .then(handleFetchError)
     .then((data) => {
       state.jobId = data.job_id;
+      $("#cancel-btn").disabled = false;
+      showElement("#cancel-btn");
       startPolling();
     })
     .catch((error) => {
@@ -185,9 +189,20 @@ function pollJob() {
         clearTimeout(state.pollTimer);
         state.pollTimer = null;
         hideElement("#progress-panel");
+        hideElement("#cancel-btn");
         $("#query-btn").disabled = false;
         state.result = data.result;
         renderResult();
+        return;
+      }
+
+      if (data.status === "cancelled") {
+        clearTimeout(state.pollTimer);
+        state.pollTimer = null;
+        hideElement("#progress-panel");
+        hideElement("#cancel-btn");
+        $("#query-btn").disabled = false;
+        showError("任务已取消");
         return;
       }
 
@@ -196,6 +211,7 @@ function pollJob() {
         state.pollTimer = null;
         $("#query-btn").disabled = false;
         hideElement("#progress-panel");
+        hideElement("#cancel-btn");
         showError(data.error || "任务执行失败");
       }
     })
@@ -203,6 +219,20 @@ function pollJob() {
       clearTimeout(state.pollTimer);
       state.pollTimer = null;
       $("#query-btn").disabled = false;
+      hideElement("#cancel-btn");
+      showError(error.message);
+    });
+}
+
+function cancelTask() {
+  if (!state.jobId) {
+    return;
+  }
+  $("#cancel-btn").disabled = true;
+  fetch(`/api/jobs/${state.jobId}/cancel`, { method: "POST" })
+    .then(handleFetchError)
+    .catch((error) => {
+      $("#cancel-btn").disabled = false;
       showError(error.message);
     });
 }

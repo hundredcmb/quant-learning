@@ -160,6 +160,22 @@ button:disabled {
   font-size: 13px;
 }
 
+.progress-actions {
+  margin-top: 12px;
+}
+
+.cancel-btn {
+  padding: 7px 14px;
+  background: #fff1f0;
+  color: #b42318;
+  border: 1px solid #f4c7c3;
+}
+
+.cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .error-panel {
   color: #9f1d1d;
   background: #fff1f0;

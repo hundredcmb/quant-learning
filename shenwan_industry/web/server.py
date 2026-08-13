@@ -65,6 +65,14 @@ def get_job(job_id: str) -> dict:
     return snapshot
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict:
+    result = job_manager.cancel(job_id)
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return result
+
+
 @app.get("/api/jobs/{job_id}/constituents/{level}/{index_code}")
 def get_constituents(
     job_id: str,

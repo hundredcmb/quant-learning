@@ -126,7 +126,7 @@ python vnpy_examples/06_ma_strategy.py
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/AGENTS.md`「未来规划」节
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
-- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示。多 worker 并发与任务取消暂未实现，已写入 `shenwan_industry/AGENTS.md`「Web 服务未来优化」
+- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/AGENTS.md`「Web 服务未来优化」
 
 ### vnpy 示例（vnpy_examples/）
 

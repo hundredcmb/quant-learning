@@ -134,20 +134,28 @@ class PreparedContext:
 _CONTEXT = PreparedContext()
 
 
-def run_worker(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
+def run_worker(
+    job: Any,
+    progress: Any,
+    cancel_check: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
     """JobManager 的 worker 入口。"""
     with _capture_no_industry_warnings():
         if job.mode == "daily":
-            result = _run_daily(job, progress)
+            result = _run_daily(job, progress, cancel_check)
         elif job.mode == "range":
-            result = _run_range(job, progress)
+            result = _run_range(job, progress, cancel_check)
         else:
             raise ValueError(f"不支持的任务类型: {job.mode}")
     _flush_no_industry_warnings()
     return result
 
 
-def _run_daily(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
+def _run_daily(
+    job: Any,
+    progress: Any,
+    cancel_check: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
     progress(0.0, "准备行业数据", "准备行业数据")
     tree, base_pro = _CONTEXT.ensure()
     job_pro = ts.pro_api(token=_get_token())
@@ -173,13 +181,18 @@ def _run_daily(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any],
 
         progress(68.0, "计算等权涨幅", "计算排行榜")
         t0 = time.perf_counter()
-        ew = daily_rank_equal_weight(tree, rank_date)
+        ew = daily_rank_equal_weight(tree, rank_date, cancel_check)
         timings["equal_compute"] = time.perf_counter() - t0
 
         progress(80.0, "计算流通市值加权涨幅", "计算排行榜")
         fw_timings: dict[str, float] = {}
         t0 = time.perf_counter()
-        fw = daily_rank_float_weight(tree, rank_date, timings=fw_timings)
+        fw = daily_rank_float_weight(
+            tree,
+            rank_date,
+            timings=fw_timings,
+            cancel_check=cancel_check,
+        )
         timings["float_compute"] = time.perf_counter() - t0
         timings["float_fallback"] = fw_timings.get("circ_fallback", 0.0)
 
@@ -204,7 +217,11 @@ def _run_daily(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any],
         tree.pro = base_pro
 
 
-def _run_range(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
+def _run_range(
+    job: Any,
+    progress: Any,
+    cancel_check: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
     progress(0.0, "准备行业数据", "准备行业数据")
     tree, base_pro = _CONTEXT.ensure()
     job_pro = ts.pro_api(token=_get_token())
@@ -224,6 +241,7 @@ def _run_range(job: Any, progress: Any) -> tuple[dict[str, Any], dict[str, Any],
             timings=timings,
             progress_callback=lambda pct, message: progress(pct, message, "拉取区间数据"),
             detail=detail,
+            cancel_check=cancel_check,
         )
         progress(99.0, "整理结果", "整理结果")
         result = {

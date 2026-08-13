@@ -35,6 +35,9 @@ RankList = list[tuple[str, float, int]]
 # 进度回调: (0~100 的百分比, 阶段说明)
 ProgressCallback = Callable[[float, str], None]
 
+# 协作式取消检查: 需要取消时抛异常
+CancelCheck = Callable[[], None]
+
 # 并发与限流: 本账号 5000 积分实测单接口 500 次/分钟(60 秒滚动窗口)。
 # 逐日行情并发拉取时按固定速率平摊请求, 避免瞬时爆发与官方窗口微小不对齐触发 429。
 MAX_DAILY_FETCH_WORKERS = 8   # 并发线程数
@@ -83,6 +86,7 @@ def print_timing(
 def daily_rank_equal_weight(
     tree: ShenWanIndustryTree,
     date: datetime,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[RankList, RankList, RankList]:
     """获取指定日期的行业涨幅(等权)排名"""
     if not tree.root.children:
@@ -112,7 +116,9 @@ def daily_rank_equal_weight(
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(date, stock_pool)
 
-    for ts_code in stock_pool:
+    for idx, ts_code in enumerate(stock_pool):
+        if cancel_check is not None and idx % 500 == 0:
+            cancel_check()
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -151,8 +157,11 @@ def _resolve_circ_mv(
     ts_code: str,
     date: datetime,
     date_str: str,
+    cancel_check: CancelCheck | None = None,
 ) -> float | None:
     """停牌股回退: 查 730 天内最近一个有效流通市值, 查不到返回 None"""
+    if cancel_check is not None:
+        cancel_check()
     df = tree.pro.daily_basic(
         ts_code=ts_code,
         fields='trade_date,circ_mv',
@@ -161,6 +170,8 @@ def _resolve_circ_mv(
     )
     # 响应的数据默认按日期降序
     for row in df.itertuples(index=False):
+        if cancel_check is not None:
+            cancel_check()
         d_str = row.trade_date
         if datetime.strptime(d_str, "%Y%m%d") <= date:
             cand = row.circ_mv
@@ -174,6 +185,7 @@ def daily_rank_float_weight(
     tree: ShenWanIndustryTree,
     date: datetime,
     timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[RankList, RankList, RankList]:
     """获取指定日期的行业涨幅(流通市值加权)排名"""
     if not tree.root.children:
@@ -215,7 +227,9 @@ def daily_rank_float_weight(
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(date, stock_pool)
 
-    for ts_code in stock_pool:
+    for idx, ts_code in enumerate(stock_pool):
+        if cancel_check is not None and idx % 500 == 0:
+            cancel_check()
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -239,7 +253,7 @@ def daily_rank_float_weight(
             if l_circ_mv is None or pd.isna(l_circ_mv):
                 if timings is not None:
                     _t0 = time.perf_counter()
-                l_circ_mv = _resolve_circ_mv(tree, ts_code, date, date_str)
+                l_circ_mv = _resolve_circ_mv(tree, ts_code, date, date_str, cancel_check)
                 if timings is not None:
                     timings["circ_fallback"] = timings.get("circ_fallback", 0.0) + (
                         time.perf_counter() - _t0
@@ -290,12 +304,18 @@ def _get_trading_days(pro, start_str: str, end_str: str) -> list[str]:
     return sorted(df['cal_date'].astype(str).tolist())
 
 
-def _fetch_daily_by_date(pro, date_str: str) -> dict[str, tuple[float, float]]:
+def _fetch_daily_by_date(
+    pro,
+    date_str: str,
+    cancel_check: CancelCheck | None = None,
+) -> dict[str, tuple[float, float]]:
     """按交易日拉全市场 daily, 返回 ts_code -> (close, pre_close), 跳过异常数据"""
     result: dict[str, tuple[float, float]] = {}
     offset = 0
     batch_size = 5999
     while True:
+        if cancel_check is not None:
+            cancel_check()
         df = pro.daily(
             trade_date=date_str,
             offset=offset,
@@ -335,6 +355,7 @@ def _fetch_daily_batch(
     pro,
     trading_days: list[str],
     progress_callback: ProgressCallback | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> dict[str, dict[str, tuple[float, float]]]:
     """
     并发拉取多日 daily, 返回 {日期: {ts_code: (close, pre_close)}}
@@ -351,6 +372,8 @@ def _fetch_daily_batch(
     completed = 0
 
     def fetch_one(day_str: str) -> tuple[str, dict[str, tuple[float, float]]]:
+        if cancel_check is not None:
+            cancel_check()
         with lock:
             wait = next_start[0] - time.perf_counter()
             if wait > 0:
@@ -359,7 +382,7 @@ def _fetch_daily_batch(
         last_err: Exception | None = None
         for attempt in range(1, DAILY_FETCH_RETRY + 1):
             try:
-                return day_str, _fetch_daily_by_date(pro, day_str)
+                return day_str, _fetch_daily_by_date(pro, day_str, cancel_check)
             except Exception as err:
                 last_err = err
                 time.sleep(0.5 * attempt)
@@ -369,6 +392,8 @@ def _fetch_daily_batch(
 
     with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
         for day_str, data in executor.map(fetch_one, trading_days):
+            if cancel_check is not None:
+                cancel_check()
             results[day_str] = data
             completed += 1
             if progress_callback is not None:
@@ -384,6 +409,7 @@ def rank_range(
     timings: dict[str, float] | None = None,
     progress_callback: ProgressCallback | None = None,
     detail: dict[str, dict[str, float]] | None = None,
+    cancel_check: CancelCheck | None = None,
 ) -> tuple[tuple[RankList, RankList, RankList], tuple[RankList, RankList, RankList]]:
     """
     区间累计涨幅榜, 返回 (等权(l1,l2,l3), 流通市值加权(l1,l2,l3))
@@ -399,6 +425,7 @@ def rank_range(
       (trade_cal/participate/daily_fetch/accumulate/circ_fetch/circ_fallback/compute/trading_days)
     - progress_callback: 可选进度回调 (0~100, 阶段说明), 不影响计算结果
     - detail: 可选 dict, 写入 stock_ret(个股区间收益) 与 last_close(区间末日收盘价), 供子表展示
+    - cancel_check: 可选取消检查回调, 在长循环/网络拉取前调用, 取消时抛出异常
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -415,6 +442,11 @@ def rank_range(
         if progress_callback is not None:
             progress_callback(max(0.0, min(100.0, percent)), message)
 
+    def _check_cancel() -> None:
+        if cancel_check is not None:
+            cancel_check()
+
+    _check_cancel()
     _notify(2.0, "拉取交易日历")
     if timings is not None:
         _t0 = time.perf_counter()
@@ -425,6 +457,7 @@ def rank_range(
     if not trading_days:
         raise ValueError(f"区间内没有交易日: {start_str} ~ {end_str}")
     _notify(6.0, f"区间内共 {len(trading_days)} 个交易日")
+    _check_cancel()
 
     # 1) 参与股票: 起始日已在成分 且 区间末仍在
     if timings is not None:
@@ -432,7 +465,9 @@ def rank_range(
     participating: set[str] = set()
     excluded_before_listing: list[str] = []  # 起始日尚未上市
     excluded_mid_range: list[str] = []       # 中段才纳入
-    for ts_code in tree.constituent_stock_to_l3_node:
+    for idx, ts_code in enumerate(tree.constituent_stock_to_l3_node):
+        if idx % 500 == 0:
+            _check_cancel()
         in_date = tree.ts_code_to_in_date.get(ts_code)
         delist_date = tree.ts_code_to_delist_date.get(ts_code)
         list_date = tree.stock_basic.get(ts_code, {}).get('list_date')
@@ -466,6 +501,7 @@ def rank_range(
     if timings is not None:
         timings["participate"] = time.perf_counter() - _t0
     _notify(8.0, "筛选参与股票完成")
+    _check_cancel()
 
     # 2) 逐日拉行情(并发+限流平摊), 再连乘区间累计收益(含起始日当天涨跌,
     #    隐含基准=首个有行情日的 pre_close)
@@ -476,10 +512,12 @@ def rank_range(
         tree.pro,
         trading_days,
         progress_callback=lambda pct, message: _notify(9.0 + pct * 0.72, message),
+        cancel_check=cancel_check,
     )
     if timings is not None:
         timings["daily_fetch"] = time.perf_counter() - _t0
     _notify(81.0, "区间行情拉取完成")
+    _check_cancel()
     if timings is not None:
         _t0 = time.perf_counter()
     stock_prod: dict[str, float] = {}
@@ -494,6 +532,7 @@ def rank_range(
     if timings is not None:
         timings["accumulate"] = time.perf_counter() - _t0
     _notify(84.0, "收益累计完成")
+    _check_cancel()
 
     # 区间累计收益(%): 整段区间无任何行情的股票直接剔除
     stock_ret: dict[str, float] = {}
@@ -510,12 +549,15 @@ def rank_range(
     if timings is not None:
         timings["circ_fetch"] = time.perf_counter() - _t0
     _notify(86.0, "流通市值拉取完成")
+    _check_cancel()
     if timings is not None:
         _t0 = time.perf_counter()
     no_circ_mv_stocks: list[str] = []
-    for ts_code in stock_ret:
+    for idx, ts_code in enumerate(stock_ret):
+        if idx % 500 == 0:
+            _check_cancel()
         if ts_code_to_circ_mv.get(ts_code) is None or pd.isna(ts_code_to_circ_mv.get(ts_code)):
-            circ_mv = _resolve_circ_mv(tree, ts_code, weight_date, weight_date_str)
+            circ_mv = _resolve_circ_mv(tree, ts_code, weight_date, weight_date_str, cancel_check)
             if circ_mv is None:
                 no_circ_mv_stocks.append(ts_code)
                 continue
@@ -529,9 +571,11 @@ def rank_range(
     if timings is not None:
         timings["circ_fallback"] = time.perf_counter() - _t0
     _notify(89.0, "停牌市值回退完成")
+    _check_cancel()
 
     # 4) 聚合三级行业: 等权 = 起始成分简单平均; 加权 = 起始流通市值加权
     _notify(90.0, "聚合行业涨幅")
+    _check_cancel()
     if timings is not None:
         _t0 = time.perf_counter()
     l1_ew: dict[str, list] = {}  # index_code -> [count, 收益和]

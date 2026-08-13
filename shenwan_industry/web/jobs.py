@@ -10,9 +10,13 @@ from queue import Queue
 from typing import Any, Callable
 
 
+class JobCancelled(Exception):
+    """任务已被用户取消。"""
+
+
 ProgressFunction = Callable[[float, str, str | None], None]
 WorkerFunction = Callable[
-    ["Job", ProgressFunction],
+    ["Job", ProgressFunction, Callable[[], None]],
     tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]],
 ]
 
@@ -25,6 +29,7 @@ class Job:
     mode: str
     payload: dict[str, Any]
     status: str = "queued"
+    cancel_requested: bool = False
     progress: float = 0.0
     phase: str = "排队中"
     message: str = ""
@@ -71,6 +76,7 @@ class JobManager:
                 "job_id": job.id,
                 "mode": job.mode,
                 "status": job.status,
+                "cancel_requested": job.cancel_requested,
                 "progress": job.progress,
                 "phase": job.phase,
                 "message": job.message,
@@ -86,22 +92,47 @@ class JobManager:
 
     def queue_length(self) -> int:
         with self._lock:
-            return self._queue.qsize()
+            return sum(1 for job in self._jobs.values() if job.status == "queued")
+
+    def cancel(self, job_id: str) -> dict[str, str]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return {"status": "not_found"}
+            if job.status in ("success", "error", "cancelled"):
+                return {"status": job.status}
+            if job.status == "queued":
+                job.status = "cancelled"
+                job.phase = "已取消"
+                job.progress = 100.0
+                job.message = ""
+                job.finished_at = datetime.now()
+                job.queue_position = 0
+            else:
+                job.cancel_requested = True
+                job.phase = "正在取消"
+            status = job.status
+        self._refresh_queue_positions()
+        return {"status": status}
 
     def _refresh_queue_positions(self) -> None:
         with self._lock:
             queued = list(self._queue.queue)
-            for position, job_id in enumerate(queued, start=1):
+            position = 0
+            for job_id in queued:
                 job = self._jobs.get(job_id)
-                if job is not None:
+                if job is not None and job.status == "queued":
+                    position += 1
                     job.queue_position = position
+                elif job is not None:
+                    job.queue_position = 0
 
     def _run(self) -> None:
         while True:
             job_id = self._queue.get()
             with self._lock:
                 job = self._jobs.get(job_id)
-                if job is None:
+                if job is None or job.status != "queued":
                     continue
                 job.status = "running"
                 job.started_at = datetime.now()
@@ -116,8 +147,13 @@ class JobManager:
                     if phase is not None:
                         job.phase = phase
 
+            def cancel_check() -> None:
+                with self._lock:
+                    if job.cancel_requested:
+                        raise JobCancelled()
+
             try:
-                result, context, timings, api_calls = self._worker_fn(job, progress)
+                result, context, timings, api_calls = self._worker_fn(job, progress, cancel_check)
                 with self._lock:
                     job.status = "success"
                     job.progress = 100.0
@@ -127,6 +163,13 @@ class JobManager:
                     job.context = context
                     job.timings = timings
                     job.api_calls = api_calls
+            except JobCancelled:
+                with self._lock:
+                    job.status = "cancelled"
+                    job.phase = "已取消"
+                    job.message = ""
+                    job.error = None
+                    job.progress = 100.0
             except Exception as err:  # noqa: BLE001 - 后台任务需要兜底并记录错误
                 with self._lock:
                     job.status = "error"

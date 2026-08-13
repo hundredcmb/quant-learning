@@ -154,7 +154,7 @@
 ## Web 服务未来优化
 
 - 当前 `web/jobs.py` 采用单 worker 串行队列，主要为了避免 Tushare 接口限流和 `ShenWanIndustryTree` 可变状态并发冲突。后续若改为多 worker，需要先把行业树/行情缓存改成线程安全访问，并增加按 Tushare 每分钟调用上限的全局限流器。
-- 任务取消当前未实现。后续可在 `rank_range` 的逐日拉取循环、`daily_rank_float_weight` 的停牌市值回退循环等位置加入协作式取消检查，由 JobManager 设置取消标记并返回 `cancelled` 状态。
+- 任务取消已实现：`POST /api/jobs/{job_id}/cancel`，JobManager 设置取消标记，`rank_range` 的逐日拉取、`daily_rank_float_weight` 的停牌市值回退等长循环会协作式检查并返回 `cancelled` 状态。
 
 ## 强制核对流程（任务完成通知前必做）
 
