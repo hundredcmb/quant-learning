@@ -149,4 +149,5 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 - 本机是 Windows，PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；PowerShell 读写中文文件时注意 UTF-8 编码
 - `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
+- GitHub 推送凭据：本机为双助手（GCM `manager` + `store`），git 按序尝试；**排查推送认证问题优先检查 `~/.git-credentials`**（明文条目 `https://用户名:token@github.com`，`store` 兜底，GCM 登录弹窗被取消不影响推送）；该文件与 `~/.vntrader/vt_setting.json`（Tushare token）是两套互不相干的凭据
 - 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述；开发分支建议使用 `codex/` 前缀
