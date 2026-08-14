@@ -7,7 +7,6 @@
 - **十大股东席位分析**（`holders/`）：基于 Tushare 数据，在中证 800 + 中证 1000 样本池内按席位关键词（国家队、社保、险资等）筛选十大股东持仓，支持多报告期对比、公允价值变动与收益率统计，并输出控制台报表和图片
 - **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树，计算单日行业涨幅榜（等权 / 流通市值加权）
 - **vnpy 入门示例**（`vnpy_examples/`）：从配置、K 线入库、数据服务下载，到图表绘制、技术指标计算和日线双均线回测策略
-- **数据库封装**（`database/`）：SQLAlchemy + MySQL 的会话管理
 
 ## 运行前提（必须）
 
@@ -22,8 +21,6 @@
 quant-learning/
 ├── config.py                  # 仅提供全局 logger（配置统一从 vnpy 全局配置读取）
 ├── requirements.txt           # 项目自身依赖（vnpy 相关库由客户端提供）
-├── database/
-│   └── session.py             # SQLAlchemy 引擎与 db_session 上下文管理器
 ├── holders/
 │   ├── stock/                          # 股票十大股东
 │   │   ├── tushare_client.py           # 公共模块：Tushare 客户端、缓存、限流、并发查询
@@ -49,8 +46,7 @@ quant-learning/
 │   ├── range_ranking.py       # 区间涨幅榜入口（含耗时分析）
 │   └── SW2021.json            # 申万 2021 行业分类本地数据
 ├── docs/
-│   └── tushare_数据接口.md     # Tushare 接口文档快照（随仓库提交，clone 即用）
-├── skills/                    # Tushare 官方 skills（已 gitignore，新机器需重新 clone）
+│   └── tushare_api_reference.md     # Tushare 接口文档快照（随仓库提交，clone 即用）
 └── vnpy_examples/
     ├── 01_settings.py         # 查看 vnpy 配置，初始化数据库 / 数据服务
     ├── 02_bardata.py          # BarData 写入 / 读取 vnpy 数据库
@@ -113,7 +109,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veigh
 说明：
 
 - `datafeed.*`：数据服务配置。`name` 固定为 `tushare`，`password` 填你的 Tushare token（在 [tushare.pro](https://tushare.pro) 注册后获取，并需开通 `top10_holders`、`index_weight`、`stock_basic`、`daily`、`index_classify`、`index_member_all`、`daily_basic` 等接口权限）；`holders/` 和申万示例都从这里读取 token
-- `database.*`：数据库连接配置，同时供两处使用——vnpy 示例读写 K 线（`vnpy_examples/02、03、05、06` 通过 `get_database()`），以及 `database/session.py`（SQLAlchemy 据此动态构建连接串）
+- `database.*`：数据库连接配置，供 vnpy 示例读写 K 线使用（`vnpy_examples/02、03、05、06` 通过 `get_database()`）
 - 修改配置前请先关闭 vnpy 客户端，避免配置被覆盖
 
 ### 4. 运行脚本
@@ -132,13 +128,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veigh
 
 ## 使用 AI Agent 开发
 
-如果使用 AI 编码代理（如 Codex 等）在本仓库进行开发，推荐安装 Tushare 官方提供的 skills：
-
-```bash
-git clone https://github.com/waditu-tushare/skills.git skills
-```
-
-接口文档已随仓库提交：`docs/tushare_数据接口.md`（Tushare 官方 skills 的 `数据接口.md` 快照，覆盖 235+ 个 Tushare API）。开发中涉及 Tushare 数据获取时，应**优先查阅该文档**确认接口参数、返回字段与积分 / 权限要求，确保参数与结果解析正确。`skills/` 目录是第三方仓库克隆（含完整 SKILL.md 与接口文档），已被 `.gitignore` 忽略、不随本项目提交；如需使用可重新执行上面的 clone 命令，文档有更新时同样重新 clone 后覆盖 `docs/tushare_数据接口.md` 即可。
+Tushare 接口文档已随仓库提交：`docs/tushare_api_reference.md`（Tushare 官方 skills 的 `数据接口.md` 快照，覆盖 235+ 个 Tushare API）。开发中涉及 Tushare 数据获取时，应**优先查阅该文档**确认接口参数、返回字段与积分 / 权限要求，确保参数与结果解析正确；上游（https://github.com/waditu-tushare/skills.git）文档有更新时，获取最新版覆盖该文件即可（覆盖后保留文件头的来源说明）。
 
 ## 使用说明
 

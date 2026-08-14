@@ -1,5 +1,9 @@
 
 
+> **本文档来源**：Tushare 官方 skills 项目（https://github.com/waditu-tushare/skills.git ，作者 waditu-tushare），
+> 原文件路径 `skills/tushare/references/数据接口.md`，本文件为其快照，随 quant-learning 仓库提交。
+> 快照时间：2026-08-14。上游文档更新时，获取最新版覆盖本文件（覆盖后请保留本说明）。
+
 # 接口列表
 
 根据需求确定接口，然后访问在线链接，读取具体的使用说明，比如入参，出参等。

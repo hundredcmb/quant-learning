@@ -4,23 +4,21 @@
 
 ## 项目简介
 
-quant-learning 是一个 A 股量化学习项目（“量化小白从零开始学习量化”），目前包含四块内容：
+quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学习量化"），目前包含三块内容：
 
 - `holders/`：基于 Tushare 的十大股东席位关键词分析（国家队、社保、险资等），含多报告期对比与持仓公允价值变动统计
 - `shenwan_industry/`：申万 2021 三级行业分类树，以及行业涨幅榜（单日 / 区间累计，等权 / 流通市值加权）
 - `vnpy_examples/`：vnpy 学习示例（配置、K 线入库、数据服务下载、图表、指标、日线回测策略）
-- `database/`：SQLAlchemy + MySQL 的会话封装
 
 ## 运行环境
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
-- 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（pymysql、sqlalchemy）
-- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（**必须手动指定本机 veighna Python 路径**，如 `.\setup.ps1 -PythonPath "C:\veighna_studio\python.exe"`；脚本不自动探测；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
-- 运行 `setup.ps1`（仅支持 Windows）必须用 `-PythonPath` 手动指定 veighna Python；推荐直接用 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行（同时规避执行策略限制）
+- 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（当前无额外依赖）
+- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（仅支持 Windows，**必须手动指定本机 veighna Python 路径**，脚本不自动探测；推荐 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行，同时规避执行策略限制；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
-- 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取：
-  - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型；`holders/` 和申万示例都从这里读 token
-  - 数据库连接（`database.user` / `database.password` / `database.host` / `database.port` / `database.database`）同样从 vnpy 配置动态获取，`database/session.py` 据此构建 SQLAlchemy 连接串
+- 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取（**禁止在代码中硬编码 token**）：
+  - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型
+  - 数据库连接（`database.user` / `database.password` / `database.host` / `database.port` / `database.database`）同样从 vnpy 配置动态获取（供 vnpy 示例读写 K 线使用）
 - 脚本运行需要联网访问 Tushare Pro API，且 token 需开通对应接口权限（如 `top10_holders`）
 
 ## 目录结构
@@ -28,13 +26,12 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | 路径 | 说明 |
 | --- | --- |
 | `config.py` | 仅提供全局 `logger`（配置统一从 vnpy `SETTINGS` 动态获取，无环境变量） |
-| `database/session.py` | SQLAlchemy 引擎与 `db_session` 上下文管理器（自动提交/回滚/关闭），另有 FastAPI 风格 `get_db` |
 | `holders/stock/tushare_client.py` | 股票公共模块：Tushare token、原始数据缓存、限流、指数成分股、收盘价、单报告期关键词筛选、并发查询 |
 | `holders/stock/top10_holders_value.py` | 基础版：按关键词筛选十大股东席位，计算报告期持仓市值（原始/折算，单位亿元），仅控制台输出 |
 | `holders/stock/top10_holders_change.py` | 双报告期对比：`REPORT_PERIOD1 -> REPORT_PERIOD2` 的持股变动统计，生成表格图片 |
 | `holders/stock/top10_holders_change_merged.py` | 同 top10_holders_change，另含 `merge_holders_by_stock`（同一股票多个匹配席位合并统计） |
 | `holders/stock/top10_return_between_dates.py` | 单报告期、两个交易日（`REPORT_TRADE_DATE` vs `NEW_TRADE_DATE`）的公允价值变动与收益率，生成完整表格 + 汇总两张 PNG |
-| `holders/stock/tushare_top10_holders_raw.json` | Tushare 原始数据缓存（约 8 MB，已提交进仓库，请勿删除；覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后） |
+| `holders/stock/tushare_top10_holders_raw.json` | Tushare 原始数据缓存（约 8 MB，请勿删除；覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后） |
 | `holders/etf/import_etf_data.py` | ETF 数据导入脚本：从 Excel 导入 ETF 基础信息与十大持有人到 `holders/etf/etf_top10_holders_raw.json` 和 `holders/etf/etf_basic.json`，支持冲突策略 `--on-conflict overwrite/keep` |
 | `holders/etf/etf_client.py` | ETF 公共模块：只读持有人/基础信息缓存；日线直查（`fund_daily` 按交易日一次拉全市场）、`ts_code` 回填、未知后缀枚举 `.SH`/`.SZ` |
 | `holders/etf/etf_top10_holders_value.py` | 单报告期关键词筛选 + 份额/市值统计（对标股票 value） |
@@ -44,10 +41,9 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | `holders/etf/etf_top10_holders_raw.json` | ETF 持有人缓存（结构与股票缓存一致） |
 | `holders/etf/etf_basic.json` | ETF 基础信息缓存（代码、名称、成立日） |
 | `holders/etf/README.md` | ETF 模块说明：Excel 导入格式、缓存结构、更新流程 |
-| `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（已被 gitignore，不入库） |
-| `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
-| `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交；接口文档快照已提交至 `docs/tushare_数据接口.md`） |
-| `docs/tushare_数据接口.md` | Tushare 接口文档快照（随仓库提交，clone 即用；来源 waditu-tushare/skills，更新时重新 clone 后覆盖） |
+| `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（不入库） |
+| `output/` | 图片运行产物目录 |
+| `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、股票池过滤（`filter_stock_pool` 锚点/末日参数化，单日榜与区间榜共用） |
 | `shenwan_industry/market_data.py` | 申万行情数据层 `MarketDataProvider`：涨跌幅/收盘价/流通市值按日内存缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取、API 调用计数 |
 | `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 流通市值加权），含耗时输出工具 `print_timing` |
@@ -65,7 +61,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 ## 常用命令
 
 ```bash
-# 以下命令均指 .venv\Scripts\python.exe（先运行 setup.ps1 初始化 .venv）
+# 以下命令均指 .venv\Scripts\python.exe（需先按上文「运行环境」初始化 .venv）
 
 # 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
 .venv\Scripts\python.exe holders/stock/top10_holders_value.py
@@ -112,32 +108,29 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 - 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑；修改公共逻辑只改 `tushare_client.py` 一处即可
 - `KEY_WORD_RATIO` 是“席位关键词 -> 折算比例”，按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `tushare_client.py` 中配置（改一处即可）；如需某脚本单独调整，可在该脚本 import 后重新定义覆盖
-- 生成的图片输出到仓库根目录 `output/`（已 gitignore）；缓存文件保持在 `holders/stock/tushare_top10_holders_raw.json`（已提交进仓库，请勿删除），缓存结构为 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据、不含业务处理；修改业务逻辑时优先复用缓存，不要改变该结构
+- 生成的图片输出到仓库根目录 `output/`；缓存文件保持在 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB，已提交进仓库，请勿删除、避免无谓膨胀），缓存结构为 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据、不含业务处理；修改业务逻辑时优先复用缓存，不要改变该结构
 - 十大股东接口（如 `top10_holders`）至少需要 2000 Tushare 积分才有权限调用；低于 2000 积分时没有任何接口权限，只能使用仓库缓存分析其中已包含的数据（覆盖中证 800 + 中证 1000 成分股、2025 年年报及以后）
 - 接口失败时脚本会 `save_raw_cache()` 后 `os._exit(-1)` 退出；Tushare 有限流，默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
-- 缓存 JSON 约 8 MB 且已提交进仓库，避免无谓地让缓存文件进一步膨胀
 
 ### 股票与 ETF 十大持有人（严格区分）
 
-- **数据来源不同**：A 股股票的十大持有人可通过 Tushare 接口获取（也可以查询缓存）；**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入到缓存中
+- **数据来源不同**：A 股股票的十大持有人可通过 Tushare 接口获取（也可以查询缓存）；**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入缓存——持有人与基础信息（代码、名称、成立日）一律只从缓存读取，不调用 Tushare 的持有人/基础信息接口；**ETF 日线行情从 Tushare `fund_daily` 直接获取**（**至少需要 5000 积分**，低于 5000 积分无法拉取），按 `trade_date` 一次请求拉全市场，**不建价格缓存、不做限流**
 - **代码格式相同但概念不同**：股票和 ETF 都是六位代码，但属于不同标的类型，开发和处理数据时不要混淆，务必严格区分股票与 ETF
 - **更新周期不同**：A 股 ETF 的十大持有人一年只更新两次（半年报 + 年报）；股票一年四个财报期都会公布
-- **数据来源约定**：ETF 十大持有人与基础信息（代码、名称、成立日）仍只从缓存读取（手动导入，不调用 Tushare 的持有人/基础信息接口）；**ETF 日线行情从 Tushare `fund_daily` 直接获取**（**至少需要 5000 积分**，低于 5000 积分无法拉取），按 `trade_date` 一次请求拉全市场，**不建价格缓存、不做限流**
 - **ETF 数据缓存文件**：持有人缓存 `holders/etf/etf_top10_holders_raw.json`（结构与股票缓存完全一致：`{报告期: {代码: [{ts_code, holder_name, hold_amount(份), hold_ratio(%), rank}]}}`，rank 是 Excel 模板额外的排名字段，`ts_code` 为**无后缀代码**）；基础信息缓存 `holders/etf/etf_basic.json`（key 为**无后缀代码**，value 为 `{name, found_date, import_code(导入格式代码，导入时更新), ts_code(tushare 代码，拉取日线时回填)}`）；均由 `holders/etf/import_etf_data.py` 从 Excel 导入维护，`hold_amount` 已统一为“份”（Excel 中为“亿份”）。日线查询、ts_code 回填与未知后缀枚举（`.SH`/`.SZ`）由 `etf_client.py` 提供（`get_daily_prices` / `resolve_ts_code`）
 
 ### Tushare 数据获取
 
-- Tushare 接口文档快照已随仓库提交：`docs/tushare_数据接口.md`（来源 waditu-tushare/skills，覆盖 235+ 个接口）。开发中需要获取 Tushare 数据时，**优先查阅**该文件确认接口名、必填/可选参数、返回字段与积分/频率限制，确保参数和结果解析正确，不要仅凭记忆硬写字段名；文档有更新时从上游重新克隆 `skills/`（`git clone https://github.com/waditu-tushare/skills.git skills`）后覆盖。`skills/` 第三方克隆仍被 gitignore、不随仓库提交
+- Tushare 接口文档快照已随仓库提交：`docs/tushare_api_reference.md`（来源 waditu-tushare/skills 官方仓库，覆盖 235+ 个接口）。开发中需要获取 Tushare 数据时，**优先查阅**该文件确认接口名、必填/可选参数、返回字段与积分/频率限制，确保参数和结果解析正确，不要仅凭记忆硬写字段名；上游文档更新时从 https://github.com/waditu-tushare/skills.git 获取最新 `数据接口.md` 覆盖该文件即可（覆盖后保留文件头来源说明）
 - `fund_daily`（ETF 日线行情）的 `ts_code` 与 `trade_date` 均为可选参数：**支持像股票 `daily` 一样按 `trade_date` 获取全市场 ETF 日线**（单次最多 5000 行，场内 ETF 数量足够一次拉取），也支持按 `ts_code` 或 `start_date/end_date` 区间获取单只历史
-- Tushare token **统一通过 vnpy 接口动态获取**：`SETTINGS["datafeed.password"]`（写法见 holders 脚本），不要在代码中硬编码 token，也不要从其他环境变量读取
 
 ### 申万行业（shenwan_industry/）
 
 - 行业树优先用本地 `SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
-- **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/AGENTS.md`「未来规划」节
+- **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
-- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/AGENTS.md`「Web 服务未来优化」
+- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，使用 `pythonw.exe` 双击启动会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
 - 一级行业排行榜中，指数代码和名称可点击查看官方指数 K 线；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
