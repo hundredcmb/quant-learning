@@ -48,7 +48,9 @@ quant-learning/
 │   ├── daily_ranking.py       # 单日涨幅榜入口（含耗时分析）
 │   ├── range_ranking.py       # 区间涨幅榜入口（含耗时分析）
 │   └── SW2021.json            # 申万 2021 行业分类本地数据
-├── skills/                    # Tushare 官方 skills（接口文档，供 AI Agent 查阅；已 gitignore）
+├── docs/
+│   └── tushare_数据接口.md     # Tushare 接口文档快照（随仓库提交，clone 即用）
+├── skills/                    # Tushare 官方 skills（已 gitignore，新机器需重新 clone）
 └── vnpy_examples/
     ├── 01_settings.py         # 查看 vnpy 配置，初始化数据库 / 数据服务
     ├── 02_bardata.py          # BarData 写入 / 读取 vnpy 数据库
@@ -136,7 +138,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veigh
 git clone https://github.com/waditu-tushare/skills.git skills
 ```
 
-skills 中包含完整的数据接口文档（`skills/tushare/references/数据接口.md`，覆盖 235+ 个 Tushare API）。开发中涉及 Tushare 数据获取时，应**优先查阅该文档**确认接口参数、返回字段与积分 / 权限要求，确保参数与结果解析正确。本仓库已克隆好该 skills（`skills/` 目录），它属于第三方仓库，已被 `.gitignore` 忽略，不随本项目提交。
+接口文档已随仓库提交：`docs/tushare_数据接口.md`（Tushare 官方 skills 的 `数据接口.md` 快照，覆盖 235+ 个 Tushare API）。开发中涉及 Tushare 数据获取时，应**优先查阅该文档**确认接口参数、返回字段与积分 / 权限要求，确保参数与结果解析正确。`skills/` 目录是第三方仓库克隆（含完整 SKILL.md 与接口文档），已被 `.gitignore` 忽略、不随本项目提交；如需使用可重新执行上面的 clone 命令，文档有更新时同样重新 clone 后覆盖 `docs/tushare_数据接口.md` 即可。
 
 ## 使用说明
 

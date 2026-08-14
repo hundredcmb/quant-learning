@@ -46,7 +46,8 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | `holders/etf/README.md` | ETF 模块说明：Excel 导入格式、缓存结构、更新流程 |
 | `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（已被 gitignore，不入库） |
 | `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
-| `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交） |
+| `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交；接口文档快照已提交至 `docs/tushare_数据接口.md`） |
+| `docs/tushare_数据接口.md` | Tushare 接口文档快照（随仓库提交，clone 即用；来源 waditu-tushare/skills，更新时重新 clone 后覆盖） |
 | `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、股票池过滤（`filter_stock_pool` 锚点/末日参数化，单日榜与区间榜共用） |
 | `shenwan_industry/market_data.py` | 申万行情数据层 `MarketDataProvider`：涨跌幅/收盘价/流通市值按日内存缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取、API 调用计数 |
 | `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 流通市值加权），含耗时输出工具 `print_timing` |
@@ -126,7 +127,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 ### Tushare 数据获取
 
-- 本仓库已克隆 Tushare 官方 skills 到 `skills/`（已被 `.gitignore` 忽略，不随仓库提交）。开发中需要获取 Tushare 数据时，**优先查阅** `skills/tushare/references/数据接口.md`（或 `skills/tushare-data/` 版本）确认接口名、必填/可选参数、返回字段与积分/频率限制，确保参数和结果解析正确，不要仅凭记忆硬写字段名
+- Tushare 接口文档快照已随仓库提交：`docs/tushare_数据接口.md`（来源 waditu-tushare/skills，覆盖 235+ 个接口）。开发中需要获取 Tushare 数据时，**优先查阅**该文件确认接口名、必填/可选参数、返回字段与积分/频率限制，确保参数和结果解析正确，不要仅凭记忆硬写字段名；文档有更新时从上游重新克隆 `skills/`（`git clone https://github.com/waditu-tushare/skills.git skills`）后覆盖。`skills/` 第三方克隆仍被 gitignore、不随仓库提交
 - `fund_daily`（ETF 日线行情）的 `ts_code` 与 `trade_date` 均为可选参数：**支持像股票 `daily` 一样按 `trade_date` 获取全市场 ETF 日线**（单次最多 5000 行，场内 ETF 数量足够一次拉取），也支持按 `ts_code` 或 `start_date/end_date` 区间获取单只历史
 - Tushare token **统一通过 vnpy 接口动态获取**：`SETTINGS["datafeed.password"]`（写法见 holders 脚本），不要在代码中硬编码 token，也不要从其他环境变量读取
 
