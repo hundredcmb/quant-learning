@@ -340,7 +340,9 @@ function handleMainTableClick(event) {
 function openSubPanel(indexCode, industryName) {
   state.currentIndustry = { indexCode, industryName };
   state.subRows = [];
-  state.subSort = { key: "pct_chg", dir: "desc" };
+  // 原地修改排序状态(不重新赋值), 保持 bindSortableHeaders 闭包引用的对象一致
+  state.subSort.key = "pct_chg";
+  state.subSort.dir = "desc";
   $("#sub-title").textContent = `${industryName} · 成分股`;
   $("#sub-subtitle").textContent = `${indexCode} · ${state.weight === "float" ? "流通市值加权" : "等权"}`;
   $("#sub-tbody").innerHTML = "";

@@ -1,8 +1,8 @@
 """
 区间累计涨幅榜入口脚本
 
-行业树与成分数据在 industry_tree.py, 排行榜算法在 industry_ranking.py,
-本脚本负责组装、打印区间榜单并输出耗时分析。
+行业树与成分数据在 industry_tree.py, 行情数据在 market_data.py, 排行榜算法在
+industry_ranking.py, 本脚本负责组装、打印区间榜单并输出耗时分析。
 """
 
 import logging
@@ -14,10 +14,12 @@ from vnpy.trader.setting import SETTINGS
 
 try:
     from .industry_tree import ShenWanIndustryTree
-    from .industry_ranking import rank_range, wrap_api_counter, print_timing
+    from .market_data import MarketDataProvider
+    from .industry_ranking import rank_range, print_timing
 except ImportError:
     from industry_tree import ShenWanIndustryTree
-    from industry_ranking import rank_range, wrap_api_counter, print_timing
+    from market_data import MarketDataProvider
+    from industry_ranking import rank_range, print_timing
 
 
 if __name__ == "__main__":
@@ -32,9 +34,9 @@ if __name__ == "__main__":
         raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
 
     pro = ts.pro_api(token=token)
-    api_calls = wrap_api_counter(pro)
+    provider = MarketDataProvider(pro)  # 构造时已包装 API 调用计数
 
-    tree = ShenWanIndustryTree(tushare_pro=pro)
+    tree = ShenWanIndustryTree(tushare_pro=provider.pro)
 
     t0 = time.perf_counter()
     tree.build_industries()
@@ -43,7 +45,7 @@ if __name__ == "__main__":
 
     timings: dict[str, float] = {}
     (l1_ew, l2_ew, l3_ew), (l1_fw, l2_fw, l3_fw) = rank_range(
-        tree, RANGE_START, RANGE_END, timings=timings
+        tree, provider, RANGE_START, RANGE_END, timings=timings
     )
 
     other_secs = (
@@ -68,7 +70,7 @@ if __name__ == "__main__":
             ]),
             ("其他计算", [("日历+筛选+聚合", other_secs)]),
         ],
-        api_calls,
+        provider.snapshot_api_calls(),
     )
 
     for level, ew, fw in ((3, l3_ew, l3_fw), (2, l2_ew, l2_fw), (1, l1_ew, l1_fw)):

@@ -3,8 +3,13 @@
 双击本文件时：
 1. 检查本机 8080 端口是否已有可用的申万行业 Web 服务；
 2. 如果没有，后台启动 `shenwan_industry.web.server`；
-3. 等后端就绪后，用 Qt WebEngine 加载前端页面；
-4. 关闭窗口时，只结束由本启动器拉起的后端进程。
+3. 窗口从创建起就直接是 QWebEngineView（无任何原生加载页/骨架屏过渡），
+   引擎冷启动与后端启动并行进行，期间窗口为白屏（可接受的代价）；
+   创建时立即预载 about:blank，让渲染器冷启动协商在画面呈现前完成，
+   避免后端就绪后首次加载时的"缩小再放大"首帧协商闪烁（已实测确认）；
+4. 后端就绪后一次性加载正式页面 http://127.0.0.1:8080/（渲染器已热，首帧干净），
+   不存在任何中间页面切换；
+5. 关闭窗口时，只结束由本启动器拉起的后端进程。
 """
 
 from __future__ import annotations
@@ -29,7 +34,6 @@ BASE_URL = f"http://{HOST}:{PORT}"
 HEALTH_URL = f"{BASE_URL}/api/health"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_PATH = REPO_ROOT / "output" / "desktop_backend.log"
-LOADING_HTML = Path(__file__).resolve().parent / "static" / "loading.html"
 
 
 def is_backend_ready() -> bool:
@@ -74,6 +78,16 @@ def wait_for_backend(timeout_seconds: float = 20.0) -> bool:
     return False
 
 
+class AppWebView(QWebEngineView):
+    """覆盖 sizeHint: QWebEngineView 默认返回 800x600, 可能干扰窗口布局"""
+
+    def sizeHint(self) -> object:
+        window = self.window()
+        if window is not None and window is not self:
+            return window.size()
+        return super().sizeHint()
+
+
 class DesktopWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -81,15 +95,19 @@ class DesktopWindow(QMainWindow):
         self.backend_log_file: object | None = None
         self.started_by_us = False
         self._backend_stopped = False
-        self.web_view: QWebEngineView | None = None
+        self._frontend_loaded = False
 
         self.setWindowTitle("申万行业研究台")
         self.resize(1280, 800)
         self.setMinimumSize(960, 640)
 
-        self.web_view = QWebEngineView()
-        self.web_view.load(QUrl.fromLocalFile(str(LOADING_HTML)))
+        # 窗口从启动起就是 WebView: 无任何中间过渡页, 从根上避免切换闪烁
+        self.web_view = AppWebView()
         self.setCentralWidget(self.web_view)
+        # 立即预载 about:blank: 渲染器冷启动(表面/缩放协商)在窗口尚未呈现
+        # 有意义画面时完成; 若等后端就绪才首次加载, 冷启动协商会暴露成
+        # "窗口先缩小再放大"的一帧(已实测: 几何恒不变, 是渲染器内部协商)
+        self.web_view.load(QUrl("about:blank"))
 
     def attach_backend(
         self,
@@ -102,10 +120,11 @@ class DesktopWindow(QMainWindow):
         self.started_by_us = started_by_us
 
     def show_frontend(self) -> None:
-        if self.web_view is None:
-            self.web_view = QWebEngineView()
-            self.setCentralWidget(self.web_view)
-        self.web_view.load(QUrl(f"{BASE_URL}/"))
+        """后端就绪后加载正式页面(只加载一次)"""
+        if self._frontend_loaded:
+            return
+        self._frontend_loaded = True
+        self.web_view.load(QUrl(BASE_URL))
 
     def stop_owned_backend(self) -> None:
         if self._backend_stopped or not self.started_by_us or self.backend_process is None:

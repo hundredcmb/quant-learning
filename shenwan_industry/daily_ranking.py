@@ -1,8 +1,8 @@
 """
 单日行业涨幅榜入口脚本
 
-行业树与成分数据在 industry_tree.py, 排行榜算法在 industry_ranking.py,
-本脚本负责组装、打印榜单并输出耗时分析。
+行业树与成分数据在 industry_tree.py, 行情数据在 market_data.py, 排行榜算法在
+industry_ranking.py (含 run_daily_ranking 编排), 本脚本负责组装、打印榜单并输出耗时分析。
 """
 
 import time
@@ -14,20 +14,12 @@ from vnpy.trader.setting import SETTINGS
 
 try:
     from .industry_tree import ShenWanIndustryTree
-    from .industry_ranking import (
-        daily_rank_equal_weight,
-        daily_rank_float_weight,
-        wrap_api_counter,
-        print_timing,
-    )
+    from .market_data import MarketDataProvider
+    from .industry_ranking import run_daily_ranking, print_timing
 except ImportError:
     from industry_tree import ShenWanIndustryTree
-    from industry_ranking import (
-        daily_rank_equal_weight,
-        daily_rank_float_weight,
-        wrap_api_counter,
-        print_timing,
-    )
+    from market_data import MarketDataProvider
+    from industry_ranking import run_daily_ranking, print_timing
 
 
 if __name__ == "__main__":
@@ -37,9 +29,9 @@ if __name__ == "__main__":
         raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
 
     pro: DataApi = ts.pro_api(token=token)
-    api_calls = wrap_api_counter(pro)
+    provider = MarketDataProvider(pro)  # 构造时已包装 API 调用计数
 
-    tree = ShenWanIndustryTree(tushare_pro=pro)
+    tree = ShenWanIndustryTree(tushare_pro=provider.pro)
 
     t0 = time.perf_counter()
     tree.build_industries()
@@ -48,38 +40,23 @@ if __name__ == "__main__":
 
     rank_date = datetime(2025, 4, 7)
 
-    t0 = time.perf_counter()
-    tree.get_ts_code_to_pct_chg(rank_date)
-    pct_fetch_secs = time.perf_counter() - t0
+    (l1_rank_list_ew, l2_rank_list_ew, l3_rank_list_ew), \
+        (l1_rank_list_fw, l2_rank_list_fw, l3_rank_list_fw), timings = run_daily_ranking(
+            tree, provider, rank_date
+        )
 
-    t0 = time.perf_counter()
-    tree.get_ts_code_to_circ_mv(rank_date)
-    circ_fetch_secs = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    l1_rank_list_ew, l2_rank_list_ew, l3_rank_list_ew = daily_rank_equal_weight(tree, rank_date)
-    ew_secs = time.perf_counter() - t0
-
-    fw_timings: dict[str, float] = {}
-    t0 = time.perf_counter()
-    l1_rank_list_fw, l2_rank_list_fw, l3_rank_list_fw = daily_rank_float_weight(
-        tree, rank_date, timings=fw_timings
-    )
-    fw_secs = time.perf_counter() - t0
-
-    fallback_secs = fw_timings.get("circ_fallback", 0.0)
     print_timing(
         [
             ("数据准备", [("行业树+成分加载", prep_secs)]),
-            ("行情数据", [("行情获取 daily", pct_fetch_secs)]),
-            ("市值数据", [("市值获取 daily_basic", circ_fetch_secs)]),
+            ("行情数据", [("行情获取 daily", timings["daily_fetch"])]),
+            ("市值数据", [("市值获取 daily_basic", timings["circ_fetch"])]),
             ("排行计算", [
-                ("等权计算", ew_secs),
-                ("停牌市值回退", fallback_secs),
-                ("加权聚合", max(fw_secs - fallback_secs, 0.0)),
+                ("等权计算", timings["equal_compute"]),
+                ("停牌市值回退", timings["float_fallback"]),
+                ("加权聚合", max(timings["float_compute"] - timings["float_fallback"], 0.0)),
             ]),
         ],
-        api_calls,
+        provider.snapshot_api_calls(),
     )
 
     rank_results = [(), (l1_rank_list_ew, l1_rank_list_fw), (l2_rank_list_ew, l2_rank_list_fw), (l3_rank_list_ew, l3_rank_list_fw)]

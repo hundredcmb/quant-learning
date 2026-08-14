@@ -3,27 +3,31 @@
 
 - 行业树构建: 本地 SW2021.json 优先, tushare index_classify 备用
 - 成分加载: index_member_all + stock_basic(L/D/P), 记录 in_date / delist_date 供历史日期过滤
-- 行情/市值获取: daily / daily_basic, 带按日内存缓存
+- 股票池过滤: filter_stock_pool(锚点日期/末日参数化, 单日榜与区间榜共用)
+- 行情/市值获取与缓存见 market_data.py (MarketDataProvider)
 - 排行榜算法见 industry_ranking.py (单日榜 + 区间榜), 入口脚本见 daily_ranking.py / range_ranking.py
 """
 
 import os
 import json
-import math
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import Callable
 
 import pandas as pd
 from tushare.pro.client import DataApi
 
+# 协作式取消检查: 需要取消时抛异常
+CancelCheck = Callable[[], None]
+
 
 class ShenWanIndustryNode:
-    def __init__(self, index_code: str, industry_code: str, industry_name: str, level: int):
+    def __init__(self, index_code: str, industry_code: str, industry_name: str, level: str):
         self.index_code: str = index_code  # 指数代码
         self.industry_code: str = industry_code  # 行业代码
         self.industry_name: str = industry_name  # 行业名称
         self.industry_name_long: str = ""  # 行业名称, 1-2-3 级全称
-        self.level: int = level  # 层级：0/1/2/3, 0是树根节点
+        self.level: str = level  # 层级字符串："L1"/"L2"/"L3", 树根节点单独存在
         self.parent: ShenWanIndustryNode | None = None  # 父节点
         self.children: list[ShenWanIndustryNode] = []  # 子节点列表
         self.constituent_stocks: set[str] = set()  # 成分股代码列表, tushare 格式
@@ -35,9 +39,9 @@ class ShenWanIndustryTree:
             index_code="",
             industry_code="",
             industry_name="",
-            level=0,
+            level="",
         )
-        self.pro: DataApi = tushare_pro  # tushare pro api
+        self.pro: DataApi = tushare_pro  # tushare pro api(仅构建行业树/成分时使用)
         self.index_code_to_node: dict[str, ShenWanIndustryNode] = {}  # 指数代码到节点的映射
         self.industry_code_to_node: dict[str, ShenWanIndustryNode] = {}  # 行业代码到节点的映射
         self.industry_name_to_node: dict[str, ShenWanIndustryNode] = {}  # 行业名称到节点的映射
@@ -45,9 +49,6 @@ class ShenWanIndustryTree:
         self.constituent_stock_to_l3_node: dict[str, ShenWanIndustryNode] = {}
         self.stock_basic: dict[str, dict[str, str]] = {}  # 上市状态的股票 tushare 代码到信息的映射
         self.no_industry_stocks: set[str] = set()  # 没有行业代码的股票集合
-        self.ts_code_to_pct_chg_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股涨跌幅数据
-        self.ts_code_to_close_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股收盘价数据
-        self.ts_code_to_circ_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股流通市值数据
         self.ts_code_to_in_date: dict[str, str] = {}  # 成分股 -> 纳入申万行业的日期(YYYYMMDD), 用于历史日期过滤
         self.ts_code_to_delist_date: dict[str, str] = {}  # 成分股 -> 退市日期(YYYYMMDD), 用于历史日期过滤
 
@@ -186,120 +187,67 @@ class ShenWanIndustryTree:
                         [self.stock_basic[s]['name'] for s in c_child.constituent_stocks],
                     )
 
-    def get_ts_code_to_pct_chg(self, date: datetime) -> dict[str, float | None]:
-        """获取某日的行情数据: ts_code -> 涨跌幅(%), 数据异常时为 None"""
-        ts_code_to_pct_chg: dict[str, float | None] = self.ts_code_to_pct_chg_cache.get(date) or {}
-        ts_code_to_close: dict[str, float] = self.ts_code_to_close_cache.get(date) or {}
-        if ts_code_to_pct_chg and ts_code_to_close:
-            return ts_code_to_pct_chg
+    def filter_stock_pool(
+        self,
+        stock_pool: set[str],
+        anchor_date: datetime,
+        end_date: datetime,
+        cancel_check: CancelCheck | None = None,
+    ) -> dict[str, list[str]]:
+        """过滤股票池, 返回被剔除股票的类别明细 {类别: [ts_code, ...]}
 
-        offset = 0
-        batch_size = 5999
-        date_str = date.strftime("%Y%m%d")
-        while True:
-            df = self.pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
-            if len(df) == 0:
-                break
-            for row in df.itertuples(index=False):
-                ts_code = row.ts_code
-                pre_close = row.pre_close
-                close = row.close
-                if pd.isna(pre_close) or pd.isna(close):
-                    warnings.warn(
-                        f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
-                        RuntimeWarning,
-                    )
-                    ts_code_to_pct_chg[ts_code] = None
-                    continue
-                pre_close_f = float(pre_close)
-                close_f = float(close)
-                if not (math.isfinite(pre_close_f) and pre_close_f > 0 and math.isfinite(close_f)):
-                    warnings.warn(
-                        f"跳过涨跌幅异常数据: {ts_code} {date_str} pre_close={pre_close} close={close}",
-                        RuntimeWarning,
-                    )
-                    ts_code_to_pct_chg[ts_code] = None
-                    continue
-                pct_chg = (close_f - pre_close_f) / pre_close_f * 100
-                ts_code_to_pct_chg[ts_code] = pct_chg
-                ts_code_to_close[ts_code] = close_f
-
-            offset += len(df)
-            if batch_size > len(df):
-                break
-
-        if ts_code_to_pct_chg:
-            self.ts_code_to_pct_chg_cache[date] = ts_code_to_pct_chg
-            self.ts_code_to_close_cache[date] = ts_code_to_close
-
-        return ts_code_to_pct_chg
-
-    def get_ts_code_to_close(self, date: datetime) -> dict[str, float]:
-        """获取某日的收盘价数据: ts_code -> 收盘价"""
-        self.get_ts_code_to_pct_chg(date)
-        return self.ts_code_to_close_cache.get(date) or {}
-
-    def get_ts_code_to_circ_mv(self, date: datetime) -> dict[str, float]:
-        """获取A股某日的流通市值数据: ts_code -> 流通市值"""
-        ts_code_to_circ_mv: dict[str, float] = self.ts_code_to_circ_mv_cache.get(date) or {}
-        if ts_code_to_circ_mv:
-            return ts_code_to_circ_mv
-
-        offset = 0
-        batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
-        date_str = date.strftime("%Y%m%d")
-        while True:
-            df = self.pro.daily_basic(
-                ts_code='',
-                trade_date=date_str,
-                fields='ts_code,circ_mv',
-                offset=offset,
-                limit=batch_size,
-            )
-            for row in df.itertuples(index=False):
-                ts_code = row.ts_code
-                circ_mv = row.circ_mv
-                if pd.isna(circ_mv):
-                    continue
-                ts_code_to_circ_mv[ts_code] = circ_mv
-
-            offset += len(df)
-            if batch_size > len(df):
-                break
-
-        if ts_code_to_circ_mv:
-            self.ts_code_to_circ_mv_cache[date] = ts_code_to_circ_mv
-
-        return ts_code_to_circ_mv
-
-    def filter_stock_pool(self, date: datetime, stock_pool: set[str]) -> None:
-        """过滤股票池"""
-        date_str = date.strftime("%Y%m%d")
+        - 剔除缓存中记录的无行业分类的股票 (no_industry)
+        - 剔除 anchor 日期之后才纳入行业的成分 (in_date_later, 避免前视偏差)
+        - 剔除 end 日期之前已退市的股票 (delisted, 退市日当天及之前正常参与)
+        - 剔除 anchor 日期当天及之后才上市的股票 (not_listed)
+        单日榜调用传 (date, date); 区间榜传 (区间起始日, 区间末日)。
+        """
+        anchor_str = anchor_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+        excluded: dict[str, list[str]] = {
+            "no_industry": [],
+            "in_date_later": [],
+            "delisted": [],
+            "not_listed": [],
+        }
 
         # 剔除缓存中记录的无行业分类的股票
         for no_industry_stock in self.no_industry_stocks:
-            stock_pool.discard(no_industry_stock)
+            if no_industry_stock in stock_pool:
+                stock_pool.discard(no_industry_stock)
+                excluded["no_industry"].append(no_industry_stock)
 
-        # 剔除分析日期之后才纳入行业的成分(避免前视偏差)
-        for ts_code in list(stock_pool):
+        # 剔除 anchor 日期之后才纳入行业的成分(避免前视偏差)
+        for idx, ts_code in enumerate(list(stock_pool)):
+            if cancel_check is not None and idx % 500 == 0:
+                cancel_check()
             in_date = self.ts_code_to_in_date.get(ts_code)
-            if in_date is not None and in_date > date_str:
+            if in_date is not None and in_date > anchor_str:
                 stock_pool.discard(ts_code)
+                excluded["in_date_later"].append(ts_code)
 
-        # 剔除分析日期晚于退市日的股票(退市后不再参与, 退市日当天及之前正常参与)
-        for ts_code in list(stock_pool):
+        # 剔除 end 日期之前已退市的股票(退市后不再参与, 退市日当天及之前正常参与)
+        for idx, ts_code in enumerate(list(stock_pool)):
+            if cancel_check is not None and idx % 500 == 0:
+                cancel_check()
             delist_date = self.ts_code_to_delist_date.get(ts_code)
-            if delist_date is not None and delist_date < date_str:
+            if delist_date is not None and delist_date < end_str:
                 stock_pool.discard(ts_code)
+                excluded["delisted"].append(ts_code)
 
-        # 剔除未上市的股票
-        for ts_code in self.stock_basic:
-            list_date_str = self.stock_basic[ts_code]['list_date']
+        # 剔除 anchor 日期当天及之后才上市的股票
+        for idx, ts_code in enumerate(list(stock_pool)):
+            if cancel_check is not None and idx % 500 == 0:
+                cancel_check()
+            list_date_str = self.stock_basic.get(ts_code, {}).get('list_date')
             if pd.isna(list_date_str) or str(list_date_str).strip() == "":
                 continue
             list_date = datetime.strptime(str(list_date_str), "%Y%m%d")
-            if list_date >= date:
+            if list_date >= anchor_date:
                 stock_pool.discard(ts_code)
+                excluded["not_listed"].append(ts_code)
+
+        return excluded
 
     def get_stock_industry_nodes(
         self,

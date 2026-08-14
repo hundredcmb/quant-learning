@@ -47,8 +47,9 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 | `holders/etf/etf_data_example.xlsx` | 本地 Excel 数据源（已被 gitignore，不入库） |
 | `output/` | 图片运行产物目录（已被 `.gitignore` 忽略） |
 | `skills/` | Tushare 官方 skills（已克隆到本地，含 `SKILL.md` 与完整接口文档 `references/数据接口.md`；已被 gitignore，不随仓库提交） |
-| `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、行情/市值获取 |
-| `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 区间累计涨幅榜（等权 / 流通市值加权），含耗时/调用次数统计工具 |
+| `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、股票池过滤（`filter_stock_pool` 锚点/末日参数化，单日榜与区间榜共用） |
+| `shenwan_industry/market_data.py` | 申万行情数据层 `MarketDataProvider`：涨跌幅/收盘价/流通市值按日内存缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取、API 调用计数 |
+| `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 流通市值加权），含耗时输出工具 `print_timing` |
 | `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
 | `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
 | `shenwan_industry/SW2021.json` | 申万 2021 行业分类本地数据（推荐的数据源） |

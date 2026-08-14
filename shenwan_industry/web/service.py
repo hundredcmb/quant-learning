@@ -7,7 +7,6 @@ import logging
 import math
 import re
 import threading
-import time
 import warnings
 from contextlib import contextmanager
 from datetime import date, datetime, time as datetime_time, timedelta
@@ -18,12 +17,11 @@ import tushare as ts
 from vnpy.trader.setting import SETTINGS
 
 from ..industry_ranking import (
-    daily_rank_equal_weight,
-    daily_rank_float_weight,
+    run_daily_ranking,
     rank_range,
-    wrap_api_counter,
 )
 from ..industry_tree import ShenWanIndustryTree
+from ..market_data import MarketDataProvider
 
 
 logger = logging.getLogger("shenwan_industry.web.service")
@@ -66,6 +64,15 @@ def _flush_no_industry_warnings() -> None:
         "..." if len(codes) > 5 else "",
     )
     _NO_INDUSTRY_STOCKS.clear()
+
+
+def _diff_api_calls(before: dict[str, int], after: dict[str, int]) -> dict[str, int]:
+    """任务前后 API 计数快照求差, 得到本次任务实际调用次数(缓存命中不计)"""
+    return {
+        name: after.get(name, 0) - before.get(name, 0)
+        for name in set(before) | set(after)
+        if after.get(name, 0) - before.get(name, 0) > 0
+    }
 
 
 def _get_token() -> str:
@@ -170,28 +177,33 @@ def _safe_float(value: Any) -> float | None:
 
 
 class PreparedContext:
-    """缓存行业树和基础 pro 对象，首版仅单 worker 访问。"""
+    """缓存行业树与行情数据层，首版仅单 worker 访问。
+
+    MarketDataProvider 内部包装 pro 并累计 API 调用计数，任务前后快照求差即本次任务调用；
+    行情/市值按日期内存缓存跨任务复用（单 worker 串行，无需加锁）。
+    """
 
     def __init__(self) -> None:
         self._tree: ShenWanIndustryTree | None = None
-        self._base_pro: Any = None
+        self._provider: MarketDataProvider | None = None
         self._lock = threading.Lock()
 
-    def ensure(self) -> tuple[ShenWanIndustryTree, Any]:
+    def ensure(self) -> tuple[ShenWanIndustryTree, MarketDataProvider]:
         if self._tree is not None:
-            return self._tree, self._base_pro
+            return self._tree, self._provider
 
         with self._lock:
             if self._tree is not None:
-                return self._tree, self._base_pro
+                return self._tree, self._provider
 
             base_pro = ts.pro_api(token=_get_token())
-            tree = ShenWanIndustryTree(tushare_pro=base_pro)
+            provider = MarketDataProvider(base_pro)
+            tree = ShenWanIndustryTree(tushare_pro=provider.pro)
             tree.build_industries()
             tree.build_constituent_stocks_by_tushare()
             self._tree = tree
-            self._base_pro = base_pro
-            return tree, base_pro
+            self._provider = provider
+            return tree, provider
 
     def is_ready(self) -> bool:
         return self._tree is not None
@@ -223,64 +235,40 @@ def _run_daily(
     cancel_check: Any,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
     progress(0.0, "准备行业数据", "准备行业数据")
-    tree, base_pro = _CONTEXT.ensure()
-    job_pro = ts.pro_api(token=_get_token())
-    api_calls = wrap_api_counter(job_pro)
-    tree.pro = job_pro
+    tree, provider = _CONTEXT.ensure()
+    before_calls = provider.snapshot_api_calls()
 
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
-    timings: dict[str, float] = {}
 
-    try:
-        progress(8.0, "拉取日线行情", "拉取日线行情")
-        t0 = time.perf_counter()
-        pct_map = tree.get_ts_code_to_pct_chg(rank_date)
-        timings["daily_fetch"] = time.perf_counter() - t0
-        if not pct_map:
-            raise ValueError(f"{date_str} 不是交易日，或未获取到当日行情")
+    ew, fw, timings = run_daily_ranking(
+        tree,
+        provider,
+        rank_date,
+        progress_callback=lambda pct, message, phase: progress(pct, message, phase),
+        cancel_check=cancel_check,
+    )
 
-        progress(48.0, "拉取流通市值", "拉取流通市值")
-        t0 = time.perf_counter()
-        circ_map = tree.get_ts_code_to_circ_mv(rank_date)
-        timings["circ_fetch"] = time.perf_counter() - t0
+    progress(95.0, "整理结果", "整理结果")
+    pct_map = provider.get_ts_code_to_pct_chg(rank_date)
+    close_map = provider.get_ts_code_to_close(rank_date)
+    circ_map = provider.get_ts_code_to_circ_mv(rank_date)
 
-        progress(68.0, "计算等权涨幅", "计算排行榜")
-        t0 = time.perf_counter()
-        ew = daily_rank_equal_weight(tree, rank_date, cancel_check)
-        timings["equal_compute"] = time.perf_counter() - t0
-
-        progress(80.0, "计算流通市值加权涨幅", "计算排行榜")
-        fw_timings: dict[str, float] = {}
-        t0 = time.perf_counter()
-        fw = daily_rank_float_weight(
-            tree,
-            rank_date,
-            timings=fw_timings,
-            cancel_check=cancel_check,
-        )
-        timings["float_compute"] = time.perf_counter() - t0
-        timings["float_fallback"] = fw_timings.get("circ_fallback", 0.0)
-
-        close_map = tree.get_ts_code_to_close(rank_date)
-        progress(95.0, "整理结果", "整理结果")
-
-        result = {
-            "mode": "daily",
-            "date": date_str,
-            "levels": _build_levels(tree, ew, fw),
-        }
-        context = {
-            "mode": "daily",
-            "date": rank_date,
-            "tree": tree,
-            "pct_chg": pct_map,
-            "close": close_map,
-            "circ_mv": circ_map,
-        }
-        return result, context, timings, api_calls
-    finally:
-        tree.pro = base_pro
+    result = {
+        "mode": "daily",
+        "date": date_str,
+        "levels": _build_levels(tree, ew, fw),
+    }
+    context = {
+        "mode": "daily",
+        "date": rank_date,
+        "tree": tree,
+        "pct_chg": pct_map,
+        "close": close_map,
+        "circ_mv": circ_map,
+    }
+    api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
+    return result, context, timings, api_calls
 
 
 def _run_range(
@@ -289,46 +277,43 @@ def _run_range(
     cancel_check: Any,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
     progress(0.0, "准备行业数据", "准备行业数据")
-    tree, base_pro = _CONTEXT.ensure()
-    job_pro = ts.pro_api(token=_get_token())
-    api_calls = wrap_api_counter(job_pro)
-    tree.pro = job_pro
+    tree, provider = _CONTEXT.ensure()
+    before_calls = provider.snapshot_api_calls()
 
     start_date = datetime.combine(job.payload["start_date"], datetime_time.min)
     end_date = datetime.combine(job.payload["end_date"], datetime_time.min)
     timings: dict[str, Any] = {}
     detail: dict[str, dict[str, float]] = {}
 
-    try:
-        ew, fw = rank_range(
-            tree,
-            start_date,
-            end_date,
-            timings=timings,
-            progress_callback=lambda pct, message: progress(pct, message, "拉取区间数据"),
-            detail=detail,
-            cancel_check=cancel_check,
-        )
-        progress(99.0, "整理结果", "整理结果")
-        result = {
-            "mode": "range",
-            "start_date": start_date.strftime("%Y%m%d"),
-            "end_date": end_date.strftime("%Y%m%d"),
-            "trading_days": timings.get("trading_days"),
-            "levels": _build_levels(tree, ew, fw),
-        }
-        context = {
-            "mode": "range",
-            "start_date": start_date,
-            "end_date": end_date,
-            "tree": tree,
-            "stock_ret": detail["stock_ret"],
-            "last_close": detail["last_close"],
-            "ts_code_to_circ_mv": detail["ts_code_to_circ_mv"],
-        }
-        return result, context, timings, api_calls
-    finally:
-        tree.pro = base_pro
+    ew, fw = rank_range(
+        tree,
+        provider,
+        start_date,
+        end_date,
+        timings=timings,
+        progress_callback=lambda pct, message: progress(pct, message, "拉取区间数据"),
+        detail=detail,
+        cancel_check=cancel_check,
+    )
+    progress(99.0, "整理结果", "整理结果")
+    result = {
+        "mode": "range",
+        "start_date": start_date.strftime("%Y%m%d"),
+        "end_date": end_date.strftime("%Y%m%d"),
+        "trading_days": timings.get("trading_days"),
+        "levels": _build_levels(tree, ew, fw),
+    }
+    context = {
+        "mode": "range",
+        "start_date": start_date,
+        "end_date": end_date,
+        "tree": tree,
+        "stock_ret": detail["stock_ret"],
+        "last_close": detail["last_close"],
+        "ts_code_to_circ_mv": detail["ts_code_to_circ_mv"],
+    }
+    api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
+    return result, context, timings, api_calls
 
 
 def _build_levels(
@@ -395,7 +380,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     circ_map: dict[str, float] = context["circ_mv"]
 
     stock_pool = set(pct_map) | set(tree.constituent_stock_to_l3_node)
-    tree.filter_stock_pool(rank_date, stock_pool)
+    tree.filter_stock_pool(stock_pool, rank_date, rank_date)
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
