@@ -15,3 +15,6 @@ holders/etf/*.xlsx
 
 # Tushare 官方 skills（第三方仓库，已克隆到本地使用，不随本项目提交）
 skills/
+
+# ZCode CLI 会话数据（本地工具产物，不入库）
+.zcode/
