@@ -73,7 +73,13 @@ cd <你的项目根目录>
 .\setup.ps1
 ```
 
-> Windows 执行策略限制时，可用：`powershell -ExecutionPolicy Bypass -File .\setup.ps1`
+> **Windows 执行策略限制时**（直接运行 `.\setup.ps1` 会报“禁止运行脚本”），改用下面命令代替：
+>
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\setup.ps1
+> # 手动指定 veighna Python 时同样适用：
+> powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veighna_studio\python.exe"
+> ```
 
 #### 手动指定 veighna Python（重点）
 
