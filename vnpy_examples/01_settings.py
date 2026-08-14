@@ -1,3 +1,9 @@
+# 直接运行本脚本时，把仓库根目录加入 sys.path，以便 import config 等根目录模块
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import json
 from config import logger
 from vnpy.trader.setting import SETTINGS
