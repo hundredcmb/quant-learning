@@ -35,8 +35,8 @@ Excel 模板格式（单工作表，8 列）：
   默认取脚本顶部 DEFAULT_ON_CONFLICT
 
 用法：
-    C:\\veighna_studio\\python.exe holders\\import_etf_data.py "C:\\path\\ETF1.xlsx"
-    C:\\veighna_studio\\python.exe holders\\import_etf_data.py "C:\\path\\ETF1.xlsx" --on-conflict overwrite
+    .venv\\Scripts\\python.exe holders\\import_etf_data.py "C:\\path\\ETF1.xlsx"
+    .venv\\Scripts\\python.exe holders\\import_etf_data.py "C:\\path\\ETF1.xlsx" --on-conflict overwrite
     不传 Excel 路径时，默认读取下方 DEFAULT_EXCEL_FILE 指定的文件
 """
 import argparse

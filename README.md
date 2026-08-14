@@ -11,10 +11,10 @@
 
 ## 运行前提（必须）
 
-本项目依赖 vnpy 完整环境（vnpy、vnpy_tushare、vnpy_ctastrategy、tushare、pandas、numpy、Pillow、TA-Lib 等），**必须安装 vnpy 客户端（veighna studio），并使用其自带的 Python 运行**。不要用系统 Python 单独 pip 安装 vnpy 相关依赖。
+本项目依赖 vnpy 完整环境（vnpy、vnpy_tushare、vnpy_ctastrategy、tushare、pandas、numpy、Pillow、TA-Lib 等），**必须安装 vnpy 客户端（veighna studio）**。代码不直接依赖 veighna 的具体安装路径：在仓库内运行 `.\setup.ps1` 创建继承该环境的虚拟环境 `.venv`，之后所有脚本统一用 `.venv\Scripts\python.exe` 运行。不要用系统 Python 单独 pip 安装 vnpy 相关依赖。
 
 - vnpy 客户端下载：https://www.vnpy.com/
-- 客户端安装后自带 Python 3.13 和完整 vnpy 环境；Windows 默认安装目录为 `C:\veighna_studio`，自带 Python 位于 `C:\veighna_studio\python.exe`
+- 客户端安装后自带 Python 3.13 和完整 vnpy 环境；**veighna 的安装路径因人而异**（例如 `C:\veighna_studio`、`D:\Tools\veighna_studio`）。本项目不依赖具体安装路径：初始化时会创建继承该环境的本地虚拟环境 `.venv`，之后所有命令统一用 `.venv\Scripts\python.exe` 运行（详见「快速开始」）
 
 ## 目录结构
 
@@ -62,20 +62,55 @@ quant-learning/
 
 ### 1. 安装 vnpy 客户端
 
-下载并安装 veighna studio，然后确认自带 Python 可用：
+下载并安装 veighna studio（自带 Python 3.13 与完整 vnpy 环境），记下你本机 veighna 自带 Python 的路径（例如 `C:\veighna_studio\python.exe` 或 `D:\Tools\veighna_studio\python.exe`）。
+
+### 2. 初始化项目虚拟环境 `.venv`（推荐）
+
+在项目根目录执行一次初始化脚本。它会定位你本机的 veighna Python，创建继承其全部依赖的虚拟环境 `.venv`（`--system-site-packages`，vnpy / tushare / TA-Lib / PySide6 等一并继承），并安装项目自身依赖：
 
 ```powershell
-C:\veighna_studio\python.exe --version
+cd <你的项目根目录>
+.\setup.ps1
 ```
 
-### 2. 安装项目自身依赖
+> Windows 执行策略限制时，可用：`powershell -ExecutionPolicy Bypass -File .\setup.ps1`
 
-使用 vnpy 自带 Python 在项目根目录安装 `requirements.txt`（只包含项目自身依赖）：
+#### 手动指定 veighna Python（重点）
+
+自动探测找不到你的 veighna 安装路径时，用下面任意一种方式手动指定（优先级从高到低）：
+
+**方式一：命令行参数（推荐）**
 
 ```powershell
-cd C:\Users\LSY\Desktop\lsy_projects\quant-learning
-C:\veighna_studio\python.exe -m pip install -r requirements.txt
+.\setup.ps1 -PythonPath "D:\Tools\veighna_studio\python.exe"
 ```
+
+**方式二：环境变量 `VNPY_PYTHON`**
+
+```powershell
+$env:VNPY_PYTHON = "D:\Tools\veighna_studio\python.exe"
+.\setup.ps1
+```
+
+**方式三：本地文件 `.pythonpath`**（已加入 `.gitignore`，不会提交）
+
+在项目根目录新建文件 `.pythonpath`，第一行写入 veighna Python 的完整路径：
+
+```text
+D:\Tools\veighna_studio\python.exe
+```
+
+之后直接运行 `.\setup.ps1` 即可。
+
+以上三种方式都不指定时，脚本才会自动探测（常见安装目录 → `C:\` / `D:\` 盘扫描 → PATH 中的 python 且能 `import vnpy`），都找不到时会明确报错提示手动指定。
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `-PythonPath <路径>` | 手动指定 veighna Python（也可用 `VNPY_PYTHON` 环境变量 / `.pythonpath` 文件） |
+| `-SkipInstall` | 只创建 `.venv`，跳过依赖安装 |
+| `-Force` | 删除现有 `.venv` 后重建 |
 
 ### 3. 配置 Tushare token 与数据库（vt_setting.json）
 
@@ -118,10 +153,16 @@ C:\veighna_studio\python.exe -m pip install -r requirements.txt
 
 ### 4. 运行脚本
 
-所有脚本都用 vnpy 自带 Python 运行，例如：
+所有脚本统一用 `.venv` 中的 Python 运行（不再依赖 veighna 的具体安装路径），例如：
 
 ```powershell
-C:\veighna_studio\python.exe holders\top10_holders_value.py
+.venv\Scripts\python.exe holders\stock\top10_holders_value.py
+```
+
+桌面窗口客户端用 `pythonw` 启动：
+
+```powershell
+.venv\Scripts\pythonw.exe shenwan_industry\web\desktop.pyw
 ```
 
 ## 使用 AI Agent 开发
@@ -154,8 +195,8 @@ skills 中包含完整的数据接口文档（`skills/tushare/references/数据�
 ### 2. 申万行业涨幅
 
 ```powershell
-C:\veighna_studio\python.exe shenwan_industry/daily_ranking.py
-C:\veighna_studio\python.exe shenwan_industry/range_ranking.py   # 区间涨幅榜（区间在文件内配置）
+.venv\Scripts\python.exe shenwan_industry\daily_ranking.py
+.venv\Scripts\python.exe shenwan_industry\range_ranking.py   # 区间涨幅榜（区间在文件内配置）
 ```
 
 示例默认计算指定日期（或区间）的申万一级 / 二级 / 三级行业涨幅榜（等权与流通市值加权两种口径），行业树从本地 `SW2021.json` 构建；两个入口运行结束都会在控制台输出耗时分析与 API 调用次数。
@@ -165,11 +206,11 @@ C:\veighna_studio\python.exe shenwan_industry/range_ranking.py   # 区间涨幅�
 示例按学习路径编号，建议按顺序运行：
 
 ```powershell
-C:\veighna_studio\python.exe vnpy_examples\01_settings.py
-C:\veighna_studio\python.exe vnpy_examples\02_bardata.py
-C:\veighna_studio\python.exe vnpy_examples\03_datafeed.py
-C:\veighna_studio\python.exe vnpy_examples\05_indicator.py
-C:\veighna_studio\python.exe vnpy_examples\06_ma_strategy.py
+.venv\Scripts\python.exe vnpy_examples\01_settings.py
+.venv\Scripts\python.exe vnpy_examples\02_bardata.py
+.venv\Scripts\python.exe vnpy_examples\03_datafeed.py
+.venv\Scripts\python.exe vnpy_examples\05_indicator.py
+.venv\Scripts\python.exe vnpy_examples\06_ma_strategy.py
 ```
 
 注意：

@@ -15,6 +15,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
 - 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（pymysql、sqlalchemy）
+- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（自动定位本机 veighna Python，`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 - 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取：
   - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型；`holders/` 和申万示例都从这里读 token
@@ -61,35 +62,37 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 ## 常用命令
 
 ```bash
+# 以下命令均指 .venv\Scripts\python.exe（先运行 setup.ps1 初始化 .venv）
+
 # 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
-python holders/stock/top10_holders_value.py
-python holders/stock/top10_holders_change.py
-python holders/stock/top10_holders_change_merged.py
-python holders/stock/top10_return_between_dates.py
+.venv\Scripts\python.exe holders/stock/top10_holders_value.py
+.venv\Scripts\python.exe holders/stock/top10_holders_change.py
+.venv\Scripts\python.exe holders/stock/top10_holders_change_merged.py
+.venv\Scripts\python.exe holders/stock/top10_return_between_dates.py
 
 # ETF 十大持有人（数据源为手动导入缓存，日线从 fund_daily 拉取）
-python holders/etf/import_etf_data.py
-python holders/etf/etf_top10_holders_value.py
-python holders/etf/etf_top10_holders_change.py
-python holders/etf/etf_top10_holders_change_merged.py
-python holders/etf/etf_top10_return_between_dates.py
+.venv\Scripts\python.exe holders/etf/import_etf_data.py
+.venv\Scripts\python.exe holders/etf/etf_top10_holders_value.py
+.venv\Scripts\python.exe holders/etf/etf_top10_holders_change.py
+.venv\Scripts\python.exe holders/etf/etf_top10_holders_change_merged.py
+.venv\Scripts\python.exe holders/etf/etf_top10_return_between_dates.py
 
 # 申万行业涨幅示例
-python shenwan_industry/daily_ranking.py
-python shenwan_industry/range_ranking.py   # 区间涨幅榜示例（区间在文件内配置）
+.venv\Scripts\python.exe shenwan_industry/daily_ranking.py
+.venv\Scripts\python.exe shenwan_industry/range_ranking.py   # 区间涨幅榜示例（区间在文件内配置）
 
 # 申万行业本地 Web 服务
-C:\veighna_studio\python.exe -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
+.venv\Scripts\python.exe -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
 
 # 申万行业桌面窗口客户端（后台自动启动后端）
-C:\veighna_studio\pythonw.exe shenwan_industry\web\desktop.pyw
+.venv\Scripts\pythonw.exe shenwan_industry\web\desktop.pyw
 
 # vnpy 示例（需先配置好数据库与 tushare）
-python vnpy_examples/01_settings.py
-python vnpy_examples/02_bardata.py
-python vnpy_examples/03_datafeed.py
-python vnpy_examples/05_indicator.py
-python vnpy_examples/06_ma_strategy.py
+.venv\Scripts\python.exe vnpy_examples/01_settings.py
+.venv\Scripts\python.exe vnpy_examples/02_bardata.py
+.venv\Scripts\python.exe vnpy_examples/03_datafeed.py
+.venv\Scripts\python.exe vnpy_examples/05_indicator.py
+.venv\Scripts\python.exe vnpy_examples/06_ma_strategy.py
 ```
 
 ## 代码约定

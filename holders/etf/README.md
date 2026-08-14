@@ -67,7 +67,7 @@ SPECIFIC_RATIO = {
 ## 导入
 
 ```powershell
-C:\veighna_studio\python.exe holders\etf\import_etf_data.py
+.venv\Scripts\python.exe holders\etf\import_etf_data.py
 ```
 
 - 默认读取脚本顶部 `DEFAULT_EXCEL_FILE` 指定的 Excel；也可在命令行显式传路径

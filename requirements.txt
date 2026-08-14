@@ -1,11 +1,12 @@
-# quant-learning 项目依赖
+﻿# quant-learning 项目依赖
 #
 # 本项目必须安装 vnpy 客户端（veighna studio），并使用其自带的 Python 运行。
 # vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow /
 # ta-lib 等均由 vnpy 客户端环境提供，请勿（也无需）用 pip 单独安装这些库。
 #
 # 本文件只列出项目自身需要的额外依赖，使用 vnpy 自带 Python 安装：
-#   C:\veighna_studio\python.exe -m pip install -r requirements.txt
+#   .venv\Scripts\python.exe -m pip install -r requirements.txt
+#   （或在仓库根目录运行 .\setup.ps1 一键初始化 .venv 并安装依赖）
 
 pymysql==1.1.1
 sqlalchemy==2.0.43

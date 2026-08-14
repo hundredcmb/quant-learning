@@ -1,7 +1,7 @@
 """MySQL 连接自检：验证 database/session.py 能否从 vnpy 配置动态获取数据库信息。
 
 用法（用 vnpy 自带 Python 运行）：
-    C:\\veighna_studio\\python.exe test_mysql_connection.py
+    .venv\\Scripts\\python.exe test_mysql_connection.py
 """
 from sqlalchemy import create_engine, text
 
