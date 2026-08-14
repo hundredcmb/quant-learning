@@ -11,10 +11,10 @@
 
 ## 运行前提（必须）
 
-本项目依赖 vnpy 完整环境（vnpy、vnpy_tushare、vnpy_ctastrategy、tushare、pandas、numpy、Pillow、TA-Lib 等），**必须安装 vnpy 客户端（veighna studio）**。代码不直接依赖 veighna 的具体安装路径：在仓库内运行 `.\setup.ps1` 创建继承该环境的虚拟环境 `.venv`，之后所有脚本统一用 `.venv\Scripts\python.exe` 运行。不要用系统 Python 单独 pip 安装 vnpy 相关依赖。
+本项目依赖 vnpy 完整环境（vnpy、vnpy_tushare、vnpy_ctastrategy、tushare、pandas、numpy、Pillow、TA-Lib 等），**必须安装 vnpy 客户端（veighna studio）**。代码不直接依赖 veighna 的具体安装路径：运行 `.\setup.ps1 -PythonPath <veighna python 路径>` 创建继承该环境的虚拟环境 `.venv`，之后所有脚本统一用 `.venv\Scripts\python.exe` 运行。不要用系统 Python 单独 pip 安装 vnpy 相关依赖。
 
 - vnpy 客户端下载：https://www.vnpy.com/
-- 客户端安装后自带 Python 3.13 和完整 vnpy 环境；**veighna 的安装路径因人而异**（例如 `C:\veighna_studio`、`D:\Tools\veighna_studio`）。本项目不依赖具体安装路径：初始化时会创建继承该环境的本地虚拟环境 `.venv`，之后所有命令统一用 `.venv\Scripts\python.exe` 运行（详见「快速开始」）
+- 客户端安装后自带 Python 3.13 和完整 vnpy 环境；**veighna 的安装路径因人而异**（例如 `C:\veighna_studio`、`D:\Tools\veighna_studio`）。本项目不依赖具体安装路径：用 `setup.ps1 -PythonPath` 手动指定本机 veighna Python 后创建本地虚拟环境 `.venv`，之后所有命令统一用 `.venv\Scripts\python.exe` 运行（详见「快速开始」）
 
 ## 目录结构
 
@@ -64,59 +64,16 @@ quant-learning/
 
 下载并安装 veighna studio（自带 Python 3.13 与完整 vnpy 环境），记下你本机 veighna 自带 Python 的路径（例如 `C:\veighna_studio\python.exe` 或 `D:\Tools\veighna_studio\python.exe`）。
 
-### 2. 初始化项目虚拟环境 `.venv`（推荐）
+### 2. 初始化项目虚拟环境 `.venv`
 
-在项目根目录执行一次初始化脚本。它会定位你本机的 veighna Python，创建继承其全部依赖的虚拟环境 `.venv`（`--system-site-packages`，vnpy / tushare / TA-Lib / PySide6 等一并继承），并安装项目自身依赖：
+在项目根目录执行（把路径换成你本机 veighna 自带 Python）：
 
 ```powershell
 cd <你的项目根目录>
-.\setup.ps1
+powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veighna_studio\python.exe"
 ```
 
-> **Windows 执行策略限制时**（直接运行 `.\setup.ps1` 会报“禁止运行脚本”），改用下面命令代替：
->
-> ```powershell
-> powershell -ExecutionPolicy Bypass -File .\setup.ps1
-> # 手动指定 veighna Python 时同样适用：
-> powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "D:\Tools\veighna_studio\python.exe"
-> ```
-
-#### 手动指定 veighna Python（重点）
-
-自动探测找不到你的 veighna 安装路径时，用下面任意一种方式手动指定（优先级从高到低）：
-
-**方式一：命令行参数（推荐）**
-
-```powershell
-.\setup.ps1 -PythonPath "D:\Tools\veighna_studio\python.exe"
-```
-
-**方式二：环境变量 `VNPY_PYTHON`**
-
-```powershell
-$env:VNPY_PYTHON = "D:\Tools\veighna_studio\python.exe"
-.\setup.ps1
-```
-
-**方式三：本地文件 `.pythonpath`**（已加入 `.gitignore`，不会提交）
-
-在项目根目录新建文件 `.pythonpath`，第一行写入 veighna Python 的完整路径：
-
-```text
-D:\Tools\veighna_studio\python.exe
-```
-
-之后直接运行 `.\setup.ps1` 即可。
-
-以上三种方式都不指定时，脚本才会自动探测（常见安装目录 → `C:\` / `D:\` 盘扫描 → PATH 中的 python 且能 `import vnpy`），都找不到时会明确报错提示手动指定。
-
-常用参数：
-
-| 参数 | 说明 |
-| --- | --- |
-| `-PythonPath <路径>` | 手动指定 veighna Python（也可用 `VNPY_PYTHON` 环境变量 / `.pythonpath` 文件） |
-| `-SkipInstall` | 只创建 `.venv`，跳过依赖安装 |
-| `-Force` | 删除现有 `.venv` 后重建 |
+> 仅支持 Windows；`-PythonPath` 为必填参数（脚本不会自动探测），必须指向 veighna studio 自带的 `python.exe`。
 
 ### 3. 配置 Tushare token 与数据库（vt_setting.json）
 

@@ -15,7 +15,8 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
 - 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（pymysql、sqlalchemy）
-- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（自动定位本机 veighna Python，`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
+- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（**必须手动指定本机 veighna Python 路径**，如 `.\setup.ps1 -PythonPath "C:\veighna_studio\python.exe"`；脚本不自动探测；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
+- 运行 `setup.ps1`（仅支持 Windows）必须用 `-PythonPath` 手动指定 veighna Python；推荐直接用 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行（同时规避执行策略限制）
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 - 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取：
   - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型；`holders/` 和申万示例都从这里读 token
@@ -143,6 +144,7 @@ quant-learning 是一个 A 股量化学习项目（“量化小白从零开始�
 - 按编号顺序学习即可，具体功能与参数说明见各脚本内注释
 
 ### 环境与 Git
+- **提交规则（重要）**：AI 编码代理（如 Codex）默认**不得自行执行 `git add` / `git commit` / `git push`**；只有用户明确要求提交时才可执行。代码/文档改动完成后保持未提交状态，等待用户指示。
 
 - 本机是 Windows，PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；PowerShell 读写中文文件时注意 UTF-8 编码
 - `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
