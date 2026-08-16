@@ -10,13 +10,14 @@ from datetime import datetime
 
 import tushare as ts
 from tushare.pro.client import DataApi
-from vnpy.trader.setting import SETTINGS
 
 try:
+    from .config_store import config_path, get_token
     from .industry_tree import ShenWanIndustryTree
     from .market_data import MarketDataProvider
     from .industry_ranking import run_daily_ranking, print_timing
 except ImportError:
+    from config_store import config_path, get_token
     from industry_tree import ShenWanIndustryTree
     from market_data import MarketDataProvider
     from industry_ranking import run_daily_ranking, print_timing
@@ -24,9 +25,12 @@ except ImportError:
 
 if __name__ == "__main__":
     """代码示例: 指定一个日期, 计算所有申万行业的流通市值加权涨幅和等权涨幅"""
-    token: str = SETTINGS["datafeed.password"]
+    token: str = get_token()
     if not token:
-        raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
+        raise ValueError(
+            "未配置 Tushare token，请先运行 Web 服务（python -m shenwan_industry.web.server）"
+            "并在页面右上角填写保存 token；或直接编辑本地配置文件: " + str(config_path())
+        )
 
     pro: DataApi = ts.pro_api(token=token)
     provider = MarketDataProvider(pro)  # 构造时已包装 API 调用计数

@@ -9,6 +9,7 @@
   - `industry_tree.py`：行业树与成分数据层（`ShenWanIndustryNode` / `ShenWanIndustryTree`：树构建、成分加载、`in_date`/`delist_date` 记录、股票池过滤 `filter_stock_pool`）
   - `market_data.py`：行情数据层 `MarketDataProvider`（API 调用计数、按日缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取）
   - `industry_ranking.py`：排行榜算法库（`daily_rank_equal_weight` / `daily_rank_float_weight` / `run_daily_ranking` / `rank_range`）+ 耗时工具 `print_timing`
+  - `config_store.py`：本地配置存储（Tushare token，存项目根目录 `.quant-learning/settings.json`、已 gitignore 不提交），CLI 与 Web 统一从这里读 token
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，勿删）
   - `__init__.py`：空
@@ -20,7 +21,7 @@
 
 ## 运行环境与数据源
 
-必须使用 veighna studio 自带 Python；token 一律从 vnpy `SETTINGS["datafeed.password"]` 动态读取（禁止硬编码）；需联网访问 Tushare Pro，接口权限依赖账号积分；日期统一 `YYYYMMDD`（内部用 `datetime`，`strftime("%Y%m%d")` 转换）。`.venv` 初始化等细节见根 `AGENTS.md`。
+本模块**已彻底脱离 vnpy**（不 import 任何 vnpy 包），可用任一带 tushare/pandas 的 Python 运行；token 从本地配置 `config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；需联网访问 Tushare Pro，接口权限依赖账号积分；日期统一 `YYYYMMDD`（内部用 `datetime`，`strftime("%Y%m%d")` 转换）。
 
 ## 核心算法约定（必读）
 
@@ -64,7 +65,7 @@
 
 ### 6. 输出与示例
 
-- 入口脚本从 `SETTINGS["datafeed.password"]` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印两列涨幅、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
+- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印两列涨幅、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
 - 运行结束输出**耗时分析**（组小计、各阶段耗时/占比、总耗时与 API 调用次数）：耗时统计 `print_timing`，API 次数由 `MarketDataProvider.snapshot_api_calls()` 提供（构造时即包装计数，含建树阶段）；大阶段按"接口拉取 vs 本地计算/回退"拆分
 - 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权 → 加权，避免两套编排漂移）；timings key：`daily_fetch`/`circ_fetch`/`equal_compute`/`float_compute`/`float_fallback`；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
 - 模块暂无图片产物，仅控制台输出

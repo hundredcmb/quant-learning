@@ -1,9 +1,19 @@
 # quant-learning 项目依赖
 #
-# 本项目必须安装 vnpy 客户端（veighna studio），并使用其自带的 Python 运行。
-# vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow /
-# ta-lib 等均由 vnpy 客户端环境提供，请勿（也无需）用 pip 单独安装这些库。
+# 本项目默认假设本机未安装 vnpy 客户端（veighna studio），
+# 下列依赖（含 GUI 的 PySide6）在所有平台都需要安装：
+fastapi
+uvicorn
+pydantic
+tushare
+pandas
+# GUI（申万桌面窗口 desktop.pyw 使用 Qt WebEngine 需要 PySide6）
+PySide6
+
+# 若本机已安装 vnpy 客户端并复用其 Python 环境，则 vnpy / vnpy_tushare /
+# vnpy_ctastrategy / tushare / pandas / numpy / Pillow / ta-lib / PySide6 等
+# 已由客户端提供，pip 会自动跳过已满足的依赖，无需额外处理。
 #
 # 当前项目自身无额外依赖；将来有需要时在此追加，并使用 vnpy 自带 Python 安装：
 #   .venv\Scripts\python.exe -m pip install -r requirements.txt
-#   （或在仓库根目录运行 .\setup.ps1 一键初始化 .venv 并安装依赖）
+#   （或在仓库根目录运行 .\setup.ps1 / ./setup.sh 一键初始化 .venv 并安装依赖）

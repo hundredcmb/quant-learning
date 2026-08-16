@@ -12,13 +12,22 @@ from fastapi.staticfiles import StaticFiles
 
 from . import service
 from .jobs import JobManager
-from .schemas import DailyRankingRequest, RangeRankingRequest
+from .schemas import DailyRankingRequest, RangeRankingRequest, TokenConfigRequest
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 app = FastAPI(title="申万行业研究台", version="0.1.0")
 job_manager = JobManager(service.run_worker)
+
+
+@app.middleware("http")
+async def no_cache_static(request, call_next):
+    """本地开发工具：页面与静态资源不缓存，避免修改后浏览器拿到旧文件。"""
+    response = await call_next(request)
+    if request.url.path.startswith("/static/") or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/")
@@ -43,6 +52,24 @@ def health() -> dict:
 @app.get("/api/defaults")
 def defaults() -> dict:
     return service.get_default_dates()
+
+
+@app.get("/api/config")
+def get_config() -> dict:
+    return service.get_token_config()
+
+
+@app.post("/api/config")
+def save_config(request: TokenConfigRequest) -> dict:
+    token = request.token.strip()
+    service.save_token(token)
+    return {"configured": bool(token)}
+
+
+@app.post("/api/config/test")
+def test_config() -> dict:
+    ok, message = service.test_token()
+    return {"ok": ok, "message": message}
 
 
 @app.get("/api/index/{index_code}/kline")

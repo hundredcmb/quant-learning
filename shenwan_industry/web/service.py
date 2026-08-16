@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import tushare as ts
-from vnpy.trader.setting import SETTINGS
 
+from ..config_store import config_path, get_token, set_token
 from ..industry_ranking import (
     run_daily_ranking,
     rank_range,
@@ -76,10 +76,52 @@ def _diff_api_calls(before: dict[str, int], after: dict[str, int]) -> dict[str, 
 
 
 def _get_token() -> str:
-    token = SETTINGS.get("datafeed.password", "")
+    token = get_token()
     if not token:
-        raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
+        raise ValueError(
+            f"尚未配置 Tushare token，请先在页面右上角「数据配置」中填写并保存"
+            f"（本地配置文件: {config_path()}）"
+        )
     return token
+
+
+def get_token_config() -> dict[str, Any]:
+    """返回 token 配置状态（不回显完整 token，仅掩码）。"""
+    token = get_token()
+    if not token:
+        return {"configured": False, "token_mask": None}
+    return {"configured": True, "token_mask": _mask_token(token)}
+
+
+def _mask_token(token: str) -> str:
+    if len(token) <= 8:
+        return f"{token[:2]}***"
+    return f"{token[:4]}***{token[-4:]}"
+
+
+def save_token(token: str) -> None:
+    """保存 token 并重置已构建的行业数据上下文，下次查询自动用新 token 重建。"""
+    set_token(token)
+    _CONTEXT.reset()
+
+
+def test_token() -> tuple[bool, str]:
+    """用 trade_cal 验证已保存的 token 是否可用。"""
+    token = get_token()
+    if not token:
+        return False, "尚未配置 Tushare token"
+    try:
+        pro = ts.pro_api(token=token)
+        pro.trade_cal(
+            exchange="SSE",
+            start_date="20250101",
+            end_date="20250110",
+            is_open="1",
+            fields="cal_date",
+        )
+        return True, "token 有效"
+    except Exception as err:  # noqa: BLE001 - 接口失败即视为无效
+        return False, f"token 无效或接口无权限: {err}"
 
 
 def get_default_dates() -> dict[str, str]:
@@ -181,29 +223,40 @@ class PreparedContext:
 
     MarketDataProvider 内部包装 pro 并累计 API 调用计数，任务前后快照求差即本次任务调用；
     行情/市值按日期内存缓存跨任务复用（单 worker 串行，无需加锁）。
+    构建时记录所用 token，token 变更（页面重新保存）后自动重建。
     """
 
     def __init__(self) -> None:
         self._tree: ShenWanIndustryTree | None = None
         self._provider: MarketDataProvider | None = None
+        self._token: str | None = None
         self._lock = threading.Lock()
 
     def ensure(self) -> tuple[ShenWanIndustryTree, MarketDataProvider]:
-        if self._tree is not None:
-            return self._tree, self._provider
-
         with self._lock:
+            token = _get_token()
+            if self._tree is not None and token != self._token:
+                self._tree = None
+                self._provider = None
+                self._token = None
             if self._tree is not None:
                 return self._tree, self._provider
 
-            base_pro = ts.pro_api(token=_get_token())
+            base_pro = ts.pro_api(token=token)
             provider = MarketDataProvider(base_pro)
             tree = ShenWanIndustryTree(tushare_pro=provider.pro)
             tree.build_industries()
             tree.build_constituent_stocks_by_tushare()
             self._tree = tree
             self._provider = provider
+            self._token = token
             return tree, provider
+
+    def reset(self) -> None:
+        with self._lock:
+            self._tree = None
+            self._provider = None
+            self._token = None
 
     def is_ready(self) -> bool:
         return self._tree is not None

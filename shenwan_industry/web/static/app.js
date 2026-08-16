@@ -20,10 +20,88 @@ const state = {
 
 document.addEventListener("DOMContentLoaded", () => {
   setDefaultDates();
+  refreshConfigButton();
   bindEvents();
   setMode();
   updateSortArrows("#main-table", state.mainSort);
 });
+
+function refreshConfigButton() {
+  fetch("/api/config")
+    .then(handleFetchError)
+    .then((data) => {
+      const btn = $("#config-btn");
+      btn.textContent = data.configured ? "数据配置" : "数据配置 · 未设置";
+      btn.classList.toggle("unset", !data.configured);
+    })
+    .catch(() => {
+      const btn = $("#config-btn");
+      btn.textContent = "数据配置 · 读取失败";
+      btn.classList.add("unset");
+    });
+}
+
+function openConfigPanel() {
+  setTokenStatus("正在读取配置...");
+  showElement("#config-panel");
+  $("#token-input").focus();
+  fetch("/api/config")
+    .then(handleFetchError)
+    .then((data) => {
+      if (data.configured) {
+        setTokenStatus(`已保存 token（${data.token_mask}）`, "ok");
+      } else {
+        setTokenStatus("尚未配置 token，请填写后保存", "err");
+      }
+    })
+    .catch((error) => setTokenStatus(`读取配置失败: ${error.message}`, "err"));
+}
+
+function closeConfigPanel() {
+  hideElement("#config-panel");
+}
+
+function saveToken() {
+  const token = $("#token-input").value.trim();
+  const saveBtn = $("#token-save-btn");
+  saveBtn.disabled = true;
+  fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  })
+    .then(handleFetchError)
+    .then(() => {
+      $("#token-input").value = "";
+      refreshConfigButton();
+      setTokenStatus(token ? "已保存，下次查询将使用新 token" : "已清除 token", "ok");
+    })
+    .catch((error) => setTokenStatus(`保存失败: ${error.message}`, "err"))
+    .finally(() => {
+      saveBtn.disabled = false;
+    });
+}
+
+function testToken() {
+  const testBtn = $("#token-test-btn");
+  testBtn.disabled = true;
+  setTokenStatus("正在测试...");
+  fetch("/api/config/test", { method: "POST" })
+    .then(handleFetchError)
+    .then((data) => {
+      setTokenStatus(data.message, data.ok ? "ok" : "err");
+    })
+    .catch((error) => setTokenStatus(`测试失败: ${error.message}`, "err"))
+    .finally(() => {
+      testBtn.disabled = false;
+    });
+}
+
+function setTokenStatus(message, cls) {
+  const status = $("#token-status");
+  status.textContent = message;
+  status.className = cls ? `token-status ${cls}` : "token-status";
+}
 
 function setDefaultDates() {
   const now = new Date();
@@ -98,24 +176,25 @@ function bindEvents() {
 
   $("#query-btn").addEventListener("click", submit);
   $("#cancel-btn").addEventListener("click", cancelTask);
+  $("#config-btn").addEventListener("click", openConfigPanel);
+  $("#config-close").addEventListener("click", closeConfigPanel);
+  $("#token-save-btn").addEventListener("click", saveToken);
+  $("#token-test-btn").addEventListener("click", testToken);
   $("#sub-close").addEventListener("click", closeSubPanel);
   $("#kline-close").addEventListener("click", closeKlinePanel);
   $("#result-back-btn").addEventListener("click", backToQuery);
 
-  $$(".segmented button").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.klineSubchart = button.dataset.subchart;
-      $$(".segmented button").forEach((item) => item.classList.remove("active"));
-      button.classList.add("active");
-      if (state.klineData) {
-        renderKlineChart();
-      }
-    });
+  $("#kline-subchart").addEventListener("change", (event) => {
+    state.klineSubchart = event.target.value;
+    if (state.klineData && state.klineChart) {
+      updateKlineSubchart();
+    }
   });
 
   window.addEventListener("resize", () => {
     if (state.klineChart) {
       state.klineChart.resize();
+      positionKlineSubchart(state.klineChart);
     }
   });
 
@@ -393,12 +472,16 @@ function closeSubPanel() {
 function openKlinePanel(indexCode, industryName) {
   state.klineData = null;
   state.klineSubchart = "amount";
-  $$(".segmented button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.subchart === "amount");
-  });
-  $("#kline-title").textContent = `${industryName} · 指数 K 线`;
+  const subchartSelect = $("#kline-subchart");
+  if (subchartSelect) {
+    subchartSelect.value = "amount";
+  }
+  $("#kline-title").textContent = industryName;
   $("#kline-subtitle").textContent = indexCode;
-  $("#kline-chart").innerHTML = "";
+  if (state.klineChart) {
+    state.klineChart.dispose();
+    state.klineChart = null;
+  }
   hideElement("#kline-error");
   showElement("#kline-loading");
   showElement("#kline-panel");
@@ -441,8 +524,14 @@ function renderKlineChart() {
   if (state.klineChart) {
     state.klineChart.dispose();
   }
-  const chart = window.echarts.init(document.getElementById("kline-chart"));
+  const container = document.getElementById("kline-chart");
+  const chart = window.echarts.init(container);
   state.klineChart = chart;
+  // 弹窗刚显示时布局可能未完成，等下一帧按真实容器尺寸重排，避免画布与窗口大小不一致
+  requestAnimationFrame(() => {
+    chart.resize();
+    positionKlineSubchart(chart);
+  });
 
   const dates = bars.map((bar) => formatDateText(bar.date));
   const candleData = bars.map((bar) => [bar.open, bar.close, bar.low, bar.high]);
@@ -454,38 +543,22 @@ function renderKlineChart() {
     }
     return "#12995b";
   });
+  const validSubValues = subValues.filter((value) => value != null && Number.isFinite(Number(value)));
+  const subMax = validSubValues.length ? Math.max(...validSubValues) : null;
 
   chart.setOption({
     animation: false,
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross" },
-      formatter(params) {
-        const candle = params.find((item) => item.seriesType === "candlestick");
-        if (!candle) {
-          return "";
-        }
-        const index = candle.dataIndex;
-        const bar = bars[index];
-        const value = subValues[index];
-        const subLabel = isAmount ? "成交额" : "成交量";
-        const subText = isAmount ? formatAmount(bar.amount) : formatVolume(bar.vol);
-        return [
-          `<strong>${dates[index]}</strong>`,
-          `开盘：${formatNumber(bar.open)}`,
-          `最高：${formatNumber(bar.high)}`,
-          `最低：${formatNumber(bar.low)}`,
-          `收盘：${formatNumber(bar.close)}`,
-          `${subLabel}：${subText}`,
-        ].join("<br>");
-      },
+      formatter: buildKlineTooltipFormatter(bars, isAmount),
     },
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
     },
     grid: [
-      { left: 70, right: 24, top: 30, height: "62%" },
-      { left: 70, right: 24, top: "74%", height: "18%" },
+      { left: 70, right: 24, top: 30, height: "58%" },
+      { left: 70, right: 24, top: "76%", height: "16%" },
     ],
     xAxis: [
       {
@@ -517,8 +590,21 @@ function renderKlineChart() {
       {
         gridIndex: 1,
         scale: true,
+        show: false,
         splitLine: { show: false },
-        axisLabel: { color: "#64748b" },
+      },
+    ],
+    graphic: [
+      {
+        id: "sub-max",
+        type: "text",
+        left: 76,
+        top: "74%",
+        style: {
+          text: formatAxisMax(subMax),
+          fill: "#64748b",
+          font: "12px sans-serif",
+        },
       },
     ],
     dataZoom: [
@@ -531,7 +617,7 @@ function renderKlineChart() {
       {
         type: "slider",
         xAxisIndex: [0, 1],
-        top: "94%",
+        top: "90%",
         height: 24,
         start: Math.max(0, 100 - (250 / bars.length) * 100),
         end: 100,
@@ -558,6 +644,86 @@ function renderKlineChart() {
         itemStyle: { color: (params) => subColors[params.dataIndex] },
       },
     ],
+  });
+}
+
+function positionKlineSubchart(chart) {
+  const select = $("#kline-subchart");
+  if (!select) {
+    return;
+  }
+  try {
+    const gridComp = chart.getModel().getComponent("grid");
+    const grid = Array.isArray(gridComp) ? gridComp[0] : gridComp;
+    const chartEl = document.getElementById("kline-chart");
+    const bodyEl = document.querySelector(".kline-body");
+    if (grid && grid.coordinateSystem && chartEl && bodyEl) {
+      const rect = grid.coordinateSystem.getRect();
+      const chartRect = chartEl.getBoundingClientRect();
+      const bodyRect = bodyEl.getBoundingClientRect();
+      const chartH = chart.getHeight();
+      const subTop = chartH * 0.76;
+      const centerY = (rect.y + rect.height + subTop) / 2;
+      select.style.top = `${chartRect.top - bodyRect.top + centerY - select.offsetHeight / 2}px`;
+      select.style.left = `${chartRect.left - bodyRect.left + rect.x + 4}px`;
+    }
+  } catch (err) {
+    // 布局未就绪时保留 CSS 默认位置（左上角），不阻塞渲染
+  }
+}
+
+function buildKlineTooltipFormatter(bars, isAmount) {  return (params) => {
+    const candle = params.find((item) => item.seriesType === "candlestick");
+    if (!candle) {
+      return "";
+    }
+    const index = candle.dataIndex;
+    const bar = bars[index];
+    const subLabel = isAmount ? "成交额" : "成交量";
+    const subText = isAmount ? formatAmount(bar.amount) : formatVolume(bar.vol);
+    return [
+      `<strong>${formatDateText(bar.date)}</strong>`,
+      `开盘：${formatNumber(bar.open)}`,
+      `最高：${formatNumber(bar.high)}`,
+      `最低：${formatNumber(bar.low)}`,
+      `收盘：${formatNumber(bar.close)}`,
+      `${subLabel}：${subText}`,
+    ].join("<br>");
+  };
+}
+
+function updateKlineSubchart() {
+  if (!state.klineData || !state.klineChart) {
+    return;
+  }
+  const bars = state.klineData.bars || [];
+  const isAmount = state.klineSubchart === "amount";
+  const subValues = bars.map((bar) => (isAmount ? bar.amount : bar.vol));
+  const subColors = bars.map((bar) => {
+    if (bar.close >= bar.open) {
+      return "#d92d20";
+    }
+    return "#12995b";
+  });
+  const validSubValues = subValues.filter((value) => value != null && Number.isFinite(Number(value)));
+  const subMax = validSubValues.length ? Math.max(...validSubValues) : null;
+
+  state.klineChart.setOption({
+    tooltip: {
+      formatter: buildKlineTooltipFormatter(bars, isAmount),
+    },
+    series: [
+      {},
+      {
+        name: isAmount ? "成交额" : "成交量",
+        data: subValues,
+        itemStyle: { color: (params) => subColors[params.dataIndex] },
+      },
+    ],
+    graphic: {
+      id: "sub-max",
+      style: { text: formatAxisMax(subMax) },
+    },
   });
 }
 
@@ -689,6 +855,20 @@ function formatAmount(value) {
     return "—";
   }
   return `${(Number(value) / 10000).toFixed(2)} 亿元`;
+}
+
+function formatAxisMax(value) {
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const number = Number(value);
+  if (number >= 1e8) {
+    return `${(number / 1e8).toFixed(2)}亿`;
+  }
+  if (number >= 1e4) {
+    return `${(number / 1e4).toFixed(2)}万`;
+  }
+  return String(Math.round(number));
 }
 
 function formatVolume(value) {

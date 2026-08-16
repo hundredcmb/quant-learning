@@ -8,8 +8,10 @@
 </head>
 <body>
   <header>
-    <h1>申万行业研究台</h1>
-    <p class="subtitle">数据源：Tushare</p>
+    <div class="header-title">
+      <h1>申万行业研究台</h1>
+    </div>
+    <button id="config-btn" class="header-btn">数据配置</button>
   </header>
 
   <main>
@@ -134,21 +136,43 @@
   <div id="kline-panel" class="modal-mask hidden">
     <div class="modal kline-modal">
       <div class="modal-header">
-        <div>
-          <h2 id="kline-title">指数 K 线</h2>
+        <div class="kline-title-wrap">
+          <h2 id="kline-title">行业指数</h2>
           <div id="kline-subtitle"></div>
         </div>
         <button id="kline-close" class="close-btn">关闭</button>
       </div>
-      <div class="kline-toolbar">
-        <div class="segmented">
-          <button data-subchart="amount" class="active">成交额</button>
-          <button data-subchart="vol">成交量</button>
+      <div class="kline-body">
+        <div id="kline-loading" class="loading hidden">正在加载 K 线...</div>
+        <div id="kline-error" class="error-panel hidden"></div>
+        <div id="kline-chart" class="kline-chart"></div>
+        <select id="kline-subchart">
+          <option value="amount" selected>成交额</option>
+          <option value="vol">成交量</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="config-panel" class="modal-mask hidden">
+    <div class="modal config-modal">
+      <div class="modal-header">
+        <div>
+          <h2>数据配置</h2>
+        </div>
+        <button id="config-close" class="close-btn">关闭</button>
+      </div>
+      <div class="config-body">
+        <label class="field">
+          <span>Tushare token</span>
+          <input type="password" id="token-input" placeholder="填写你的 Tushare token">
+        </label>
+        <div class="config-actions">
+          <button id="token-save-btn">保存</button>
+          <button id="token-test-btn" class="ghost-btn">测试</button>
+          <span id="token-status" class="token-status"></span>
         </div>
       </div>
-      <div id="kline-loading" class="loading hidden">正在加载 K 线...</div>
-      <div id="kline-error" class="error-panel hidden"></div>
-      <div id="kline-chart" class="kline-chart"></div>
     </div>
   </div>
 
