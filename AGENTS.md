@@ -14,7 +14,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
 - 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（当前无额外依赖）
-- 首次拉取代码后先运行根目录 `setup.ps1` 初始化 `.venv`（仅支持 Windows，**必须手动指定本机 veighna Python 路径**，脚本不自动探测；推荐 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行，同时规避执行策略限制；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv\Scripts\python.exe`（GUI 用 `.venv\Scripts\pythonw.exe`），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
+- 首次拉取代码后先运行根目录 `setup.ps1`（Windows）或 `setup.sh`（Linux/macOS）初始化 `.venv`（**必须手动指定本机 veighna Python 路径**，脚本不自动探测；Windows 推荐 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行，同时规避执行策略限制；Linux/macOS 用 `./setup.sh -p "<veighna python 路径>"`；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv` 中的 Python（Windows 为 `.venv\Scripts\python.exe`，GUI 用 `.venv\Scripts\pythonw.exe`；Linux/macOS 为 `.venv/bin/python`，GUI 直接用 python 即可），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 - 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取（**禁止在代码中硬编码 token**）：
   - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型
@@ -50,6 +50,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 | `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
 | `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
 | `shenwan_industry/SW2021.json` | 申万 2021 行业分类本地数据（推荐的数据源） |
+| `shenwan_industry/config_store.py` | 申万模块本地配置存储：Tushare token 存于项目根目录 `.quant-learning/settings.json`（已 gitignore、不随仓库提交，权限 600）；CLI 与 Web 统一从这读取，不依赖 vnpy |
 | `shenwan_industry/web/server.py` | 申万行业本地 FastAPI 入口：单日/区间排行提交、任务进度查询、成分股子表、静态页面托管 |
 | `shenwan_industry/web/jobs.py` | Web 后台单 worker 任务队列与 Job 状态/进度管理 |
 | `shenwan_industry/web/service.py` | Web 接口与现有行业排行算法的适配层 |
@@ -61,7 +62,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ## 常用命令
 
 ```bash
-# 以下命令均指 .venv\Scripts\python.exe（需先按上文「运行环境」初始化 .venv）
+# 以下命令均指 .venv 中的 Python（Windows 为 .venv\Scripts\python.exe，Linux/macOS 为 .venv/bin/python，需先按上文「运行环境」初始化 .venv）
 
 # 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
 .venv\Scripts\python.exe holders/stock/top10_holders_value.py
@@ -83,7 +84,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 # 申万行业本地 Web 服务
 .venv\Scripts\python.exe -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
 
-# 申万行业桌面窗口客户端（后台自动启动后端）
+# 申万行业桌面窗口客户端（后台自动启动后端；Linux/macOS 用 .venv/bin/python 运行，无需 pythonw）
 .venv\Scripts\pythonw.exe shenwan_industry\web\desktop.pyw
 
 # vnpy 示例（需先配置好数据库与 tushare）
@@ -127,11 +128,13 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ### 申万行业（shenwan_industry/）
 
 - 行业树优先用本地 `SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
+- **申万模块已彻底脱离 vnpy**（不 import 任何 vnpy 包）：Tushare token 从本地配置 `shenwan_industry/config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；CLI 与 Web 均不读 vnpy `SETTINGS`。依赖（fastapi/uvicorn/pydantic/tushare/pandas）见根 `requirements.txt`，Windows 下仍可复用 vnpy 环境运行
+- Web 页面保存新 token 后，后台自动重置已构建的行业树上下文，下次查询用新 token 重建（`service.save_token` / `PreparedContext.ensure`）
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
-- 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，使用 `pythonw.exe` 双击启动会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
+- 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
 - 一级行业排行榜中，指数代码和名称可点击查看官方指数 K 线；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
 ### vnpy 示例（vnpy_examples/）
@@ -141,7 +144,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ### 环境与 Git
 - **提交规则（重要）**：AI 编码代理（如 Codex）默认**不得自行执行 `git add` / `git commit` / `git push`**；只有用户明确要求提交时才可执行。代码/文档改动完成后保持未提交状态，等待用户指示。
 
-- 本机是 Windows，PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；PowerShell 读写中文文件时注意 UTF-8 编码
+- 开发机为 Windows 或 Linux/macOS 均可，示例命令以 Windows 路径为例（Linux/macOS 将 `.venv\Scripts\python.exe` 换成 `.venv/bin/python`、`\` 换成 `/`）；PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；Windows PowerShell 读写中文文件时注意 UTF-8 编码
 - `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
 - GitHub 推送凭据：本机为双助手（GCM `manager` + `store`），git 按序尝试；**排查推送认证问题优先检查 `~/.git-credentials`**（明文条目 `https://用户名:token@github.com`，`store` 兜底，GCM 登录弹窗被取消不影响推送）；该文件与 `~/.vntrader/vt_setting.json`（Tushare token）是两套互不相干的凭据
 - 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述；开发分支建议使用 `codex/` 前缀
