@@ -557,8 +557,8 @@ function renderKlineChart() {
       link: [{ xAxisIndex: "all" }],
     },
     grid: [
-      { left: 70, right: 24, top: 30, height: "58%" },
-      { left: 70, right: 24, top: "76%", height: "16%" },
+      { left: 70, right: 24, top: 30, height: "50%" },
+      { left: 70, right: 24, top: "72%", height: "14%" },
     ],
     xAxis: [
       {
@@ -599,7 +599,7 @@ function renderKlineChart() {
         id: "sub-max",
         type: "text",
         left: 76,
-        top: "74%",
+        top: "70%",
         style: {
           text: formatAxisMax(subMax),
           fill: "#64748b",
@@ -617,7 +617,7 @@ function renderKlineChart() {
       {
         type: "slider",
         xAxisIndex: [0, 1],
-        top: "90%",
+        bottom: 4,
         height: 24,
         start: Math.max(0, 100 - (250 / bars.length) * 100),
         end: 100,
@@ -662,7 +662,7 @@ function positionKlineSubchart(chart) {
       const chartRect = chartEl.getBoundingClientRect();
       const bodyRect = bodyEl.getBoundingClientRect();
       const chartH = chart.getHeight();
-      const subTop = chartH * 0.76;
+      const subTop = chartH * 0.72;
       const centerY = (rect.y + rect.height + subTop) / 2;
       select.style.top = `${chartRect.top - bodyRect.top + centerY - select.offsetHeight / 2}px`;
       select.style.left = `${chartRect.left - bodyRect.left + rect.x + 4}px`;
@@ -858,17 +858,18 @@ function formatAmount(value) {
 }
 
 function formatAxisMax(value) {
+  // 输入为 sw_daily 的 amount(万元) / vol(万股)：≥1万 显示万，≥1亿 显示亿，不足 1万 显示原数字
   if (value == null || Number.isNaN(Number(value))) {
     return "—";
   }
   const number = Number(value);
-  if (number >= 1e8) {
-    return `${(number / 1e8).toFixed(2)}亿`;
-  }
   if (number >= 1e4) {
-    return `${(number / 1e4).toFixed(2)}万`;
+    return `${(number / 1e4).toFixed(2)}亿`;
   }
-  return String(Math.round(number));
+  if (number >= 1) {
+    return `${number.toFixed(2)}万`;
+  }
+  return String(Math.round(number * 1e4));
 }
 
 function formatVolume(value) {
