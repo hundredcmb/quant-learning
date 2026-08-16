@@ -187,13 +187,17 @@ def get_index_kline(
     df = df.sort_values("trade_date")
     bars = []
     for row in df.itertuples(index=False):
+        close = _safe_float(row.close)
+        change = _safe_float(getattr(row, "change", None))
         bars.append(
             {
                 "date": str(row.trade_date),
                 "open": _safe_float(row.open),
                 "high": _safe_float(row.high),
                 "low": _safe_float(row.low),
-                "close": _safe_float(row.close),
+                "close": close,
+                # sw_daily 无 pre_close 字段，用 close - change 反推前收（涨幅口径与模块一致）
+                "pre_close": close - change if (close is not None and change is not None) else None,
                 "vol": _safe_float(getattr(row, "vol", None)),
                 "amount": _safe_float(getattr(row, "amount", None)),
             }

@@ -681,12 +681,14 @@ function buildKlineTooltipFormatter(bars, isAmount) {  return (params) => {
     const bar = bars[index];
     const subLabel = isAmount ? "成交额" : "成交量";
     const subText = isAmount ? formatAmount(bar.amount) : formatVolume(bar.vol);
+    const pct = bar.pre_close ? ((bar.close - bar.pre_close) / bar.pre_close) * 100 : null;
     return [
       `<strong>${formatDateText(bar.date)}</strong>`,
       `开盘：${formatNumber(bar.open)}`,
       `最高：${formatNumber(bar.high)}`,
       `最低：${formatNumber(bar.low)}`,
       `收盘：${formatNumber(bar.close)}`,
+      `涨幅：${formatPct(pct)}`,
       `${subLabel}：${subText}`,
     ].join("<br>");
   };
