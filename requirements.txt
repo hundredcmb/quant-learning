@@ -1,7 +1,7 @@
 # quant-learning 项目依赖
 #
-# 本项目默认假设本机未安装 vnpy 客户端（veighna studio），
-# 下列依赖（含 GUI 的 PySide6）在所有平台都需要安装：
+# 第一部分：申万行业分析（shenwan_industry/，不依赖 vnpy）
+# 在任意 Python 3.10+ 环境安装下列依赖即可（含桌面窗口 GUI 的 PySide6）：
 fastapi
 uvicorn
 pydantic
@@ -10,10 +10,9 @@ pandas
 # GUI（申万桌面窗口 desktop.pyw 使用 Qt WebEngine 需要 PySide6）
 PySide6
 
-# 若本机已安装 vnpy 客户端并复用其 Python 环境，则 vnpy / vnpy_tushare /
-# vnpy_ctastrategy / tushare / pandas / numpy / Pillow / ta-lib / PySide6 等
-# 已由客户端提供，pip 会自动跳过已满足的依赖，无需额外处理。
+# 第二部分：vnpy 生态（holders / vnpy_examples）
+# 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行（--system-site-packages
+# 继承 vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow /
+# ta-lib 等全部依赖），无需（也请勿）用 pip 单独安装这些库。
 #
-# 当前项目自身无额外依赖；将来有需要时在此追加，并使用 vnpy 自带 Python 安装：
-#   .venv\Scripts\python.exe -m pip install -r requirements.txt
-#   （或在仓库根目录运行 .\setup.ps1 / ./setup.sh 一键初始化 .venv 并安装依赖）
+# 安装方式见 README.md（按命令逐行执行即可）。

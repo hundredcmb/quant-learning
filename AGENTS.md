@@ -13,13 +13,13 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ## 运行环境
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
-- 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行；vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow / TA-Lib 等由客户端环境提供，不要用 pip 单独安装；[requirements.txt](requirements.txt) 只包含项目自身依赖（当前无额外依赖）
-- 首次拉取代码后先运行根目录 `setup.ps1`（Windows）或 `setup.sh`（Linux/macOS）初始化 `.venv`（**必须手动指定本机 veighna Python 路径**，脚本不自动探测；Windows 推荐 `powershell -ExecutionPolicy Bypass -File .\setup.ps1 -PythonPath "<veighna python 路径>"` 运行，同时规避执行策略限制；Linux/macOS 用 `./setup.sh -p "<veighna python 路径>"`；`--system-site-packages` 继承其全部依赖）；之后所有命令统一用 `.venv` 中的 Python（Windows 为 `.venv\Scripts\python.exe`，GUI 用 `.venv\Scripts\pythonw.exe`；Linux/macOS 为 `.venv/bin/python`，GUI 直接用 python 即可），**禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同）
+- 项目分两个独立环境，**不要混用**：
+  - **`.venv`（申万模块专用，不依赖 vnpy）**：任意 Python 3.10+ 创建，装 `requirements.txt` 依赖（fastapi/uvicorn/pydantic/tushare/pandas，GUI 另含 PySide6）。初始化命令：`python3 -m venv .venv` → `.venv/bin/python -m pip install -r requirements.txt`（Windows 用 `.venv\Scripts\python.exe`）
+  - **`.venv-vnpy`（holders / vnpy_examples 专用）**：必须用 vnpy 客户端（veighna studio）自带 Python 创建：`"<veighna python>" -m venv --system-site-packages .venv-vnpy`（`--system-site-packages` 继承 vnpy / tushare / pandas / TA-Lib / PySide6 全部依赖），再 `.venv-vnpy/bin/python -m pip install -r requirements.txt` 安装项目自身依赖；Windows 下对应 `.venv-vnpy\Scripts\python.exe`
+- **禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同；veighna Python 路径由用户在命令行自行指定）
+- vnpy 环境（`.venv-vnpy`）相关：`holders/` 与 vnpy 示例需要联网访问 Tushare Pro API，token 在 vnpy `~/.vntrader/vt_setting.json` 的 `datafeed.password` 中配置；`datafeed.name` / `database.name` 决定数据源与数据库类型，数据库连接（`database.user` 等）同样从 vnpy 配置动态获取
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
-- 项目已**弃用 `.env` 环境变量**，所有配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取（**禁止在代码中硬编码 token**）：
-  - `datafeed.password` 存放 Tushare token，`datafeed.name` / `database.name` 决定数据源与数据库类型
-  - 数据库连接（`database.user` / `database.password` / `database.host` / `database.port` / `database.database`）同样从 vnpy 配置动态获取（供 vnpy 示例读写 K 线使用）
-- 脚本运行需要联网访问 Tushare Pro API，且 token 需开通对应接口权限（如 `top10_holders`）
+- 项目已**弃用 `.env` 环境变量**：vnpy 部分配置统一从 vnpy 全局配置 `~/.vntrader/vt_setting.json` 动态读取（**禁止在代码中硬编码 token**）；申万部分 token 从 `shenwan_industry/config_store.py` 读取（见「注意事项」申万部分）
 
 ## 目录结构
 
@@ -62,37 +62,37 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ## 常用命令
 
 ```bash
-# 以下命令均指 .venv 中的 Python（Windows 为 .venv\Scripts\python.exe，Linux/macOS 为 .venv/bin/python，需先按上文「运行环境」初始化 .venv）
+# 两个环境，不要混用：
+#   .venv      申万模块专用（任意 Python 3.10+ 创建，不依赖 vnpy）：python3 -m venv .venv → .venv/bin/python -m pip install -r requirements.txt
+#   .venv-vnpy  holders / vnpy 示例专用（必须用 veighna Python 创建，--system-site-packages 继承 vnpy）：
+#              "<veighna python>" -m venv --system-site-packages .venv-vnpy
+# 以下命令以 Linux/macOS 路径为例（Windows 为 .venv\Scripts\python.exe / .venv-vnpy\Scripts\python.exe）
 
-# 十大股东分析（token 在 vnpy 的 datafeed.password 中配置）
-.venv\Scripts\python.exe holders/stock/top10_holders_value.py
-.venv\Scripts\python.exe holders/stock/top10_holders_change.py
-.venv\Scripts\python.exe holders/stock/top10_holders_change_merged.py
-.venv\Scripts\python.exe holders/stock/top10_return_between_dates.py
+# ---------- 申万行业（.venv，不依赖 vnpy；token 在 Web 页面「数据配置」填写） ----------
+.venv/bin/python -m shenwan_industry.web.server --host 127.0.0.1 --port 8080   # Web 服务
+.venv/bin/python shenwan_industry/daily_ranking.py                              # 单日涨幅榜示例
+.venv/bin/python shenwan_industry/range_ranking.py                              # 区间涨幅榜示例（区间在文件内配置）
+.venv/bin/python shenwan_industry/web/desktop.pyw                               # 桌面窗口（GUI 需 PySide6）
 
-# ETF 十大持有人（数据源为手动导入缓存，日线从 fund_daily 拉取）
-.venv\Scripts\python.exe holders/etf/import_etf_data.py
-.venv\Scripts\python.exe holders/etf/etf_top10_holders_value.py
-.venv\Scripts\python.exe holders/etf/etf_top10_holders_change.py
-.venv\Scripts\python.exe holders/etf/etf_top10_holders_change_merged.py
-.venv\Scripts\python.exe holders/etf/etf_top10_return_between_dates.py
+# ---------- 十大股东分析（.venv-vnpy；token 在 vnpy 的 datafeed.password 中配置） ----------
+.venv-vnpy/bin/python holders/stock/top10_holders_value.py
+.venv-vnpy/bin/python holders/stock/top10_holders_change.py
+.venv-vnpy/bin/python holders/stock/top10_holders_change_merged.py
+.venv-vnpy/bin/python holders/stock/top10_return_between_dates.py
 
-# 申万行业涨幅示例
-.venv\Scripts\python.exe shenwan_industry/daily_ranking.py
-.venv\Scripts\python.exe shenwan_industry/range_ranking.py   # 区间涨幅榜示例（区间在文件内配置）
+# ---------- ETF 十大持有人（.venv-vnpy；数据源为手动导入缓存，日线从 fund_daily 拉取） ----------
+.venv-vnpy/bin/python holders/etf/import_etf_data.py
+.venv-vnpy/bin/python holders/etf/etf_top10_holders_value.py
+.venv-vnpy/bin/python holders/etf/etf_top10_holders_change.py
+.venv-vnpy/bin/python holders/etf/etf_top10_holders_change_merged.py
+.venv-vnpy/bin/python holders/etf/etf_top10_return_between_dates.py
 
-# 申万行业本地 Web 服务
-.venv\Scripts\python.exe -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
-
-# 申万行业桌面窗口客户端（后台自动启动后端；Linux/macOS 用 .venv/bin/python 运行，无需 pythonw）
-.venv\Scripts\pythonw.exe shenwan_industry\web\desktop.pyw
-
-# vnpy 示例（需先配置好数据库与 tushare）
-.venv\Scripts\python.exe vnpy_examples/01_settings.py
-.venv\Scripts\python.exe vnpy_examples/02_bardata.py
-.venv\Scripts\python.exe vnpy_examples/03_datafeed.py
-.venv\Scripts\python.exe vnpy_examples/05_indicator.py
-.venv\Scripts\python.exe vnpy_examples/06_ma_strategy.py
+# ---------- vnpy 示例（.venv-vnpy；需先配置好数据库与 tushare） ----------
+.venv-vnpy/bin/python vnpy_examples/01_settings.py
+.venv-vnpy/bin/python vnpy_examples/02_bardata.py
+.venv-vnpy/bin/python vnpy_examples/03_datafeed.py
+.venv-vnpy/bin/python vnpy_examples/05_indicator.py
+.venv-vnpy/bin/python vnpy_examples/06_ma_strategy.py
 ```
 
 ## 代码约定
@@ -144,7 +144,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 ### 环境与 Git
 - **提交规则（重要）**：AI 编码代理（如 Codex）默认**不得自行执行 `git add` / `git commit` / `git push`**；只有用户明确要求提交时才可执行。代码/文档改动完成后保持未提交状态，等待用户指示。
 
-- 开发机为 Windows 或 Linux/macOS 均可，示例命令以 Windows 路径为例（Linux/macOS 将 `.venv\Scripts\python.exe` 换成 `.venv/bin/python`、`\` 换成 `/`）；PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；Windows PowerShell 读写中文文件时注意 UTF-8 编码
+- 开发机为 Windows 或 Linux/macOS 均可，示例命令以 Linux/macOS 路径为例（Windows 将 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`、`.venv-vnpy/bin/python` 换成 `.venv-vnpy\Scripts\python.exe`、`/` 换成 `\`）；PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；Windows PowerShell 读写中文文件时注意 UTF-8 编码
 - `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
 - GitHub 推送凭据：本机为双助手（GCM `manager` + `store`），git 按序尝试；**排查推送认证问题优先检查 `~/.git-credentials`**（明文条目 `https://用户名:token@github.com`，`store` 兜底，GCM 登录弹窗被取消不影响推送）；该文件与 `~/.vntrader/vt_setting.json`（Tushare token）是两套互不相干的凭据
 - 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述；开发分支建议使用 `codex/` 前缀
