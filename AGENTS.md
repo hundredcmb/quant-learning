@@ -50,12 +50,13 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 | `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
 | `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
 | `shenwan_industry/SW2021.json` | 申万 2021 行业分类本地数据（推荐的数据源） |
+| `shenwan_industry/sw_index_daily_available.json` | 官方指数日线可用性缓存（探测生成、随仓库提交，30 天自动刷新；L1 全覆盖，L2/L3 据此决定 K 线是否可点击） |
 | `shenwan_industry/config_store.py` | 申万模块本地配置存储：Tushare token 存于项目根目录 `.quant-learning/settings.json`（已 gitignore、不随仓库提交，权限 600）；CLI 与 Web 统一从这读取，不依赖 vnpy |
 | `shenwan_industry/web/server.py` | 申万行业本地 FastAPI 入口：单日/区间排行提交、任务进度查询、成分股子表、静态页面托管 |
 | `shenwan_industry/web/jobs.py` | Web 后台单 worker 任务队列与 Job 状态/进度管理 |
 | `shenwan_industry/web/service.py` | Web 接口与现有行业排行算法的适配层 |
 | `shenwan_industry/web/static/` | Web 前端页面：查询表单、进度条、主表和成分股子表 |
-| `shenwan_industry/web/static/vendor/echarts.min.js` | 前端 ECharts 本地资源，用于一级行业指数 K 线图 |
+| `shenwan_industry/web/static/vendor/echarts.min.js` | 前端 ECharts 本地资源，用于行业指数 K 线图 |
 | `shenwan_industry/web/desktop.pyw` | 桌面窗口启动器：后台自动启动 FastAPI，并用 Qt WebEngine 打开前端页面 |
 | `vnpy_examples/` | vnpy 学习示例目录（配置、数据、图表、指标、回测等），按编号顺序学习 |
 
@@ -135,7 +136,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
-- 一级行业排行榜中，指数代码和名称可点击查看官方指数 K 线；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
+- 行业排行榜中，指数代码和名称可点击查看官方指数 K 线（一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
 ### vnpy 示例（vnpy_examples/）
 

@@ -28,13 +28,16 @@ logger = logging.getLogger("shenwan_industry.web.service")
 _NO_INDUSTRY_STOCKS: set[str] = set()
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SW2021_PATH = _REPO_ROOT / "shenwan_industry" / "SW2021.json"
+# 官方指数日线可用性缓存（随仓库提交，30 天内复用，过期自动重探测）
+_SW_DAILY_AVAILABLE_PATH = _REPO_ROOT / "shenwan_industry" / "sw_index_daily_available.json"
+_SW_DAILY_AVAILABLE_MAX_AGE_DAYS = 30
 
 with _SW2021_PATH.open("r", encoding="utf-8") as _fp:
-    _L1_INDEXES = {
-        row["index_code"]: row["industry_name"]
-        for row in json.load(_fp)
-        if row["level"] == "L1"
-    }
+    _sw2021_rows = json.load(_fp)
+    # 全层级 index_code -> 行业短名（K 线接口返回 name 用；L1/L2/L3 全覆盖）
+    _INDEX_NAMES = {row["index_code"]: row["industry_name"] for row in _sw2021_rows}
+    _L1_INDEXES = {row["index_code"]: row["industry_name"] for row in _sw2021_rows if row["level"] == "L1"}
+    _L2_L3_INDEXES = {row["index_code"] for row in _sw2021_rows if row["level"] in ("L2", "L3")}
 
 
 @contextmanager
@@ -163,15 +166,118 @@ def get_default_dates() -> dict[str, str]:
     }
 
 
+_sw_daily_available: set[str] | None = None
+_sw_daily_available_lock = threading.Lock()
+
+
+def _load_sw_daily_available_cached() -> set[str] | None:
+    """读磁盘缓存（30 天内有效），缺失或过期返回 None"""
+    try:
+        data = json.loads(_SW_DAILY_AVAILABLE_PATH.read_text(encoding="utf-8"))
+        timestamp = datetime.strptime(data["timestamp"], "%Y-%m-%d")
+        if (datetime.now() - timestamp).days <= _SW_DAILY_AVAILABLE_MAX_AGE_DAYS:
+            return set(data["codes"])
+    except Exception:
+        pass
+    return None
+
+
+def _latest_trade_dates(count: int = 3) -> list[str]:
+    """最近 N 个交易日（YYYYMMDD，降序）；交易日历失败时退化为最近工作日"""
+    try:
+        pro = ts.pro_api(token=_get_token())
+        today = date.today()
+        df = pro.trade_cal(
+            exchange="SSE",
+            start_date=(today - timedelta(days=45)).strftime("%Y%m%d"),
+            end_date=today.strftime("%Y%m%d"),
+            is_open="1",
+            fields="cal_date",
+        )
+        days = sorted(df["cal_date"].astype(str).tolist(), reverse=True)
+        if days:
+            return days[:count]
+    except Exception as err:  # noqa: BLE001 - 退化为工作日兜底
+        logger.warning("获取交易日历失败，使用工作日兜底: %s", err)
+    result: list[str] = []
+    candidate = date.today()
+    while len(result) < count:
+        candidate -= timedelta(days=1)
+        if candidate.weekday() < 5:
+            result.append(candidate.strftime("%Y%m%d"))
+    return result
+
+
+def _probe_sw_daily_available() -> set[str] | None:
+    """探测官方指数日线覆盖：sw_daily(trade_date=最新交易日) 一次拉全市场；
+    空结果回退前一个交易日再试，全部失败返回 None"""
+    try:
+        pro = ts.pro_api(token=_get_token())
+        for date_str in _latest_trade_dates():
+            df = pro.sw_daily(trade_date=date_str)
+            if df is not None and len(df) > 0:
+                return set(df["ts_code"].astype(str).tolist())
+    except Exception as err:  # noqa: BLE001 - 网络/token 异常
+        logger.warning("探测官方指数日线可用性失败: %s", err)
+        return None
+    return None
+
+
+def get_sw_daily_available() -> set[str] | None:
+    """有官方指数日线数据的行业指数代码集合（L1 全覆盖恒含，L2/L3 以探测为准）。
+
+    - 磁盘缓存 30 天内直接复用（sw_index_daily_available.json，随仓库提交，离线可用）
+    - 否则 sw_daily(trade_date=最新交易日) 全市场一次拉取，与 SW2021.json 的 L2/L3 求交集
+    - 探测失败返回 None：调用方回退为"仅 L1 可点击"，不缓存、下次再试
+    """
+    global _sw_daily_available
+    with _sw_daily_available_lock:
+        if _sw_daily_available is not None:
+            return _sw_daily_available
+        cached = _load_sw_daily_available_cached()
+        if cached is not None:
+            _sw_daily_available = cached
+            return _sw_daily_available
+
+        probed = _probe_sw_daily_available()
+        if probed is None:
+            return None
+        available = (probed & _L2_L3_INDEXES) | set(_L1_INDEXES)
+        _sw_daily_available = available
+        try:
+            _SW_DAILY_AVAILABLE_PATH.write_text(
+                json.dumps(
+                    {"timestamp": date.today().strftime("%Y-%m-%d"), "codes": sorted(available)},
+                    ensure_ascii=False,
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as err:  # noqa: BLE001 - 缓存写失败不影响本次使用
+            logger.warning("写入指数可用性缓存失败: %s", err)
+        return available
+
+
+def get_available_index_codes() -> list[str]:
+    """可查看 K 线的行业指数代码列表（L1 + 有官方日线的 L2/L3；探测失败时仅 L1）"""
+    available = get_sw_daily_available()
+    if available is None:
+        return sorted(_L1_INDEXES)
+    return sorted(available)
+
+
 def get_index_kline(
     index_code: str,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> dict[str, Any]:
-    """获取申万一级行业官方指数日 K 线。"""
+    """获取申万行业官方指数日 K 线（L1 全覆盖；L2/L3 需有官方指数日线数据）。"""
     index_code = index_code.strip()
-    if index_code not in _L1_INDEXES:
-        raise ValueError(f"不是有效的申万一级行业指数代码: {index_code}")
+    allowed = get_sw_daily_available()
+    if allowed is None:
+        allowed = set(_L1_INDEXES)  # 探测失败时回退为仅一级
+    if index_code not in allowed:
+        raise ValueError(f"不是可查看的申万行业指数代码: {index_code}")
 
     pro = ts.pro_api(token=_get_token())
     kwargs: dict[str, Any] = {"ts_code": index_code}
@@ -205,7 +311,7 @@ def get_index_kline(
 
     return {
         "index_code": index_code,
-        "name": _L1_INDEXES[index_code],
+        "name": _INDEX_NAMES[index_code],
         "bars": bars,
     }
 

@@ -16,6 +16,7 @@ const state = {
   klineData: null,
   klineSubchart: "amount",
   klineChart: null,
+  availableIndexes: null, // Set|null: 可查看 K 线的行业指数代码；null 表示未加载/失败（回退仅 L1 可点击）
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -24,7 +25,19 @@ document.addEventListener("DOMContentLoaded", () => {
   bindEvents();
   setMode();
   updateSortArrows("#main-table", state.mainSort);
+  loadAvailableIndexes();
 });
+
+function loadAvailableIndexes() {
+  fetch("/api/index/available")
+    .then(handleFetchError)
+    .then((data) => {
+      state.availableIndexes = new Set(data.codes || []);
+    })
+    .catch(() => {
+      state.availableIndexes = null; // 失败保持仅 L1 可点击
+    });
+}
 
 function refreshConfigButton() {
   fetch("/api/config")
@@ -378,10 +391,15 @@ function renderMainTable() {
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const tr = document.createElement("tr");
-    const indexCodeHtml = state.level === 1
+    // 有官方指数日线的行业才可点击查看 K 线（L1 全覆盖；L2/L3 按可用性集合判定；
+    // 可用性未加载成功时回退为仅 L1 可点击，与旧行为一致）
+    const hasKline = state.availableIndexes
+      ? state.availableIndexes.has(row.index_code)
+      : state.level === 1;
+    const indexCodeHtml = hasKline
       ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.index_code)}</a>`
       : escapeHtml(row.index_code);
-    const industryNameHtml = state.level === 1
+    const industryNameHtml = hasKline
       ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.industry_name)}</a>`
       : escapeHtml(row.industry_name);
     tr.innerHTML = `

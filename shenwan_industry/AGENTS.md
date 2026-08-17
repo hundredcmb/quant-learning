@@ -12,11 +12,12 @@
   - `config_store.py`：本地配置存储（Tushare token，存项目根目录 `.quant-learning/settings.json`、已 gitignore 不提交），CLI 与 Web 统一从这里读 token
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，勿删）
+  - `sw_index_daily_available.json`：官方指数日线可用性缓存（探测生成、随仓库提交，30 天自动刷新）
   - `__init__.py`：空
-  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；单 worker 串行队列、前端轮询进度、成分股子表、指数 K 线（`sw_daily` + 本地 ECharts）
+  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
 - 子文档（按需查阅）：
   - `interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `known_issues.md`：已知边界与易错点（15 条）
+  - `known_issues.md`：已知边界与易错点（17 条）
   - `roadmap.md`：未来规划（自建行业指数）与 Web 优化
 
 ## 运行环境与数据源

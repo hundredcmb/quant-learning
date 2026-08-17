@@ -72,6 +72,12 @@ def test_config() -> dict:
     return {"ok": ok, "message": message}
 
 
+@app.get("/api/index/available")
+def index_available() -> dict:
+    """可查看 K 线的行业指数代码列表（L1 + 有官方日线的 L2/L3）"""
+    return {"codes": service.get_available_index_codes()}
+
+
 @app.get("/api/index/{index_code}/kline")
 def get_index_kline(
     index_code: str,

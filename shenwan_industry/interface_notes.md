@@ -13,7 +13,7 @@
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日流通市值 | `ts_code='', trade_date, fields='ts_code,circ_mv', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量 |
 | `daily_basic`（单只） | 停牌回退查流通市值 | `ts_code, fields='trade_date,circ_mv', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条 |
-| `sw_daily` | 一级行业官方指数日 K 线（Web） | `ts_code, start_date, end_date` | 一次 | 申万 2021 版行情，指数 K 线图用 |
+| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 SW2021.json 求交集，缓存 `sw_index_daily_available.json`（30 天刷新） |
 
 ## 调用约定
 
