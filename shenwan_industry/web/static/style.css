@@ -82,7 +82,22 @@ main {
 }
 
 .controls {
-  padding: 18px 20px;
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+  padding: 16px 20px;
+}
+
+.controls-left {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.controls-right {
+  flex: 1 1 0;
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  padding-left: 24px;
 }
 
 .config-modal {
@@ -420,6 +435,7 @@ tbody tr:hover {
 
 .sub-table-wrap {
   overflow: auto;
+  overscroll-behavior: contain; /* 滚动到底后不穿透到外层（主表） */
   padding: 0 8px 8px;
 }
 
@@ -494,6 +510,17 @@ tbody tr:hover {
   main {
     padding-left: 16px;
     padding-right: 16px;
+  }
+
+  .controls {
+    flex-direction: column;
+  }
+
+  .controls-right {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding-left: 0;
+    padding-top: 12px;
   }
 
   .control-row {

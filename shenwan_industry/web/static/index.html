@@ -16,49 +16,53 @@
 
   <main>
     <section class="controls">
-      <div class="control-row">
-        <label class="radio">
-          <input type="radio" name="mode" value="daily" checked>
-          <span>单日排行</span>
-        </label>
-        <label class="radio">
-          <input type="radio" name="mode" value="range">
-          <span>区间排行</span>
-        </label>
+      <div class="controls-left">
+        <div class="control-row">
+          <label class="radio">
+            <input type="radio" name="mode" value="daily" checked>
+            <span>单日排行</span>
+          </label>
+          <label class="radio">
+            <input type="radio" name="mode" value="range">
+            <span>区间排行</span>
+          </label>
+        </div>
+
+        <div class="control-row">
+          <label class="field" id="daily-field">
+            <span>日期</span>
+            <input type="date" id="daily-date">
+          </label>
+          <label class="field range-field" id="range-start-field">
+            <span>开始日期</span>
+            <input type="date" id="range-start">
+          </label>
+          <label class="field range-field" id="range-end-field">
+            <span>结束日期</span>
+            <input type="date" id="range-end">
+          </label>
+          <button id="query-btn">开始查询</button>
+        </div>
       </div>
 
-      <div class="control-row">
-        <label class="field" id="daily-field">
-          <span>日期</span>
-          <input type="date" id="daily-date">
-        </label>
-        <label class="field range-field" id="range-start-field">
-          <span>开始日期</span>
-          <input type="date" id="range-start">
-        </label>
-        <label class="field range-field" id="range-end-field">
-          <span>结束日期</span>
-          <input type="date" id="range-end">
-        </label>
-      </div>
-
-      <div class="control-row">
-        <label class="field">
-          <span>加权方式</span>
-          <select id="weight">
-            <option value="float" selected>流通市值加权</option>
-            <option value="equal">等权</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>行业层级</span>
-          <select id="level">
-            <option value="1" selected>L1</option>
-            <option value="2">L2</option>
-            <option value="3">L3</option>
-          </select>
-        </label>
-        <button id="query-btn">开始查询</button>
+      <div class="controls-right">
+        <div class="control-row">
+          <label class="field">
+            <span>加权方式</span>
+            <select id="weight">
+              <option value="float" selected>流通市值加权</option>
+              <option value="equal">等权</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>行业层级</span>
+            <select id="level">
+              <option value="1" selected>L1</option>
+              <option value="2">L2</option>
+              <option value="3">L3</option>
+            </select>
+          </label>
+        </div>
       </div>
     </section>
 
