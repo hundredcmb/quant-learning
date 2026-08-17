@@ -135,7 +135,7 @@ def get_constituents(
     job_id: str,
     level: int,
     index_code: str,
-    weight: str = Query(default="float", pattern="^(float|equal)$"),
+    weight: str = Query(default="float", pattern="^(total|float|equal)$"),
 ) -> dict:
     job = job_manager.get(job_id)
     if job is None:

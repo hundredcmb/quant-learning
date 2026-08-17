@@ -64,6 +64,7 @@ class MarketDataProvider:
         self.ts_code_to_close_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股收盘价数据
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
         self.ts_code_to_circ_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股流通市值数据
+        self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
 
     def snapshot_api_calls(self) -> dict[str, int]:
         """返回当前 API 调用计数快照(副本), 任务前后快照求差即任务实际调用"""
@@ -141,20 +142,23 @@ class MarketDataProvider:
         offset = 0
         batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
         date_str = date.strftime("%Y%m%d")
+        ts_code_to_total_mv: dict[str, float] = {}
         while True:
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
-                fields='ts_code,circ_mv',
+                fields='ts_code,circ_mv,total_mv',
                 offset=offset,
                 limit=batch_size,
             )
             for row in df.itertuples(index=False):
                 ts_code = row.ts_code
                 circ_mv = row.circ_mv
-                if pd.isna(circ_mv):
-                    continue
-                ts_code_to_circ_mv[ts_code] = circ_mv
+                if not pd.isna(circ_mv):
+                    ts_code_to_circ_mv[ts_code] = circ_mv
+                total_mv = getattr(row, "total_mv", None)
+                if total_mv is not None and not pd.isna(total_mv):
+                    ts_code_to_total_mv[ts_code] = float(total_mv)
 
             offset += len(df)
             if batch_size > len(df):
@@ -162,8 +166,50 @@ class MarketDataProvider:
 
         if ts_code_to_circ_mv:
             self.ts_code_to_circ_mv_cache[date] = ts_code_to_circ_mv
+            self.ts_code_to_total_mv_cache[date] = ts_code_to_total_mv
 
         return ts_code_to_circ_mv
+
+    def get_ts_code_to_total_mv(self, date: datetime) -> dict[str, float]:
+        """获取A股某日的总市值数据: ts_code -> 总市值(与流通市值同一次请求拉取)"""
+        self.get_ts_code_to_circ_mv(date)
+        return self.ts_code_to_total_mv_cache.get(date) or {}
+
+    def _resolve_mvs(
+        self,
+        ts_code: str,
+        date: datetime,
+        cancel_check: CancelCheck | None,
+    ) -> tuple[float | None, float | None]:
+        """停牌股回退: 一次请求查 730 天内最近的流通市值与总市值, 查不到返回 None"""
+        if cancel_check is not None:
+            cancel_check()
+        df = self.pro.daily_basic(
+            ts_code=ts_code,
+            fields='trade_date,circ_mv,total_mv',
+            start_date=(date - timedelta(days=730)).strftime("%Y%m%d"),
+            end_date=date.strftime("%Y%m%d"),
+        )
+        # 响应的数据默认按日期降序, 分别取最近的有效流通市值与总市值
+        circ: float | None = None
+        total: float | None = None
+        for row in df.itertuples(index=False):
+            if cancel_check is not None:
+                cancel_check()
+            d_str = row.trade_date
+            if datetime.strptime(d_str, "%Y%m%d") > date:
+                continue
+            if circ is None:
+                cand = row.circ_mv
+                if not pd.isna(cand):
+                    circ = float(cand)
+            if total is None:
+                cand = getattr(row, "total_mv", None)
+                if cand is not None and not pd.isna(cand):
+                    total = float(cand)
+            if circ is not None and total is not None:
+                break
+        return circ, total
 
     def resolve_circ_mv(
         self,
@@ -171,26 +217,26 @@ class MarketDataProvider:
         date: datetime,
         cancel_check: CancelCheck | None = None,
     ) -> float | None:
-        """停牌股回退: 查 730 天内最近一个有效流通市值, 查不到返回 None"""
-        if cancel_check is not None:
-            cancel_check()
-        df = self.pro.daily_basic(
-            ts_code=ts_code,
-            fields='trade_date,circ_mv',
-            start_date=(date - timedelta(days=730)).strftime("%Y%m%d"),
-            end_date=date.strftime("%Y%m%d"),
-        )
-        # 响应的数据默认按日期降序
-        for row in df.itertuples(index=False):
-            if cancel_check is not None:
-                cancel_check()
-            d_str = row.trade_date
-            if datetime.strptime(d_str, "%Y%m%d") <= date:
-                cand = row.circ_mv
-                if pd.isna(cand):
-                    continue  # 该日市值缺失, 继续往前找最近的有效值
-                return float(cand)
-        return None
+        """停牌股流通市值回退: 一次请求同时回退流通市值与总市值(总市值写入缓存), 返回流通市值"""
+        circ, total = self._resolve_mvs(ts_code, date, cancel_check)
+        if total is not None:
+            self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
+        return circ
+
+    def resolve_total_mv(
+        self,
+        ts_code: str,
+        date: datetime,
+        cancel_check: CancelCheck | None = None,
+    ) -> float | None:
+        """停牌股总市值回退: 优先读缓存(流通市值回退已顺带填充), 未命中再发请求"""
+        cached = self.ts_code_to_total_mv_cache.get(date, {}).get(ts_code)
+        if cached is not None:
+            return cached
+        circ, total = self._resolve_mvs(ts_code, date, cancel_check)
+        if total is not None:
+            self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
+        return total
 
     def get_trading_days(self, start_str: str, end_str: str) -> list[str]:
         """获取区间内交易日列表(YYYYMMDD, 升序)"""

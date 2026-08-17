@@ -4,7 +4,7 @@
 
 ## 模块职责与文件
 
-- 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 流通市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
+- 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 流通市值加权 / 总市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
 - 文件：
   - `industry_tree.py`：行业树与成分数据层（`ShenWanIndustryNode` / `ShenWanIndustryTree`：树构建、成分加载、`in_date`/`delist_date` 记录、股票池过滤 `filter_stock_pool`）
   - `market_data.py`：行情数据层 `MarketDataProvider`（API 调用计数、按日缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取）
@@ -47,7 +47,7 @@
 - `get_ts_code_to_pct_chg(date)`：`pro.daily(trade_date, offset, limit=5999)` 循环拉全市场；**涨跌幅自行重算** `pct=(close−pre_close)/pre_close*100`（不用接口 `pct_chg` 字段）；按日期存内存缓存
 - **涨跌幅口径（已实测验证）**：`daily.pre_close` 在除权除息日返回交易所**除权参考价**（实测：招行 20250711 除息 `46.24=48.24−2.0`；药明康德 20190702 除权 `64.66=(91.10−0.58)/1.4`），故 `close/pre_close` 与 `adj_factor` 比值法**等价**（实测 −1.2976% vs −1.2980%），无需额外拉取 `adj_factor`
 - 该口径为**价格指数口径**：除权除息无虚假跳变，但现金分红**不计入收益**（除息价差被除权参考价抵消）；做"红利再投资全收益指数"需在除息日另行加回股息率；改动涨跌幅逻辑须保持该口径，如改用 `adj_factor`/复权行情须确认同一价格口径并同步更新本文件
-- `get_ts_code_to_circ_mv(date)`：`pro.daily_basic(ts_code='', trade_date, fields='ts_code,circ_mv', offset, limit=5999)` 循环拉全市场（官方上限 6000）；`circ_mv` 单位万元，加权只用比值不影响结果；按日期存内存缓存
+- `get_ts_code_to_circ_mv(date)`：`pro.daily_basic(ts_code='', trade_date, fields='ts_code,circ_mv,total_mv', offset, limit=5999)` 循环拉全市场（官方上限 6000）；**同一次请求同时缓存流通市值与总市值**（`get_ts_code_to_total_mv` 读同一缓存，零额外请求）；`circ_mv`/`total_mv` 单位万元，加权只用比值不影响结果；按日期存内存缓存
 
 ### 4. 单日等权涨幅 `daily_rank_equal_weight(tree, market_data, date)`
 
@@ -57,28 +57,29 @@
 - 行业涨幅 = 成分股涨跌幅简单算术平均（增量平均 `new_avg=(old_avg*old_count+pct)/(old_count+1)`），L3/L2/L1 三级同时累计
 - 排序：剔除 `count==0` 的行业，按涨幅降序；返回 `(index_code, pct, count)` 列表（三级各一个）
 
-### 5. 单日流通市值加权涨幅 `daily_rank_float_weight(tree, market_data, date)`
+### 5. 单日市值加权涨幅 `daily_rank_float_weight(tree, market_data, date, mv_kind="circ")`
 
-- 单股单级公式（M=当日收盘流通市值，p=当日涨跌幅%）：当日新增流通市值 `ΔM=M*p/(p+100)`；开盘前流通市值 `M_pre=M/(1+p/100)`；行业涨幅 = `ΣΔM/ΣM_pre*100`（三级分别累计后取比值）
-- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无 `circ_mv` 时回退查询 `daily_basic(ts_code, fields='trade_date,circ_mv', start_date=前 730 天, end_date=date)`，取降序第一条 `trade_date<=date` 的有效值作"停牌前最近流通市值"并回填缓存；**最多支持连续停牌约 2 年（730 天）**，再往前查不到 → `ValueError`
+- `mv_kind`：`"circ"`=流通市值加权、`"total"`=总市值加权；同一套公式、市值来源参数化（**不要复制两套代码**）
+- 单股单级公式（M=当日收盘市值，p=当日涨跌幅%）：当日新增市值 `ΔM=M*p/(p+100)`；开盘前市值 `M_pre=M/(1+p/100)`；行业涨幅 = `ΣΔM/ΣM_pre*100`（三级分别累计后取比值）
+- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无市值时回退查询 `daily_basic(ts_code, fields='trade_date,circ_mv,total_mv', start_date=前 730 天, end_date=date)`，**一次请求同时回退流通/总市值**（`resolve_circ_mv` 返回流通市值并顺带缓存总市值，`resolve_total_mv` 优先读缓存避免重复请求），取降序第一条 `trade_date<=date` 的有效值作"停牌前最近市值"并回填缓存；**最多支持连续停牌约 2 年（730 天）**，再往前查不到 → `ValueError`
 - 停牌股涨幅按 0% 计 → `ΔM=0`，但 `M_pre=M` 仍计入分母（稀释行业涨幅）；数据异常跳过规则与等权一致，回退扫描跳过 NaN 行取最近有效值
 - 其余规则（股票池、节点解析、排序、返回结构）与等权一致
 
 ### 6. 输出与示例
 
-- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印两列涨幅、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
+- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印三列涨幅（总市值加权/流通市值加权/等权）、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
 - 运行结束输出**耗时分析**（组小计、各阶段耗时/占比、总耗时与 API 调用次数）：耗时统计 `print_timing`，API 次数由 `MarketDataProvider.snapshot_api_calls()` 提供（构造时即包装计数，含建树阶段）；大阶段按"接口拉取 vs 本地计算/回退"拆分
-- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权 → 加权，避免两套编排漂移）；timings key：`daily_fetch`/`circ_fetch`/`equal_compute`/`float_compute`/`float_fallback`；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
+- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权 → 流通市值加权 → 总市值加权，避免两套编排漂移），**返回 4 元组 `(等权, 流通市值加权, 总市值加权, timings)`**；timings key：`daily_fetch`/`circ_fetch`/`equal_compute`/`float_compute`/`float_fallback`/`total_compute`/`total_fallback`（总市值回退走缓存，`total_fallback` 通常为 0）；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
 - 模块暂无图片产物，仅控制台输出
 
 ### 7. 区间累计涨幅榜 `rank_range(tree, market_data, start_date, end_date, timings=None, progress_callback=None, detail=None)`
 
-- 返回 `(等权(l1,l2,l3), 流通市值加权(l1,l2,l3))`，榜单项 `(index_code, 涨跌幅%, 成分股数量)`
+- 返回 `(等权(l1,l2,l3), 流通市值加权(l1,l2,l3), 总市值加权(l1,l2,l3))`，榜单项 `(index_code, 涨跌幅%, 成分股数量)`
 - 参与股票：**起始日**已在成分（`in_date<=起点`）**且**区间末仍在（`delist_date>=终点`）**且起始日已上市**（`list_date<起点`，Tushare 新股 `in_date` 可能早于实际上市）；中段纳入 / 起始日未上市 / 区间末前退市均剔除；剔除告警**按类型汇总为一行**（数量+少量样例，避免刷屏）；筛选复用 `filter_stock_pool(股票池, 起点, 终点)`，其类别明细即告警数据源
 - 个股区间收益 = 区间内各交易日官方涨跌幅（`close/pre_close`，口径见第 3 节）连乘，**包含起始日当天涨跌**，隐含基准 = 首个有行情日 `pre_close`；整段无行情的股票剔除；停牌日自动按 0% 累计（无需逐股回退）
-- 权重锚定**区间起始日**：等权 = 起始成分简单平均；加权 = 起始日流通市值权重（停牌按 730 天回退，见第 5 节；仍取不到仅参与等权榜并告警）
+- 权重锚定**区间起始日**：等权 = 起始成分简单平均；加权 = 起始日流通市值/总市值权重（停牌按 730 天回退，见第 5 节；仍取不到仅参与等权榜并告警）
 - 网络策略：`trade_cal` 1 次 + 每交易日 `daily` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退（**非简单重复 N 次单日接口**）；逐日 `daily` 线程池并发（8 worker）+ 固定速率（`MAX_DAILY_FETCH_RATE=7.5 次/秒`≈450 次/分钟，留 10% 余量）平摊请求，避免瞬时爆发触发 429；单日失败重试 3 次，仍失败抛错（不静默）
-- `timings`：`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`circ_fetch`/`circ_fallback`/`compute`/`trading_days`；`progress_callback`：`(percent, message)` 阶段回调，不参与数值计算；`detail`：写入 `stock_ret`/`last_close`/`ts_code_to_circ_mv` 供 Web 子表，传 `None` 行为与旧版一致
+- `timings`：`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`circ_fetch`/`circ_fallback`/`compute`/`trading_days`；`progress_callback`：`(percent, message)` 阶段回调，不参与数值计算；`detail`：写入 `stock_ret`/`last_close`/`ts_code_to_circ_mv`/`ts_code_to_total_mv` 供 Web 子表，传 `None` 行为与旧版一致
 
 ## 强制核对流程（任务完成通知前必做）
 

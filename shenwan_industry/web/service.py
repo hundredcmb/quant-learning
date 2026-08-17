@@ -451,7 +451,7 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, fw, timings = run_daily_ranking(
+    ew, fw, tw, timings = run_daily_ranking(
         tree,
         provider,
         rank_date,
@@ -463,12 +463,13 @@ def _run_daily(
     pct_map = provider.get_ts_code_to_pct_chg(rank_date)
     close_map = provider.get_ts_code_to_close(rank_date)
     circ_map = provider.get_ts_code_to_circ_mv(rank_date)
+    total_map = provider.get_ts_code_to_total_mv(rank_date)
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
     result = {
         "mode": "daily",
         "date": date_str,
-        "levels": _build_levels(tree, ew, fw),
+        "levels": _build_levels(tree, ew, fw, tw),
     }
     context = {
         "mode": "daily",
@@ -477,6 +478,7 @@ def _run_daily(
         "pct_chg": pct_map,
         "close": close_map,
         "circ_mv": circ_map,
+        "total_mv": total_map,
         "amount": amount_map,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
@@ -497,7 +499,7 @@ def _run_range(
     timings: dict[str, Any] = {}
     detail: dict[str, dict[str, float]] = {}
 
-    ew, fw = rank_range(
+    ew, fw, tw = rank_range(
         tree,
         provider,
         start_date,
@@ -508,15 +510,16 @@ def _run_range(
         cancel_check=cancel_check,
     )
     progress(99.0, "整理结果", "整理结果")
-    # 成分股子表展示用的末日流通市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
+    # 成分股子表展示用的末日流通市值/总市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
     end_circ_mv = provider.get_ts_code_to_circ_mv(end_date)
+    end_total_mv = provider.get_ts_code_to_total_mv(end_date)
     end_amount = provider.get_ts_code_to_amount(end_date)
     result = {
         "mode": "range",
         "start_date": start_date.strftime("%Y%m%d"),
         "end_date": end_date.strftime("%Y%m%d"),
         "trading_days": timings.get("trading_days"),
-        "levels": _build_levels(tree, ew, fw),
+        "levels": _build_levels(tree, ew, fw, tw),
     }
     context = {
         "mode": "range",
@@ -526,7 +529,9 @@ def _run_range(
         "stock_ret": detail["stock_ret"],
         "last_close": detail["last_close"],
         "ts_code_to_circ_mv": detail["ts_code_to_circ_mv"],
+        "ts_code_to_total_mv": detail["ts_code_to_total_mv"],
         "end_circ_mv": end_circ_mv,
+        "end_total_mv": end_total_mv,
         "end_amount": end_amount,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
@@ -537,15 +542,20 @@ def _build_levels(
     tree: ShenWanIndustryTree,
     ew: tuple[list, list, list],
     fw: tuple[list, list, list],
+    tw: tuple[list, list, list],
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
-    for level_name, ew_list, fw_list in zip(("1", "2", "3"), ew, fw):
+    for level_name, ew_list, fw_list, tw_list in zip(("1", "2", "3"), ew, fw, tw):
         ew_by_code = {code: (pct, count) for code, pct, count in ew_list}
+        tw_by_code = {code: (pct, count) for code, pct, count in tw_list}
         rows: list[dict[str, Any]] = []
         for index_code, fw_pct, fw_count in fw_list:
             ew_item = ew_by_code.get(index_code)
             if ew_item is None:
                 raise ValueError(f"没有获取到等权涨幅数据: index_code={index_code}")
+            tw_item = tw_by_code.get(index_code)
+            if tw_item is None:
+                raise ValueError(f"没有获取到总市值加权涨幅数据: index_code={index_code}")
             node = tree.index_code_to_node.get(index_code)
             if node is None:
                 continue
@@ -553,8 +563,10 @@ def _build_levels(
                 {
                     "index_code": index_code,
                     "industry_name": node.industry_name_long,
+                    "total_weighted_pct": tw_item[0],
                     "float_weighted_pct": fw_pct,
                     "equal_weighted_pct": ew_item[0],
+                    "total_constituent_count": tw_item[1],
                     "float_constituent_count": fw_count,
                     "equal_constituent_count": ew_item[1],
                 }
@@ -595,10 +607,15 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     pct_map: dict[str, float | None] = context["pct_chg"]
     close_map: dict[str, float] = context["close"]
     circ_map: dict[str, float] = context["circ_mv"]
+    total_map: dict[str, float] = context["total_mv"]
     amount_map: dict[str, float] = context["amount"]
 
     stock_pool = set(pct_map) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(stock_pool, rank_date, rank_date)
+
+    # 市值加权子表口径: float 用流通市值、total 用总市值, 缺失市值不参与
+    mv_map = context["total_mv"] if weight == "total" else circ_map
+    weight_filtered = weight in ("float", "total")
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
@@ -614,9 +631,9 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             continue
         pct_chg = pct_map.get(ts_code, 0.0)
 
-        if weight == "float":
-            circ_mv = circ_map.get(ts_code)
-            if circ_mv is None or (isinstance(circ_mv, float) and math.isnan(circ_mv)):
+        if weight_filtered:
+            mv = mv_map.get(ts_code)
+            if mv is None or (isinstance(mv, float) and math.isnan(mv)):
                 continue
 
         rows.append(
@@ -626,6 +643,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "pct_chg": pct_chg,
                 "close": close_map.get(ts_code),
                 "circ_mv": circ_map.get(ts_code),
+                "total_mv": total_map.get(ts_code),
                 "amount": amount_map.get(ts_code),
             }
         )
@@ -638,7 +656,12 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     last_close: dict[str, float] = context["last_close"]
     circ_map: dict[str, float] = context["ts_code_to_circ_mv"]
     end_circ_mv: dict[str, float] = context["end_circ_mv"]
+    end_total_mv: dict[str, float] = context["end_total_mv"]
     end_amount: dict[str, float] = context["end_amount"]
+
+    # 市值加权子表口径: float 用起始日流通市值、total 用起始日总市值, 缺失市值不参与
+    mv_map = context["ts_code_to_total_mv"] if weight == "total" else circ_map
+    weight_filtered = weight in ("float", "total")
 
     rows: list[dict[str, Any]] = []
     for ts_code, pct_chg in stock_ret.items():
@@ -650,9 +673,9 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
         if node_for_level.index_code != index_code:
             continue
 
-        if weight == "float":
-            circ_mv = circ_map.get(ts_code)
-            if circ_mv is None or (isinstance(circ_mv, float) and math.isnan(circ_mv)):
+        if weight_filtered:
+            mv = mv_map.get(ts_code)
+            if mv is None or (isinstance(mv, float) and math.isnan(mv)):
                 continue
 
         rows.append(
@@ -662,6 +685,7 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "pct_chg": pct_chg,
                 "close": last_close.get(ts_code),
                 "circ_mv": end_circ_mv.get(ts_code),
+                "total_mv": end_total_mv.get(ts_code),
                 "amount": end_amount.get(ts_code),
             }
         )

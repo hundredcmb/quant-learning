@@ -375,11 +375,13 @@ function renderMainTable() {
 
   const level = String(state.level);
   const sourceRows = state.result.levels[level] || [];
+  const pctField = { total: "total_weighted_pct", float: "float_weighted_pct", equal: "equal_weighted_pct" }[state.weight] || "float_weighted_pct";
+  const countField = { total: "total_constituent_count", float: "float_constituent_count", equal: "equal_constituent_count" }[state.weight] || "float_constituent_count";
   const rows = sourceRows.map((row, index) => ({
     ...row,
     rank: index + 1,
-    pct: state.weight === "float" ? row.float_weighted_pct : row.equal_weighted_pct,
-    count: state.weight === "float" ? row.float_constituent_count : row.equal_constituent_count,
+    pct: row[pctField],
+    count: row[countField],
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -449,7 +451,8 @@ function openSubPanel(indexCode, industryName) {
   state.subSort.key = "pct_chg";
   state.subSort.dir = "desc";
   $("#sub-title").textContent = `${industryName} · 成分股`;
-  $("#sub-subtitle").textContent = `${indexCode} · ${state.weight === "float" ? "流通市值加权" : "等权"}`;
+  const weightLabel = { total: "总市值加权", float: "流通市值加权", equal: "等权" }[state.weight] || "流通市值加权";
+  $("#sub-subtitle").textContent = `${indexCode} · ${weightLabel}`;
   $("#sub-tbody").innerHTML = "";
   hideElement("#sub-error");
   showElement("#sub-loading");
@@ -487,6 +490,7 @@ function renderSubTable() {
       <td class="${pctClass(row.pct_chg)}">${formatPct(row.pct_chg)}</td>
       <td>${formatPrice(row.close)}</td>
       <td>${formatAmountColumn(row.amount)}</td>
+      <td>${formatCircMv(row.total_mv)}</td>
       <td>${formatCircMv(row.circ_mv)}</td>
     `;
     tbody.appendChild(tr);

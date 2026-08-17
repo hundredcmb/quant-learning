@@ -48,7 +48,7 @@ if __name__ == "__main__":
     prep_secs = time.perf_counter() - t0
 
     timings: dict[str, float] = {}
-    (l1_ew, l2_ew, l3_ew), (l1_fw, l2_fw, l3_fw) = rank_range(
+    (l1_ew, l2_ew, l3_ew), (l1_fw, l2_fw, l3_fw), (l1_tw, l2_tw, l3_tw) = rank_range(
         tree, provider, RANGE_START, RANGE_END, timings=timings
     )
 
@@ -77,14 +77,18 @@ if __name__ == "__main__":
         provider.snapshot_api_calls(),
     )
 
-    for level, ew, fw in ((3, l3_ew, l3_fw), (2, l2_ew, l2_fw), (1, l1_ew, l1_fw)):
+    for level, ew, fw, tw in ((3, l3_ew, l3_fw, l3_tw), (2, l2_ew, l2_fw, l2_tw), (1, l1_ew, l1_fw, l1_tw)):
         print(f"\n\n{RANGE_START.strftime('%Y-%m-%d')} ~ {RANGE_END.strftime('%Y-%m-%d')} 申万{level}级行业区间涨幅榜")
-        print("流通市值加权涨幅|等权涨幅|行业名称|成分股数量")
+        print("总市值加权涨幅|流通市值加权涨幅|等权涨幅|行业名称|成分股数量")
         for index_ts_code, fw_pct, count in fw:
             ew_pct = next((x[1] for x in ew if x[0] == index_ts_code), None)
             if ew_pct is None:
                 raise ValueError(f"没有获取到等权重区间涨幅数据: index_code={index_ts_code}")
+            tw_pct = next((x[1] for x in tw if x[0] == index_ts_code), None)
+            if tw_pct is None:
+                raise ValueError(f"没有获取到总市值加权区间涨幅数据: index_code={index_ts_code}")
             print(
+                f"{'+' if tw_pct >= 0 else ''}{tw_pct:.2f}%|"
                 f"{'+' if fw_pct >= 0 else ''}{fw_pct:.2f}%|"
                 f"{'+' if ew_pct >= 0 else ''}{ew_pct:.2f}%|"
                 f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{count}"

@@ -45,7 +45,8 @@ if __name__ == "__main__":
     rank_date = datetime(2025, 4, 7)
 
     (l1_rank_list_ew, l2_rank_list_ew, l3_rank_list_ew), \
-        (l1_rank_list_fw, l2_rank_list_fw, l3_rank_list_fw), timings = run_daily_ranking(
+        (l1_rank_list_fw, l2_rank_list_fw, l3_rank_list_fw), \
+        (l1_rank_list_tw, l2_rank_list_tw, l3_rank_list_tw), timings = run_daily_ranking(
             tree, provider, rank_date
         )
 
@@ -56,20 +57,22 @@ if __name__ == "__main__":
             ("市值数据", [("市值获取 daily_basic", timings["circ_fetch"])]),
             ("排行计算", [
                 ("等权计算", timings["equal_compute"]),
-                ("停牌市值回退", timings["float_fallback"]),
-                ("加权聚合", max(timings["float_compute"] - timings["float_fallback"], 0.0)),
+                ("停牌市值回退", timings["float_fallback"] + timings.get("total_fallback", 0.0)),
+                ("加权聚合", max(
+                    timings["float_compute"] - timings["float_fallback"], 0.0
+                ) + max(timings.get("total_compute", 0.0) - timings.get("total_fallback", 0.0), 0.0)),
             ]),
         ],
         provider.snapshot_api_calls(),
     )
 
-    rank_results = [(), (l1_rank_list_ew, l1_rank_list_fw), (l2_rank_list_ew, l2_rank_list_fw), (l3_rank_list_ew, l3_rank_list_fw)]
+    rank_results = [(), (l1_rank_list_ew, l1_rank_list_fw, l1_rank_list_tw), (l2_rank_list_ew, l2_rank_list_fw, l2_rank_list_tw), (l3_rank_list_ew, l3_rank_list_fw, l3_rank_list_tw)]
 
     industry_levels = [3, 2, 1]
     for industry_level in industry_levels:
-        rank_list_equal_weight, rank_list = rank_results[industry_level]
+        rank_list_equal_weight, rank_list, rank_list_tw = rank_results[industry_level]
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"流通市值加权涨幅|等权涨幅|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅|流通市值加权涨幅|等权涨幅|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:
@@ -77,8 +80,12 @@ if __name__ == "__main__":
                     index_pct_chg_ew = i[1]
             if index_pct_chg_ew == -100:
                 raise ValueError(f"没有获取到等权重涨幅数据: index_code={index_ts_code}")
+            index_pct_chg_tw = next((x[1] for x in rank_list_tw if x[0] == index_ts_code), -100)
+            if index_pct_chg_tw == -100:
+                raise ValueError(f"没有获取到总市值加权涨幅数据: index_code={index_ts_code}")
 
-            print(f"{'+' if index_pct_chg >= 0 else ''}{index_pct_chg:.2f}%|" +
+            print(f"{'+' if index_pct_chg_tw >= 0 else ''}{index_pct_chg_tw:.2f}%|" +
+                  f"{'+' if index_pct_chg >= 0 else ''}{index_pct_chg:.2f}%|" +
                   f"{'+' if index_pct_chg_ew >= 0 else ''}{index_pct_chg_ew:.2f}%|" +
                   f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{stock_count}",
                   [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_ts_code].constituent_stocks])
