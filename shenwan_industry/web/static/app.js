@@ -207,6 +207,7 @@ function bindEvents() {
   window.addEventListener("resize", () => {
     if (state.klineChart) {
       state.klineChart.resize();
+      state.klineChart.setOption({ grid: buildKlineGrid(state.klineChart.getHeight()) });
       positionKlineSubchart(state.klineChart);
     }
   });
@@ -550,6 +551,7 @@ function renderKlineChart() {
   // 弹窗刚显示时布局可能未完成，等下一帧按真实容器尺寸重排，避免画布与窗口大小不一致
   requestAnimationFrame(() => {
     chart.resize();
+    chart.setOption({ grid: buildKlineGrid(chart.getHeight()) });
     positionKlineSubchart(chart);
   });
 
@@ -576,10 +578,7 @@ function renderKlineChart() {
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
     },
-    grid: [
-      { left: 70, right: 24, top: 30, height: "50%" },
-      { left: 70, right: 24, top: "72%", height: "14%" },
-    ],
+    grid: buildKlineGrid(chart.getHeight()),
     xAxis: [
       {
         type: "category",
@@ -619,7 +618,7 @@ function renderKlineChart() {
         id: "sub-max",
         type: "text",
         left: 76,
-        top: "70%",
+        top: "68.5%",
         style: {
           text: formatAxisMax(subMax),
           fill: "#64748b",
@@ -667,6 +666,16 @@ function renderKlineChart() {
   });
 }
 
+function buildKlineGrid(chartH) {
+  // 副图高度按容器实际尺寸动态计算：底部恒定贴住日期标签+拖动条区域(52px)，
+  // 使日期与拖动条的间隙不随窗口大小变化（固定约 2px）
+  const subTop = chartH * 0.705;
+  return [
+    { left: 70, right: 24, top: 30, height: "53%" },
+    { left: 70, right: 24, top: "70.5%", height: chartH - 52 - subTop },
+  ];
+}
+
 function positionKlineSubchart(chart) {
   const select = $("#kline-subchart");
   if (!select) {
@@ -682,7 +691,7 @@ function positionKlineSubchart(chart) {
       const chartRect = chartEl.getBoundingClientRect();
       const bodyRect = bodyEl.getBoundingClientRect();
       const chartH = chart.getHeight();
-      const subTop = chartH * 0.72;
+      const subTop = chartH * 0.705;
       const centerY = (rect.y + rect.height + subTop) / 2;
       select.style.top = `${chartRect.top - bodyRect.top + centerY - select.offsetHeight / 2}px`;
       select.style.left = `${chartRect.left - bodyRect.left + rect.x + 4}px`;
