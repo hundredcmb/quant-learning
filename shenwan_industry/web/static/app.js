@@ -16,6 +16,7 @@ const state = {
   klineData: null,
   klineSubchart: "amount",
   klineChart: null,
+  klineIsStock: false, // 当前 K 线来源：true=个股(daily)，false=行业指数(sw_daily)
   availableIndexes: null, // Set|null: 可查看 K 线的行业指数代码；null 表示未加载/失败（回退仅 L1 可点击）
 };
 
@@ -215,6 +216,7 @@ function bindEvents() {
   bindSortableHeaders("#main-table", state.mainSort, renderMainTable);
   bindSortableHeaders("#sub-table", state.subSort, renderSubTable);
   $("#main-tbody").addEventListener("click", handleMainTableClick);
+  $("#sub-tbody").addEventListener("click", handleSubTableClick);
 }
 
 function setMode() {
@@ -392,14 +394,12 @@ function renderMainTable() {
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const tr = document.createElement("tr");
-    // 有官方指数日线的行业才可点击查看 K 线（L1 全覆盖；L2/L3 按可用性集合判定；
-    // 可用性未加载成功时回退为仅 L1 可点击，与旧行为一致）
+    // 有官方指数日线的行业才可点击查看 K 线（仅行业名称列可点；L1 全覆盖，
+    // L2/L3 按可用性集合判定；可用性未加载成功时回退为仅 L1 可点击，与旧行为一致）
     const hasKline = state.availableIndexes
       ? state.availableIndexes.has(row.index_code)
       : state.level === 1;
-    const indexCodeHtml = hasKline
-      ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.index_code)}</a>`
-      : escapeHtml(row.index_code);
+    const indexCodeHtml = escapeHtml(row.index_code);
     const industryNameHtml = hasKline
       ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.industry_name)}</a>`
       : escapeHtml(row.industry_name);
@@ -424,7 +424,7 @@ function renderMainTable() {
 function handleMainTableClick(event) {
   const klineLink = event.target.closest("[data-kline-code]");
   if (klineLink) {
-    openKlinePanel(klineLink.dataset.klineCode, klineLink.textContent.trim());
+    openKlinePanel(klineLink.dataset.klineCode, klineLink.textContent.trim(), false);
     return;
   }
 
@@ -433,6 +433,13 @@ function handleMainTableClick(event) {
     return;
   }
   openSubPanel(button.dataset.indexCode, button.dataset.industryName);
+}
+
+function handleSubTableClick(event) {
+  const klineLink = event.target.closest("[data-kline-code]");
+  if (klineLink) {
+    openKlinePanel(klineLink.dataset.klineCode, klineLink.textContent.trim(), true);
+  }
 }
 
 function openSubPanel(indexCode, industryName) {
@@ -472,9 +479,11 @@ function renderSubTable() {
   tbody.innerHTML = "";
   rows.forEach((row) => {
     const tr = document.createElement("tr");
+    // 成分股名称可点击查看个股前复权 K 线
+    const nameHtml = `<a class="index-link" data-kline-code="${escapeHtml(row.ts_code)}">${escapeHtml(row.name)}</a>`;
     tr.innerHTML = `
       <td>${escapeHtml(row.ts_code)}</td>
-      <td>${escapeHtml(row.name)}</td>
+      <td>${nameHtml}</td>
       <td class="${pctClass(row.pct_chg)}">${formatPct(row.pct_chg)}</td>
       <td>${formatPrice(row.close)}</td>
       <td>${formatAmountColumn(row.amount)}</td>
@@ -490,8 +499,9 @@ function closeSubPanel() {
   state.subRows = [];
 }
 
-function openKlinePanel(indexCode, industryName) {
+function openKlinePanel(indexCode, industryName, isStock = false) {
   state.klineData = null;
+  state.klineIsStock = isStock;
   state.klineSubchart = "amount";
   const subchartSelect = $("#kline-subchart");
   if (subchartSelect) {
@@ -507,7 +517,10 @@ function openKlinePanel(indexCode, industryName) {
   showElement("#kline-loading");
   showElement("#kline-panel");
 
-  fetch(`/api/index/${encodeURIComponent(indexCode)}/kline`)
+  const url = isStock
+    ? `/api/stock/${encodeURIComponent(indexCode)}/kline`
+    : `/api/index/${encodeURIComponent(indexCode)}/kline`;
+  fetch(url)
     .then(handleFetchError)
     .then((data) => {
       state.klineData = data;
@@ -558,7 +571,12 @@ function renderKlineChart() {
   const dates = bars.map((bar) => formatDateText(bar.date));
   const candleData = bars.map((bar) => [bar.open, bar.close, bar.low, bar.high]);
   const isAmount = state.klineSubchart === "amount";
-  const subValues = bars.map((bar) => (isAmount ? bar.amount : bar.vol));
+  const subValues = bars.map((bar) => {
+    const raw = isAmount ? bar.amount : bar.vol;
+    // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
+    const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
+    return raw == null ? null : raw * scale;
+  });
   const subColors = bars.map((bar) => {
     if (bar.close >= bar.open) {
       return "#d92d20";
@@ -709,8 +727,16 @@ function buildKlineTooltipFormatter(bars, isAmount) {  return (params) => {
     const index = candle.dataIndex;
     const bar = bars[index];
     const subLabel = isAmount ? "成交额" : "成交量";
-    const subText = isAmount ? formatAmount(bar.amount) : formatVolume(bar.vol);
-    const pct = bar.pre_close ? ((bar.close - bar.pre_close) / bar.pre_close) * 100 : null;
+    const raw = isAmount ? bar.amount : bar.vol;
+    // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
+    const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
+    const scaled = raw == null ? null : raw * scale;
+    const subText = isAmount ? formatAmount(scaled) : formatVolume(scaled);
+    // pre_close 缺失/为 0 时涨幅显示 "—"（除零保护）
+    const pct =
+      bar.pre_close && bar.close != null
+        ? ((bar.close - bar.pre_close) / bar.pre_close) * 100
+        : null;
     return [
       `<strong>${formatDateText(bar.date)}</strong>`,
       `开盘：${formatNumber(bar.open)}`,
@@ -729,7 +755,12 @@ function updateKlineSubchart() {
   }
   const bars = state.klineData.bars || [];
   const isAmount = state.klineSubchart === "amount";
-  const subValues = bars.map((bar) => (isAmount ? bar.amount : bar.vol));
+  const subValues = bars.map((bar) => {
+    const raw = isAmount ? bar.amount : bar.vol;
+    // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
+    const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
+    return raw == null ? null : raw * scale;
+  });
   const subColors = bars.map((bar) => {
     if (bar.close >= bar.open) {
       return "#d92d20";

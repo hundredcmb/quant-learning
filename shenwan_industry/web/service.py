@@ -316,6 +316,53 @@ def get_index_kline(
     }
 
 
+# 个股 K 线最早日期（2014-01-01 之前的数据不拉取）
+STOCK_KLINE_START_DATE = "20140101"
+
+
+def get_stock_kline(
+    ts_code: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict[str, Any]:
+    """获取个股前复权日 K 线（vol 单位手、amount 单位千元，原样返回由前端适配）。"""
+    ts_code = ts_code.strip().upper()
+    pro = ts.pro_api(token=_get_token())
+    kwargs: dict[str, Any] = {"ts_code": ts_code, "adj": "qfq"}
+    if start_date:
+        kwargs["start_date"] = start_date
+    else:
+        kwargs["start_date"] = STOCK_KLINE_START_DATE
+    if end_date:
+        kwargs["end_date"] = end_date
+
+    df = pro.daily(**kwargs)
+    if df is None or len(df) == 0:
+        raise ValueError(f"没有获取到 {ts_code} 的 K 线数据")
+
+    df = df.sort_values("trade_date")
+    bars = []
+    for row in df.itertuples(index=False):
+        bars.append(
+            {
+                "date": str(row.trade_date),
+                "open": _safe_float(row.open),
+                "high": _safe_float(row.high),
+                "low": _safe_float(row.low),
+                "close": _safe_float(row.close),
+                "pre_close": _safe_float(getattr(row, "pre_close", None)),
+                "vol": _safe_float(getattr(row, "vol", None)),
+                "amount": _safe_float(getattr(row, "amount", None)),
+            }
+        )
+
+    return {
+        "ts_code": ts_code,
+        "name": "",
+        "bars": bars,
+    }
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None

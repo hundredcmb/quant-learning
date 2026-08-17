@@ -136,7 +136,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
-- 行业排行榜中，指数代码和名称可点击查看官方指数 K 线（一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
+- 行业排行榜中，仅行业名称列可点击查看官方指数 K 线（代码列不响应点击；一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
 ### vnpy 示例（vnpy_examples/）
 
