@@ -416,6 +416,7 @@ def _run_daily(
     pct_map = provider.get_ts_code_to_pct_chg(rank_date)
     close_map = provider.get_ts_code_to_close(rank_date)
     circ_map = provider.get_ts_code_to_circ_mv(rank_date)
+    amount_map = provider.get_ts_code_to_amount(rank_date)
 
     result = {
         "mode": "daily",
@@ -429,6 +430,7 @@ def _run_daily(
         "pct_chg": pct_map,
         "close": close_map,
         "circ_mv": circ_map,
+        "amount": amount_map,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -459,6 +461,9 @@ def _run_range(
         cancel_check=cancel_check,
     )
     progress(99.0, "整理结果", "整理结果")
+    # 成分股子表展示用的末日流通市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
+    end_circ_mv = provider.get_ts_code_to_circ_mv(end_date)
+    end_amount = provider.get_ts_code_to_amount(end_date)
     result = {
         "mode": "range",
         "start_date": start_date.strftime("%Y%m%d"),
@@ -474,6 +479,8 @@ def _run_range(
         "stock_ret": detail["stock_ret"],
         "last_close": detail["last_close"],
         "ts_code_to_circ_mv": detail["ts_code_to_circ_mv"],
+        "end_circ_mv": end_circ_mv,
+        "end_amount": end_amount,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -541,6 +548,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     pct_map: dict[str, float | None] = context["pct_chg"]
     close_map: dict[str, float] = context["close"]
     circ_map: dict[str, float] = context["circ_mv"]
+    amount_map: dict[str, float] = context["amount"]
 
     stock_pool = set(pct_map) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(stock_pool, rank_date, rank_date)
@@ -570,6 +578,8 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
                 "pct_chg": pct_chg,
                 "close": close_map.get(ts_code),
+                "circ_mv": circ_map.get(ts_code),
+                "amount": amount_map.get(ts_code),
             }
         )
     return rows
@@ -580,6 +590,8 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     stock_ret: dict[str, float] = context["stock_ret"]
     last_close: dict[str, float] = context["last_close"]
     circ_map: dict[str, float] = context["ts_code_to_circ_mv"]
+    end_circ_mv: dict[str, float] = context["end_circ_mv"]
+    end_amount: dict[str, float] = context["end_amount"]
 
     rows: list[dict[str, Any]] = []
     for ts_code, pct_chg in stock_ret.items():
@@ -602,6 +614,8 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
                 "pct_chg": pct_chg,
                 "close": last_close.get(ts_code),
+                "circ_mv": end_circ_mv.get(ts_code),
+                "amount": end_amount.get(ts_code),
             }
         )
     return rows

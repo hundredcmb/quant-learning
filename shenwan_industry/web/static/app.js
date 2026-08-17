@@ -476,6 +476,8 @@ function renderSubTable() {
       <td>${escapeHtml(row.name)}</td>
       <td class="${pctClass(row.pct_chg)}">${formatPct(row.pct_chg)}</td>
       <td>${formatPrice(row.close)}</td>
+      <td>${formatAmountColumn(row.amount)}</td>
+      <td>${formatCircMv(row.circ_mv)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -861,6 +863,22 @@ function formatPrice(value) {
     return "—";
   }
   return Number(value).toFixed(2);
+}
+
+function formatCircMv(value) {
+  // daily_basic 的 circ_mv 单位万元，转亿元展示
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return `${(Number(value) / 1e4).toFixed(2)}亿`;
+}
+
+function formatAmountColumn(value) {
+  // daily 的 amount 单位千元：转万元后按 <1万数字 / <1亿用万 / ≥1亿用亿 显示
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return formatAxisMax(Number(value) / 10);
 }
 
 function formatNumber(value) {
