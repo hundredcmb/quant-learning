@@ -69,8 +69,8 @@ if __name__ == "__main__":
                 ("收益累计", timings.get("accumulate", 0.0)),
             ]),
             ("市值权重", [
-                ("市值拉取 daily_basic", timings.get("circ_fetch", 0.0)),
-                ("停牌市值回退", timings.get("circ_fallback", 0.0)),
+                ("市值拉取 daily_basic", timings.get("mv_fetch", 0.0)),
+                ("停牌市值回退", timings.get("mv_fallback", 0.0)),
             ]),
             ("其他计算", [("日历+筛选+聚合", other_secs)]),
         ],
@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     for level, ew, fw, tw in ((3, l3_ew, l3_fw, l3_tw), (2, l2_ew, l2_fw, l2_tw), (1, l1_ew, l1_fw, l1_tw)):
         print(f"\n\n{RANGE_START.strftime('%Y-%m-%d')} ~ {RANGE_END.strftime('%Y-%m-%d')} 申万{level}级行业区间涨幅榜")
-        print("总市值加权涨幅|流通市值加权涨幅|等权涨幅|行业名称|成分股数量")
+        print("总市值加权涨幅|自由流通市值加权涨幅|等权涨幅|行业名称|成分股数量")
         for index_ts_code, fw_pct, count in fw:
             ew_pct = next((x[1] for x in ew if x[0] == index_ts_code), None)
             if ew_pct is None:

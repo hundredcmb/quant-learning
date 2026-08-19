@@ -24,7 +24,7 @@ except ImportError:
 
 
 if __name__ == "__main__":
-    """代码示例: 指定一个日期, 计算所有申万行业的流通市值加权涨幅和等权涨幅"""
+    """代码示例: 指定一个日期, 计算所有申万行业的自由流通市值加权涨幅和等权涨幅"""
     token: str = get_token()
     if not token:
         raise ValueError(
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         [
             ("数据准备", [("行业树+成分加载", prep_secs)]),
             ("行情数据", [("行情获取 daily", timings["daily_fetch"])]),
-            ("市值数据", [("市值获取 daily_basic", timings["circ_fetch"])]),
+            ("市值数据", [("市值获取 daily_basic", timings["mv_fetch"])]),
             ("排行计算", [
                 ("等权计算", timings["equal_compute"]),
                 ("停牌市值回退", timings["float_fallback"] + timings.get("total_fallback", 0.0)),
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     for industry_level in industry_levels:
         rank_list_equal_weight, rank_list, rank_list_tw = rank_results[industry_level]
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"总市值加权涨幅|流通市值加权涨幅|等权涨幅|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅|自由流通市值加权涨幅|等权涨幅|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:

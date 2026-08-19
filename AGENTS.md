@@ -7,7 +7,7 @@
 quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学习量化"），目前包含三块内容：
 
 - `holders/`：基于 Tushare 的十大股东席位关键词分析（国家队、社保、险资等），含多报告期对比与持仓公允价值变动统计
-- `shenwan_industry/`：申万 2021 三级行业分类树，以及行业涨幅榜（单日 / 区间累计，等权 / 流通市值加权）
+- `shenwan_industry/`：申万 2021 三级行业分类树，以及行业涨幅榜（单日 / 区间累计，等权 / 自由流通市值加权 / 总市值加权）
 - `vnpy_examples/`：vnpy 学习示例（配置、K 线入库、数据服务下载、图表、指标、日线回测策略）
 
 ## 运行环境
@@ -45,8 +45,8 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 | `output/` | 图片运行产物目录 |
 | `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/industry_tree.py` | 申万行业树与成分数据层：行业树构建、成分加载（`in_date`/`delist_date` 历史过滤）、股票池过滤（`filter_stock_pool` 锚点/末日参数化，单日榜与区间榜共用） |
-| `shenwan_industry/market_data.py` | 申万行情数据层 `MarketDataProvider`：涨跌幅/收盘价/流通市值按日内存缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取、API 调用计数 |
-| `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 流通市值加权），含耗时输出工具 `print_timing` |
+| `shenwan_industry/market_data.py` | 申万行情数据层 `MarketDataProvider`：涨跌幅/收盘价/自由流通市值按日内存缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取、API 调用计数 |
+| `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 自由流通市值加权 / 总市值加权），含耗时输出工具 `print_timing` |
 | `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
 | `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
 | `shenwan_industry/data/` | 需提交的数据/缓存子目录：`SW2021.json`（申万 2021 行业分类本地数据，推荐的数据源）、`sw_index_daily_available.json`（官方指数日线可用性缓存，探测生成、随仓库提交，每周六 00:00 过期、约合每周刷新；L1 全覆盖，L2/L3 据此决定 K 线是否可点击） |
@@ -131,7 +131,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - 行业树优先用本地 `data/SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
 - **申万模块已彻底脱离 vnpy**（不 import 任何 vnpy 包）：Tushare token 从本地配置 `shenwan_industry/config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；CLI 与 Web 均不读 vnpy `SETTINGS`。依赖（fastapi/uvicorn/pydantic/tushare/pandas）见根 `requirements.txt`，Windows 下仍可复用 vnpy 环境运行
 - Web 页面保存新 token 后，后台自动重置已构建的行业树上下文，下次查询用新 token 重建（`service.save_token` / `PreparedContext.ensure`）
-- 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
+- 自由流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近自由流通市值，`circ_mv × free_share / float_share` 三字段同行取值），改动时不要破坏该逻辑
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`

@@ -2,7 +2,7 @@
 申万行业行情数据层 (MarketDataProvider)
 
 - 行情/市值获取: daily / daily_basic, 带按日内存缓存(涨跌幅口径见 shenwan_industry/AGENTS.md 第 3 节)
-- 停牌流通市值回退: 730 天内最近一个有效值
+- 停牌自由流通市值回退: 730 天内最近一个有效值(circ_mv/free_share/float_share 同行取值)
 - 交易日历: trade_cal
 - 区间逐日行情: 并发拉取 + 固定速率限流 + 重试
 - API 调用计数: 构造时包装 pro, snapshot_api_calls() 取快照,
@@ -49,6 +49,29 @@ MAX_DAILY_FETCH_RATE = 7.5    # 请求开始速率上限(次/秒), 约 450 次/�
 DAILY_FETCH_RETRY = 3         # 单日失败重试次数(网络抖动/瞬时 429)
 
 
+def _calc_free_mv(
+    circ_mv,
+    free_share,
+    float_share,
+) -> float | None:
+    """自由流通市值(万元) = circ_mv × free_share / float_share, 三字段须取自同一交易日
+
+    任一字段缺失/非有限值, 或 free_share/float_share ≤ 0、比例 >1(自由流通股本超过流通股本,
+    数据异常)时返回 None, 该股不参与加权(等同无市值处理)
+    """
+    if pd.isna(circ_mv) or pd.isna(free_share) or pd.isna(float_share):
+        return None
+    circ_f, free_f, float_f = float(circ_mv), float(free_share), float(float_share)
+    if not (math.isfinite(circ_f) and math.isfinite(free_f) and math.isfinite(float_f)):
+        return None
+    if float_f <= 0 or free_f <= 0:
+        return None
+    ratio = free_f / float_f
+    if ratio > 1.0:
+        return None
+    return circ_f * ratio
+
+
 class MarketDataProvider:
     """行情/市值/交易日历数据层, 构造时包装 pro 并自带按日内存缓存。
 
@@ -63,7 +86,7 @@ class MarketDataProvider:
         self.ts_code_to_pct_chg_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股涨跌幅数据
         self.ts_code_to_close_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股收盘价数据
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
-        self.ts_code_to_circ_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股流通市值数据
+        self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
 
     def snapshot_api_calls(self) -> dict[str, int]:
@@ -133,11 +156,15 @@ class MarketDataProvider:
         self.get_ts_code_to_pct_chg(date)
         return self.ts_code_to_amount_cache.get(date) or {}
 
-    def get_ts_code_to_circ_mv(self, date: datetime) -> dict[str, float]:
-        """获取A股某日的流通市值数据: ts_code -> 流通市值"""
-        ts_code_to_circ_mv: dict[str, float] = self.ts_code_to_circ_mv_cache.get(date) or {}
-        if ts_code_to_circ_mv:
-            return ts_code_to_circ_mv
+    def get_ts_code_to_free_mv(self, date: datetime) -> dict[str, float]:
+        """获取A股某日的自由流通市值数据: ts_code -> 自由流通市值(万元)
+
+        自由流通市值 = circ_mv × free_share / float_share, 三字段取同一行(同一交易日);
+        与总市值同一次请求拉取并缓存; 股本异常(缺失/除零/比例越界)的股票不记入
+        """
+        ts_code_to_free_mv: dict[str, float] = self.ts_code_to_free_mv_cache.get(date) or {}
+        if ts_code_to_free_mv:
+            return ts_code_to_free_mv
 
         offset = 0
         batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
@@ -147,15 +174,19 @@ class MarketDataProvider:
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
-                fields='ts_code,circ_mv,total_mv',
+                fields='ts_code,circ_mv,total_mv,free_share,float_share',
                 offset=offset,
                 limit=batch_size,
             )
             for row in df.itertuples(index=False):
                 ts_code = row.ts_code
-                circ_mv = row.circ_mv
-                if not pd.isna(circ_mv):
-                    ts_code_to_circ_mv[ts_code] = circ_mv
+                free_mv = _calc_free_mv(
+                    row.circ_mv,
+                    getattr(row, "free_share", None),
+                    getattr(row, "float_share", None),
+                )
+                if free_mv is not None:
+                    ts_code_to_free_mv[ts_code] = free_mv
                 total_mv = getattr(row, "total_mv", None)
                 if total_mv is not None and not pd.isna(total_mv):
                     ts_code_to_total_mv[ts_code] = float(total_mv)
@@ -164,15 +195,15 @@ class MarketDataProvider:
             if batch_size > len(df):
                 break
 
-        if ts_code_to_circ_mv:
-            self.ts_code_to_circ_mv_cache[date] = ts_code_to_circ_mv
+        if ts_code_to_free_mv:
+            self.ts_code_to_free_mv_cache[date] = ts_code_to_free_mv
             self.ts_code_to_total_mv_cache[date] = ts_code_to_total_mv
 
-        return ts_code_to_circ_mv
+        return ts_code_to_free_mv
 
     def get_ts_code_to_total_mv(self, date: datetime) -> dict[str, float]:
-        """获取A股某日的总市值数据: ts_code -> 总市值(与流通市值同一次请求拉取)"""
-        self.get_ts_code_to_circ_mv(date)
+        """获取A股某日的总市值数据: ts_code -> 总市值(与自由流通市值同一次请求拉取)"""
+        self.get_ts_code_to_free_mv(date)
         return self.ts_code_to_total_mv_cache.get(date) or {}
 
     def _resolve_mvs(
@@ -181,17 +212,21 @@ class MarketDataProvider:
         date: datetime,
         cancel_check: CancelCheck | None,
     ) -> tuple[float | None, float | None]:
-        """停牌股回退: 一次请求查 730 天内最近的流通市值与总市值, 查不到返回 None"""
+        """停牌股回退: 一次请求查 730 天内最近的有效自由流通市值与总市值, 查不到返回 None
+
+        自由流通市值要求 circ_mv/free_share/float_share 取自同一行(同一交易日)计算比值,
+        避免混搭不同日期的股本; 总市值可独立取最近有效值
+        """
         if cancel_check is not None:
             cancel_check()
         df = self.pro.daily_basic(
             ts_code=ts_code,
-            fields='trade_date,circ_mv,total_mv',
+            fields='trade_date,circ_mv,total_mv,free_share,float_share',
             start_date=(date - timedelta(days=730)).strftime("%Y%m%d"),
             end_date=date.strftime("%Y%m%d"),
         )
-        # 响应的数据默认按日期降序, 分别取最近的有效流通市值与总市值
-        circ: float | None = None
+        # 响应的数据默认按日期降序, 自由流通市值与总市值分别取最近的有效值
+        free: float | None = None
         total: float | None = None
         for row in df.itertuples(index=False):
             if cancel_check is not None:
@@ -199,29 +234,31 @@ class MarketDataProvider:
             d_str = row.trade_date
             if datetime.strptime(d_str, "%Y%m%d") > date:
                 continue
-            if circ is None:
-                cand = row.circ_mv
-                if not pd.isna(cand):
-                    circ = float(cand)
+            if free is None:
+                free = _calc_free_mv(
+                    row.circ_mv,
+                    getattr(row, "free_share", None),
+                    getattr(row, "float_share", None),
+                )
             if total is None:
                 cand = getattr(row, "total_mv", None)
                 if cand is not None and not pd.isna(cand):
                     total = float(cand)
-            if circ is not None and total is not None:
+            if free is not None and total is not None:
                 break
-        return circ, total
+        return free, total
 
-    def resolve_circ_mv(
+    def resolve_free_mv(
         self,
         ts_code: str,
         date: datetime,
         cancel_check: CancelCheck | None = None,
     ) -> float | None:
-        """停牌股流通市值回退: 一次请求同时回退流通市值与总市值(总市值写入缓存), 返回流通市值"""
-        circ, total = self._resolve_mvs(ts_code, date, cancel_check)
+        """停牌股自由流通市值回退: 一次请求同时回退自由流通市值与总市值(总市值写入缓存), 返回自由流通市值"""
+        free, total = self._resolve_mvs(ts_code, date, cancel_check)
         if total is not None:
             self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
-        return circ
+        return free
 
     def resolve_total_mv(
         self,
@@ -229,11 +266,11 @@ class MarketDataProvider:
         date: datetime,
         cancel_check: CancelCheck | None = None,
     ) -> float | None:
-        """停牌股总市值回退: 优先读缓存(流通市值回退已顺带填充), 未命中再发请求"""
+        """停牌股总市值回退: 优先读缓存(自由流通市值回退已顺带填充), 未命中再发请求"""
         cached = self.ts_code_to_total_mv_cache.get(date, {}).get(ts_code)
         if cached is not None:
             return cached
-        circ, total = self._resolve_mvs(ts_code, date, cancel_check)
+        free, total = self._resolve_mvs(ts_code, date, cancel_check)
         if total is not None:
             self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
         return total

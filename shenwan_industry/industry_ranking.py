@@ -8,7 +8,7 @@
 
 区间榜网络策略: 区间内每个交易日拉一次 daily(trade_date), 用每日官方涨跌幅
 (close/pre_close, 除权除息日即除权参考价口径) 连乘得到个股区间收益;
-停牌日无行自动按 0% 累计, 不再逐股回退查收益; 权重取区间起始日流通市值
+停牌日无行自动按 0% 累计, 不再逐股回退查收益; 权重取区间起始日自由流通市值
 (daily_basic 一次 + 仅起始日停牌的少量回退)。
 """
 
@@ -139,11 +139,11 @@ def daily_rank_float_weight(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
-    mv_kind: str = "circ",
+    mv_kind: str = "free",
 ) -> tuple[RankList, RankList, RankList]:
     """获取指定日期的行业涨幅(市值加权)排名
 
-    mv_kind: "circ"=流通市值加权, "total"=总市值加权
+    mv_kind: "free"=自由流通市值加权, "total"=总市值加权
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -154,14 +154,14 @@ def daily_rank_float_weight(
     date_str = date.strftime("%Y%m%d")
 
     if mv_kind == "total":
-        ts_code_to_circ_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(date)
+        ts_code_to_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(date)
         resolve_mv = market_data.resolve_total_mv
         mv_label = "总市值"
     else:
-        ts_code_to_circ_mv = market_data.get_ts_code_to_circ_mv(date)
-        resolve_mv = market_data.resolve_circ_mv
-        mv_label = "流通市值"
-    if not ts_code_to_circ_mv:
+        ts_code_to_mv = market_data.get_ts_code_to_free_mv(date)
+        resolve_mv = market_data.resolve_free_mv
+        mv_label = "自由流通市值"
+    if not ts_code_to_mv:
         raise ValueError(f"没有获取到 {date_str} 交易日的{mv_label}数据")
 
     ts_code_to_pct_chg: dict[str, float] = market_data.get_ts_code_to_pct_chg(date)
@@ -173,20 +173,20 @@ def daily_rank_float_weight(
     l2_chg_map: dict[str, tuple[str, float, int]] = {}
     l3_chg_map: dict[str, tuple[str, float, int]] = {}
 
-    # 行业index_code -> (当日收盘新增流通市值总和, 当日开盘前的流通市值总和)
-    l1_circ_map: dict[str, tuple[float, float]] = {}
-    l2_circ_map: dict[str, tuple[float, float]] = {}
-    l3_circ_map: dict[str, tuple[float, float]] = {}
+    # 行业index_code -> (当日收盘新增权重市值总和, 当日开盘前的权重市值总和)
+    l1_mv_map: dict[str, tuple[float, float]] = {}
+    l2_mv_map: dict[str, tuple[float, float]] = {}
+    l3_mv_map: dict[str, tuple[float, float]] = {}
 
     for node_l1 in tree.level_to_nodes[1]:
         l1_chg_map[node_l1.index_code] = (node_l1.index_code, 0, 0)
-        l1_circ_map[node_l1.index_code] = (0, 0)
+        l1_mv_map[node_l1.index_code] = (0, 0)
     for node_l2 in tree.level_to_nodes[2]:
         l2_chg_map[node_l2.index_code] = (node_l2.index_code, 0, 0)
-        l2_circ_map[node_l2.index_code] = (0, 0)
+        l2_mv_map[node_l2.index_code] = (0, 0)
     for node_l3 in tree.level_to_nodes[3]:
         l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
-        l3_circ_map[node_l3.index_code] = (0, 0)
+        l3_mv_map[node_l3.index_code] = (0, 0)
 
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
@@ -199,42 +199,42 @@ def daily_rank_float_weight(
             continue
 
         data_list = [
-            (l3_node, l3_chg_map, l3_circ_map),
-            (l2_node, l2_chg_map, l2_circ_map),
-            (l1_node, l1_chg_map, l1_circ_map),
+            (l3_node, l3_chg_map, l3_mv_map),
+            (l2_node, l2_chg_map, l2_mv_map),
+            (l1_node, l1_chg_map, l1_mv_map),
         ]
 
         pct_chg = ts_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
         if pct_chg is None:
             continue  # 数据异常(涨跌幅非有限值), 不计入
-        for l_node, l_chg_map, l_circ_map in data_list:
+        for l_node, l_chg_map, l_mv_map in data_list:
             l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
-            l_circ1, l_circ2 = l_circ_map.get(l_node.index_code)
+            l_mv1, l_mv2 = l_mv_map.get(l_node.index_code)
             l_count_new = l_count + 1
-            l_circ_mv = ts_code_to_circ_mv.get(ts_code)
+            weight_mv = ts_code_to_mv.get(ts_code)
 
-            # 处理当日停牌的情况: 需要获取停牌前的市值(最多支持连续停牌 2 年)
-            if l_circ_mv is None or pd.isna(l_circ_mv):
+            # 处理当日停牌的情况: 需要获取停牌前的权重市值(最多支持连续停牌 2 年)
+            if weight_mv is None or pd.isna(weight_mv):
                 if timings is not None:
                     _t0 = time.perf_counter()
-                l_circ_mv = resolve_mv(ts_code, date, cancel_check)
+                weight_mv = resolve_mv(ts_code, date, cancel_check)
                 if timings is not None:
-                    timings["circ_fallback"] = timings.get("circ_fallback", 0.0) + (
+                    timings["mv_fallback"] = timings.get("mv_fallback", 0.0) + (
                         time.perf_counter() - _t0
                     )
-                if l_circ_mv is None:
+                if weight_mv is None:
                     raise ValueError(f"没有获取到 {ts_code} 的{mv_label}数据")
-                ts_code_to_circ_mv[ts_code] = l_circ_mv
+                ts_code_to_mv[ts_code] = weight_mv
 
-            # 新增流通市值
-            l_circ1_new = l_circ_mv * pct_chg / (pct_chg + 100) + l_circ1
+            # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值
+            l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
 
-            # 当日开盘前的流通市值
-            l_circ2_new = l_circ_mv / (pct_chg / 100 + 1) + l_circ2
+            # 当日开盘前的权重市值
+            l_mv2_new = weight_mv / (pct_chg / 100 + 1) + l_mv2
 
-            l_pct_chg_new = l_circ1_new / l_circ2_new * 100
+            l_pct_chg_new = l_mv1_new / l_mv2_new * 100
             l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
-            l_circ_map[l_node.index_code] = (l_circ1_new, l_circ2_new)
+            l_mv_map[l_node.index_code] = (l_mv1_new, l_mv2_new)
 
     # 对行业涨幅由大到小排序
     l1_rank_list = sorted(
@@ -268,10 +268,10 @@ def run_daily_ranking(
     tuple[RankList, RankList, RankList],
     dict[str, float],
 ]:
-    """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权榜, 流通市值加权榜, 总市值加权榜, timings)
+    """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权榜, 自由流通市值加权榜, 总市值加权榜, timings)
 
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
-    timings key: daily_fetch / circ_fetch / equal_compute / float_compute / float_fallback
+    timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -290,15 +290,15 @@ def run_daily_ranking(
 
     _notify(48.0, "拉取市值数据", "拉取市值数据")
     t0 = time.perf_counter()
-    market_data.get_ts_code_to_circ_mv(date)  # 同一次请求同时缓存流通/总市值
-    timings["circ_fetch"] = time.perf_counter() - t0
+    market_data.get_ts_code_to_free_mv(date)  # 同一次请求同时缓存自由流通市值/总市值
+    timings["mv_fetch"] = time.perf_counter() - t0
 
     _notify(68.0, "计算等权涨幅", "计算排行榜")
     t0 = time.perf_counter()
     ew = daily_rank_equal_weight(tree, market_data, date, cancel_check)
     timings["equal_compute"] = time.perf_counter() - t0
 
-    _notify(78.0, "计算流通市值加权涨幅", "计算排行榜")
+    _notify(78.0, "计算自由流通市值加权涨幅", "计算排行榜")
     fw_timings: dict[str, float] = {}
     t0 = time.perf_counter()
     fw = daily_rank_float_weight(
@@ -309,7 +309,7 @@ def run_daily_ranking(
         cancel_check=cancel_check,
     )
     timings["float_compute"] = time.perf_counter() - t0
-    timings["float_fallback"] = fw_timings.get("circ_fallback", 0.0)
+    timings["float_fallback"] = fw_timings.get("mv_fallback", 0.0)
 
     _notify(89.0, "计算总市值加权涨幅", "计算排行榜")
     tw_timings: dict[str, float] = {}
@@ -323,7 +323,7 @@ def run_daily_ranking(
         mv_kind="total",
     )
     timings["total_compute"] = time.perf_counter() - t0
-    timings["total_fallback"] = tw_timings.get("circ_fallback", 0.0)
+    timings["total_fallback"] = tw_timings.get("mv_fallback", 0.0)
 
     return ew, fw, tw, timings
 
@@ -343,7 +343,7 @@ def rank_range(
     tuple[RankList, RankList, RankList],
 ]:
     """
-    区间累计涨幅榜, 返回 (等权(l1,l2,l3), 流通市值加权(l1,l2,l3), 总市值加权(l1,l2,l3))
+    区间累计涨幅榜, 返回 (等权(l1,l2,l3), 自由流通市值加权(l1,l2,l3), 总市值加权(l1,l2,l3))
 
     口径:
     - 参与股票 = 区间起始日已在成分(in_date <= 起点) 且 区间末仍在(delist_date >= 终点);
@@ -351,9 +351,9 @@ def rank_range(
       同类剔除告警按类型汇总为一行(数量 + 少量样例), 避免大量日志刷屏
     - 个股区间收益 = 区间内所有有行情日的每日官方涨跌幅连乘(除权除息自动修正),
       隐含基准 = 区间内首个有行情日的 pre_close(即区间前一交易日收盘/停牌前收盘), **包含起始日当天涨跌**
-    - 权重 = 区间起始日流通市值/总市值(起始日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
+    - 权重 = 区间起始日自由流通市值/总市值(起始日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
     - timings: 可选 dict, 记录各阶段耗时
-      (trade_cal/participate/daily_fetch/accumulate/circ_fetch/circ_fallback/compute/trading_days)
+      (trade_cal/participate/daily_fetch/accumulate/mv_fetch/mv_fallback/compute/trading_days)
     - progress_callback: 可选进度回调 (0~100, 阶段说明), 不影响计算结果
     - detail: 可选 dict, 写入 stock_ret(个股区间收益) 与 last_close(区间末日收盘价), 供子表展示
     - cancel_check: 可选取消检查回调, 在长循环/网络拉取前调用, 取消时抛出异常
@@ -458,46 +458,46 @@ def rank_range(
         if stock_prod.get(ts_code) is not None:
             stock_ret[ts_code] = (stock_prod.get(ts_code, 1.0) - 1.0) * 100.0
 
-    # 3) 权重: 区间起始日(=区间内第一个交易日)流通市值/总市值, 停牌回退
+    # 3) 权重: 区间起始日(=区间内第一个交易日)自由流通市值/总市值, 停牌回退
     if timings is not None:
         _t0 = time.perf_counter()
     weight_date_str = trading_days[0]
     weight_date = datetime.strptime(weight_date_str, "%Y%m%d")
-    ts_code_to_circ_mv: dict[str, float] = market_data.get_ts_code_to_circ_mv(weight_date)
+    ts_code_to_free_mv: dict[str, float] = market_data.get_ts_code_to_free_mv(weight_date)
     ts_code_to_total_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(weight_date)
     if timings is not None:
-        timings["circ_fetch"] = time.perf_counter() - _t0
+        timings["mv_fetch"] = time.perf_counter() - _t0
     _notify(86.0, "市值拉取完成")
     _check_cancel()
     if timings is not None:
         _t0 = time.perf_counter()
-    no_circ_mv_stocks: list[str] = []
+    no_free_mv_stocks: list[str] = []
     for idx, ts_code in enumerate(stock_ret):
         if idx % 500 == 0:
             _check_cancel()
-        if ts_code_to_circ_mv.get(ts_code) is None or pd.isna(ts_code_to_circ_mv.get(ts_code)):
-            circ_mv = market_data.resolve_circ_mv(ts_code, weight_date, cancel_check)
-            if circ_mv is None:
-                no_circ_mv_stocks.append(ts_code)
+        if ts_code_to_free_mv.get(ts_code) is None or pd.isna(ts_code_to_free_mv.get(ts_code)):
+            free_mv = market_data.resolve_free_mv(ts_code, weight_date, cancel_check)
+            if free_mv is None:
+                no_free_mv_stocks.append(ts_code)
                 continue
-            ts_code_to_circ_mv[ts_code] = circ_mv
-        # 总市值: 流通市值回退已顺带填充缓存, 缺失时单独回退(同一次请求拿两个字段)
+            ts_code_to_free_mv[ts_code] = free_mv
+        # 总市值: 自由流通市值回退已顺带填充缓存, 缺失时单独回退(同一次请求拿两个字段)
         if ts_code_to_total_mv.get(ts_code) is None or pd.isna(ts_code_to_total_mv.get(ts_code)):
             total_mv = market_data.resolve_total_mv(ts_code, weight_date, cancel_check)
             if total_mv is not None:
                 ts_code_to_total_mv[ts_code] = total_mv
-    if no_circ_mv_stocks:
-        samples = ", ".join(no_circ_mv_stocks[:3])
+    if no_free_mv_stocks:
+        samples = ", ".join(no_free_mv_stocks[:3])
         logger.warning(
-            f"区间榜无法获取 {len(no_circ_mv_stocks)} 只股票起始日流通市值"
-            f"(如 {samples}{'...' if len(no_circ_mv_stocks) > 3 else ''}), 仅参与等权榜"
+            f"区间榜无法获取 {len(no_free_mv_stocks)} 只股票起始日自由流通市值"
+            f"(如 {samples}{'...' if len(no_free_mv_stocks) > 3 else ''}), 仅参与等权榜"
         )
     if timings is not None:
-        timings["circ_fallback"] = time.perf_counter() - _t0
+        timings["mv_fallback"] = time.perf_counter() - _t0
     _notify(89.0, "停牌市值回退完成")
     _check_cancel()
 
-    # 4) 聚合三级行业: 等权 = 起始成分简单平均; 加权 = 起始流通市值/总市值加权
+    # 4) 聚合三级行业: 等权 = 起始成分简单平均; 加权 = 起始自由流通市值/总市值加权
     _notify(90.0, "聚合行业涨幅")
     _check_cancel()
     if timings is not None:
@@ -534,18 +534,18 @@ def rank_range(
             entry[0] += 1
             entry[1] += ret
 
-        circ_mv = ts_code_to_circ_mv.get(ts_code)
-        if circ_mv is None or pd.isna(circ_mv):
+        free_mv = ts_code_to_free_mv.get(ts_code)
+        if free_mv is None or pd.isna(free_mv):
             continue  # 无起始市值, 仅参与等权榜(已告警)
         for l_node, fw_map in ((l3_node, l3_fw), (l2_node, l2_fw), (l1_node, l1_fw)):
             entry = fw_map[l_node.index_code]
-            entry[0] += circ_mv
-            entry[1] += circ_mv * ret
+            entry[0] += free_mv
+            entry[1] += free_mv * ret
             entry[2] += 1
 
         total_mv = ts_code_to_total_mv.get(ts_code)
         if total_mv is None or pd.isna(total_mv):
-            continue  # 无起始总市值, 仅参与等权/流通市值加权榜
+            continue  # 无起始总市值, 仅参与等权/自由流通市值加权榜
         for l_node, tw_map in ((l3_node, l3_tw), (l2_node, l2_tw), (l1_node, l1_tw)):
             entry = tw_map[l_node.index_code]
             entry[0] += total_mv
@@ -604,7 +604,7 @@ def rank_range(
             for ts_code, (close, _pre_close) in last_day_data.items()
             if ts_code in participating
         }
-        detail["ts_code_to_circ_mv"] = ts_code_to_circ_mv
+        detail["ts_code_to_free_mv"] = ts_code_to_free_mv
         detail["ts_code_to_total_mv"] = ts_code_to_total_mv
 
     return (

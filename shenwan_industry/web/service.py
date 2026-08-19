@@ -469,7 +469,7 @@ def _run_daily(
     progress(95.0, "整理结果", "整理结果")
     pct_map = provider.get_ts_code_to_pct_chg(rank_date)
     close_map = provider.get_ts_code_to_close(rank_date)
-    circ_map = provider.get_ts_code_to_circ_mv(rank_date)
+    free_map = provider.get_ts_code_to_free_mv(rank_date)
     total_map = provider.get_ts_code_to_total_mv(rank_date)
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
@@ -484,7 +484,7 @@ def _run_daily(
         "tree": tree,
         "pct_chg": pct_map,
         "close": close_map,
-        "circ_mv": circ_map,
+        "free_mv": free_map,
         "total_mv": total_map,
         "amount": amount_map,
     }
@@ -517,8 +517,8 @@ def _run_range(
         cancel_check=cancel_check,
     )
     progress(99.0, "整理结果", "整理结果")
-    # 成分股子表展示用的末日流通市值/总市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
-    end_circ_mv = provider.get_ts_code_to_circ_mv(end_date)
+    # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
+    end_free_mv = provider.get_ts_code_to_free_mv(end_date)
     end_total_mv = provider.get_ts_code_to_total_mv(end_date)
     end_amount = provider.get_ts_code_to_amount(end_date)
     result = {
@@ -535,9 +535,9 @@ def _run_range(
         "tree": tree,
         "stock_ret": detail["stock_ret"],
         "last_close": detail["last_close"],
-        "ts_code_to_circ_mv": detail["ts_code_to_circ_mv"],
+        "ts_code_to_free_mv": detail["ts_code_to_free_mv"],
         "ts_code_to_total_mv": detail["ts_code_to_total_mv"],
-        "end_circ_mv": end_circ_mv,
+        "end_free_mv": end_free_mv,
         "end_total_mv": end_total_mv,
         "end_amount": end_amount,
     }
@@ -613,15 +613,15 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     rank_date: datetime = context["date"]
     pct_map: dict[str, float | None] = context["pct_chg"]
     close_map: dict[str, float] = context["close"]
-    circ_map: dict[str, float] = context["circ_mv"]
+    free_map: dict[str, float] = context["free_mv"]
     total_map: dict[str, float] = context["total_mv"]
     amount_map: dict[str, float] = context["amount"]
 
     stock_pool = set(pct_map) | set(tree.constituent_stock_to_l3_node)
     tree.filter_stock_pool(stock_pool, rank_date, rank_date)
 
-    # 市值加权子表口径: float 用流通市值、total 用总市值, 缺失市值不参与
-    mv_map = context["total_mv"] if weight == "total" else circ_map
+    # 市值加权子表口径: float 用自由流通市值、total 用总市值, 缺失市值不参与
+    mv_map = context["total_mv"] if weight == "total" else free_map
     weight_filtered = weight in ("float", "total")
 
     rows: list[dict[str, Any]] = []
@@ -649,7 +649,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
                 "pct_chg": pct_chg,
                 "close": close_map.get(ts_code),
-                "circ_mv": circ_map.get(ts_code),
+                "free_mv": free_map.get(ts_code),
                 "total_mv": total_map.get(ts_code),
                 "amount": amount_map.get(ts_code),
             }
@@ -661,13 +661,13 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     tree: ShenWanIndustryTree = context["tree"]
     stock_ret: dict[str, float] = context["stock_ret"]
     last_close: dict[str, float] = context["last_close"]
-    circ_map: dict[str, float] = context["ts_code_to_circ_mv"]
-    end_circ_mv: dict[str, float] = context["end_circ_mv"]
+    free_map: dict[str, float] = context["ts_code_to_free_mv"]
+    end_free_mv: dict[str, float] = context["end_free_mv"]
     end_total_mv: dict[str, float] = context["end_total_mv"]
     end_amount: dict[str, float] = context["end_amount"]
 
-    # 市值加权子表口径: float 用起始日流通市值、total 用起始日总市值, 缺失市值不参与
-    mv_map = context["ts_code_to_total_mv"] if weight == "total" else circ_map
+    # 市值加权子表口径: float 用起始日自由流通市值、total 用起始日总市值, 缺失市值不参与
+    mv_map = context["ts_code_to_total_mv"] if weight == "total" else free_map
     weight_filtered = weight in ("float", "total")
 
     rows: list[dict[str, Any]] = []
@@ -691,7 +691,7 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
                 "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
                 "pct_chg": pct_chg,
                 "close": last_close.get(ts_code),
-                "circ_mv": end_circ_mv.get(ts_code),
+                "free_mv": end_free_mv.get(ts_code),
                 "total_mv": end_total_mv.get(ts_code),
                 "amount": end_amount.get(ts_code),
             }

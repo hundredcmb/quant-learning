@@ -1,6 +1,14 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
+// 加权方式显示名（与 index.html 下拉选项一致），主表“加权涨幅”列头与子表副标题共用
+const WEIGHT_LABELS = { total: "总市值加权", float: "自由流通市值加权", equal: "等权" };
+
+function updateMainPctHeader() {
+  const label = WEIGHT_LABELS[state.weight] || WEIGHT_LABELS.float;
+  $("#main-pct-header").textContent = `${label}涨幅`;
+}
+
 const state = {
   mode: "daily",
   weight: "float",
@@ -176,6 +184,7 @@ function bindEvents() {
 
   $("#weight").addEventListener("change", (event) => {
     state.weight = event.target.value;
+    updateMainPctHeader();
     if (state.result) {
       renderMainTable();
     }
@@ -390,6 +399,7 @@ function renderMainTable() {
 
   $("#table-title").textContent = `申万 L${state.level} 级行业排行`;
   $("#table-count").textContent = `共 ${rows.length} 个行业`;
+  updateMainPctHeader();
   updateSortArrows("#main-table", state.mainSort);
 
   const tbody = $("#main-tbody");
@@ -451,7 +461,7 @@ function openSubPanel(indexCode, industryName) {
   state.subSort.key = "pct_chg";
   state.subSort.dir = "desc";
   $("#sub-title").textContent = `${industryName} · 成分股`;
-  const weightLabel = { total: "总市值加权", float: "流通市值加权", equal: "等权" }[state.weight] || "流通市值加权";
+  const weightLabel = WEIGHT_LABELS[state.weight] || WEIGHT_LABELS.float;
   $("#sub-subtitle").textContent = `${indexCode} · ${weightLabel}`;
   $("#sub-tbody").innerHTML = "";
   hideElement("#sub-error");
@@ -491,7 +501,7 @@ function renderSubTable() {
       <td>${formatPrice(row.close)}</td>
       <td>${formatAmountColumn(row.amount)}</td>
       <td>${formatCircMv(row.total_mv)}</td>
-      <td>${formatCircMv(row.circ_mv)}</td>
+      <td>${formatCircMv(row.free_mv)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -910,7 +920,7 @@ function formatPrice(value) {
 }
 
 function formatCircMv(value) {
-  // daily_basic 的 circ_mv 单位万元，转亿元展示
+  // 自由流通市值单位万元（= circ_mv × free_share/float_share），转亿元展示
   if (value == null || Number.isNaN(Number(value))) {
     return "—";
   }
