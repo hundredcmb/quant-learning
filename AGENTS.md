@@ -134,7 +134,9 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
-- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:8080/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
+- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
+- 若启动报 `WinError 10013`（端口绑定被拒）：多为 Windows 动态保留端口段覆盖了默认端口 9010，用 `netsh interface ipv4 show excludedportrange protocol=tcp` 检查，`net stop winnat && net start winnat`（管理员）释放后重试，或用 `--port` 换端口
+- **智能体浏览器测试用独立端口**：ZCode 等 AI 代理通过浏览器插件/工具对 Web 页面做自动化测试时，**不要占用默认端口 9010**（该端口可能正被用户桌面窗口或手动启动的服务占用）；应使用 `--port` 显式指定其他端口启动测试用服务（如 9120），测试完成后自行关闭该进程，避免端口冲突与遗留进程
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
 - 行业排行榜中，仅行业名称列可点击查看官方指数 K 线（代码列不响应点击；一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
@@ -144,8 +146,9 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 
 ### 环境与 Git
 - **提交规则（重要）**：AI 编码代理（如 Codex）默认**不得自行执行 `git add` / `git commit` / `git push`**；只有用户明确要求提交时才可执行。代码/文档改动完成后保持未提交状态，等待用户指示。
+- **Git 与 GitHub 操作优先使用 gh CLI（ZCode 内置 GitHub 插件技能）**：本机已安装并认证 GitHub CLI（`gh`，账号 `hundredcmb`，凭据存于系统 keyring）；涉及 GitHub 的操作（提交、PR、Issue、Gist、Release、仓库浏览等）统一走 `github:*` 插件技能（`/setup`、`/commit`、`/pr`、`/issue`、`/repo`、`/gist` 等斜杠命令，或直接自然语言触发），底层由 `gh` 完成；不要手写裸 `curl` 调 GitHub API、手工维护 token，也不要绕过 gh 直接操作 GitHub 网络资源
 
 - 开发机为 Windows 或 Linux/macOS 均可，示例命令以 Linux/macOS 路径为例（Windows 将 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`、`.venv-vnpy/bin/python` 换成 `.venv-vnpy\Scripts\python.exe`、`/` 换成 `\`）；PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；Windows PowerShell 读写中文文件时注意 UTF-8 编码
 - `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
-- GitHub 推送凭据：本机为双助手（GCM `manager` + `store`），git 按序尝试；**排查推送认证问题优先检查 `~/.git-credentials`**（明文条目 `https://用户名:token@github.com`，`store` 兜底，GCM 登录弹窗被取消不影响推送）；该文件与 `~/.vntrader/vt_setting.json`（Tushare token）是两套互不相干的凭据
-- 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述；开发分支建议使用 `codex/` 前缀
+- GitHub 推送凭据：本机为双助手（GCM `manager` + `store`），git 按序尝试；**排查推送认证问题优先检查 `~/.git-credentials`**（明文条目 `https://用户名:token@github.com`，`store` 兜底，GCM 登录弹窗被取消不影响推送）；该文件与 `~/.vntrader/vt_setting.json`（Tushare token）是两套互不相干的凭据。gh CLI 的认证独立存储于系统 keyring（`gh auth status` 查看、`gh auth login`/`gh auth switch` 管理），与上述 git 推送凭据互不干扰
+- 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述，优先交给 `/commit` 技能按此规范生成；开发分支建议使用 `codex/` 前缀

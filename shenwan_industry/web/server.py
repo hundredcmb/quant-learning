@@ -157,7 +157,7 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def main() -> None:
     parser = argparse.ArgumentParser(description="启动申万行业研究台本地 Web 服务")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=9010)
     args = parser.parse_args()
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

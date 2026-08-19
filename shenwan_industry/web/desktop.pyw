@@ -1,13 +1,13 @@
 """申万行业研究台桌面窗口启动器。
 
 双击本文件时：
-1. 检查本机 8080 端口是否已有可用的申万行业 Web 服务；
+1. 检查本机 9010 端口是否已有可用的申万行业 Web 服务；
 2. 如果没有，后台启动 `shenwan_industry.web.server`；
 3. 窗口从创建起就直接是 QWebEngineView（无任何原生加载页/骨架屏过渡），
    引擎冷启动与后端启动并行进行，期间窗口为白屏（可接受的代价）；
    创建时立即预载 about:blank，让渲染器冷启动协商在画面呈现前完成，
    避免后端就绪后首次加载时的"缩小再放大"首帧协商闪烁（已实测确认）；
-4. 后端就绪后一次性加载正式页面 http://127.0.0.1:8080/（渲染器已热，首帧干净），
+4. 后端就绪后一次性加载正式页面 http://127.0.0.1:9010/（渲染器已热，首帧干净），
    不存在任何中间页面切换；
 5. 关闭窗口时，只结束由本启动器拉起的后端进程。
 """
@@ -29,7 +29,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 
 HOST = "127.0.0.1"
-PORT = 8080
+PORT = 9010
 BASE_URL = f"http://{HOST}:{PORT}"
 HEALTH_URL = f"{BASE_URL}/api/health"
 REPO_ROOT = Path(__file__).resolve().parents[2]

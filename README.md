@@ -45,10 +45,10 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 ## 3. 启动 Web 服务
 
 ```bash
-.venv/bin/python -m shenwan_industry.web.server --host 127.0.0.1 --port 8080
+.venv/bin/python -m shenwan_industry.web.server --host 127.0.0.1 --port 9010
 ```
 
-浏览器访问 <http://127.0.0.1:8080/>，支持：
+浏览器访问 <http://127.0.0.1:9010/>，支持：
 
 - 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级）
 - 行业成分股子表
