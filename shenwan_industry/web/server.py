@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import service
+from . import port_picker, service
 from .jobs import JobManager
 from .schemas import DailyRankingRequest, RangeRankingRequest, TokenConfigRequest
 
@@ -159,7 +159,12 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9010)
     args = parser.parse_args()
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # 首选端口被占用或落在系统保留段（WinError 10013）时自动顺延，并打印实际端口
+    port = port_picker.pick_free_port(args.host, args.port)
+    if port != args.port:
+        print(f"警告：端口 {args.port} 不可用，已自动改用端口 {port}", flush=True)
+    print(f"申万行业研究台已启动：http://{args.host}:{port}/", flush=True)
+    uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

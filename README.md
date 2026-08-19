@@ -76,7 +76,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 ## 5. 功能说明
 
-行业树优先从本地 `SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。
 
 ---
 

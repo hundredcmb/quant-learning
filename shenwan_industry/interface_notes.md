@@ -6,14 +6,14 @@
 
 | 接口 | 用途 | 调用参数 | 分页/批次 | 备注 |
 | --- | --- | --- | --- | --- |
-| `index_classify` | 行业树（备用） | `src='SW2021'` | 一次全量 | 默认用本地 `SW2021.json`，仅备用 |
+| `index_classify` | 行业树（备用） | `src='SW2021'` | 一次全量 | 默认用本地 `data/SW2021.json`，仅备用 |
 | `stock_basic` | 股票池状态过滤 | `list_status='L'/'D'/'P'`，D 带 `delist_date` | 每次调用不分页 | 上市+退市+暂停全部进 `stock_basic`；D 的 `delist_date` 进 `ts_code_to_delist_date` |
 | `index_member_all` | 行业成分股 | `offset, limit=1999` | 循环直到不足一批 | 按 `l3_code` 挂到三级节点 |
 | `trade_cal` | 区间交易日列表 | `exchange='SSE', start_date, end_date, is_open='1', fields='cal_date'` | 一次 | 区间榜取交易日用 |
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日流通市值 | `ts_code='', trade_date, fields='ts_code,circ_mv', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量 |
 | `daily_basic`（单只） | 停牌回退查流通市值 | `ts_code, fields='trade_date,circ_mv', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条 |
-| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 SW2021.json 求交集，缓存 `sw_index_daily_available.json`（30 天刷新） |
+| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 `data/SW2021.json` 求交集，缓存 `data/sw_index_daily_available.json`（每周六 00:00 过期、约合每周刷新） |
 
 ## 调用约定
 

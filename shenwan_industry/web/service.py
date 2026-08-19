@@ -27,10 +27,17 @@ from ..market_data import MarketDataProvider
 logger = logging.getLogger("shenwan_industry.web.service")
 _NO_INDUSTRY_STOCKS: set[str] = set()
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SW2021_PATH = _REPO_ROOT / "shenwan_industry" / "SW2021.json"
-# 官方指数日线可用性缓存（随仓库提交，30 天内复用，过期自动重探测）
-_SW_DAILY_AVAILABLE_PATH = _REPO_ROOT / "shenwan_industry" / "sw_index_daily_available.json"
-_SW_DAILY_AVAILABLE_MAX_AGE_DAYS = 30
+_SW2021_PATH = _REPO_ROOT / "shenwan_industry" / "data" / "SW2021.json"
+# 官方指数日线可用性缓存（随仓库提交，写入后最近一个周六 00:00 过期，过期后下次访问自动重探测，约合每周刷新一次）
+_SW_DAILY_AVAILABLE_PATH = _REPO_ROOT / "shenwan_industry" / "data" / "sw_index_daily_available.json"
+
+
+def _sw_daily_available_expire_time(write_date: datetime) -> datetime:
+    """缓存有效期截止：写入日期之后最近的一个周六 00:00（写入当天为周六则顺延一周）"""
+    days_ahead = 5 - write_date.weekday()  # 周一=0 ... 周六=5
+    if days_ahead <= 0:
+        days_ahead += 7
+    return datetime(write_date.year, write_date.month, write_date.day) + timedelta(days=days_ahead)
 
 with _SW2021_PATH.open("r", encoding="utf-8") as _fp:
     _sw2021_rows = json.load(_fp)
@@ -171,11 +178,11 @@ _sw_daily_available_lock = threading.Lock()
 
 
 def _load_sw_daily_available_cached() -> set[str] | None:
-    """读磁盘缓存（30 天内有效），缺失或过期返回 None"""
+    """读磁盘缓存（在写入后最近一个周六 00:00 前有效），缺失或过期返回 None"""
     try:
         data = json.loads(_SW_DAILY_AVAILABLE_PATH.read_text(encoding="utf-8"))
         timestamp = datetime.strptime(data["timestamp"], "%Y-%m-%d")
-        if (datetime.now() - timestamp).days <= _SW_DAILY_AVAILABLE_MAX_AGE_DAYS:
+        if datetime.now() < _sw_daily_available_expire_time(timestamp):
             return set(data["codes"])
     except Exception:
         pass
@@ -226,7 +233,7 @@ def _probe_sw_daily_available() -> set[str] | None:
 def get_sw_daily_available() -> set[str] | None:
     """有官方指数日线数据的行业指数代码集合（L1 全覆盖恒含，L2/L3 以探测为准）。
 
-    - 磁盘缓存 30 天内直接复用（sw_index_daily_available.json，随仓库提交，离线可用）
+    - 磁盘缓存在写入后最近一个周六 00:00 前直接复用（约合每周刷新；sw_index_daily_available.json，随仓库提交，离线可用）
     - 否则 sw_daily(trade_date=最新交易日) 全市场一次拉取，与 SW2021.json 的 L2/L3 求交集
     - 探测失败返回 None：调用方回退为"仅 L1 可点击"，不缓存、下次再试
     """

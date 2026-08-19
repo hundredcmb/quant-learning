@@ -2,12 +2,14 @@
 
 双击本文件时：
 1. 检查本机 9010 端口是否已有可用的申万行业 Web 服务；
-2. 如果没有，后台启动 `shenwan_industry.web.server`；
+2. 如果没有，评估首选端口是否可绑定，占用/处于系统保留段时自动顺延
+   （方案 B，见 web/port_picker.py），再以后端实际使用的端口后台启动
+   `shenwan_industry.web.server`；
 3. 窗口从创建起就直接是 QWebEngineView（无任何原生加载页/骨架屏过渡），
    引擎冷启动与后端启动并行进行，期间窗口为白屏（可接受的代价）；
    创建时立即预载 about:blank，让渲染器冷启动协商在画面呈现前完成，
    避免后端就绪后首次加载时的"缩小再放大"首帧协商闪烁（已实测确认）；
-4. 后端就绪后一次性加载正式页面 http://127.0.0.1:9010/（渲染器已热，首帧干净），
+4. 后端就绪后一次性加载正式页面 http://127.0.0.1:<端口>/（渲染器已热，首帧干净），
    不存在任何中间页面切换；
 5. 关闭窗口时，只结束由本启动器拉起的后端进程。
 """
@@ -27,25 +29,35 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
+# 本文件常以脚本方式运行（pythonw 双击 / .venv/bin/python 直跑），
+# 脚本所在目录在 sys.path 中，直接 import 同级模块即可
+import port_picker
+
 
 HOST = "127.0.0.1"
-PORT = 9010
-BASE_URL = f"http://{HOST}:{PORT}"
-HEALTH_URL = f"{BASE_URL}/api/health"
+PREFERRED_PORT = 9010
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LOG_PATH = REPO_ROOT / "output" / "desktop_backend.log"
 
 
-def is_backend_ready() -> bool:
+def base_url(port: int) -> str:
+    return f"http://{HOST}:{port}"
+
+
+def health_url(port: int) -> str:
+    return f"{base_url(port)}/api/health"
+
+
+def is_backend_ready(port: int) -> bool:
     try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=1) as response:
+        with urllib.request.urlopen(health_url(port), timeout=1) as response:
             data = json.loads(response.read().decode("utf-8"))
             return response.status == 200 and data.get("status") == "ok"
     except Exception:
         return False
 
 
-def start_backend() -> tuple[subprocess.Popen, object]:
+def start_backend(port: int) -> tuple[subprocess.Popen, object]:
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     log_file = LOG_PATH.open("ab", buffering=0)
     command = [
@@ -55,7 +67,7 @@ def start_backend() -> tuple[subprocess.Popen, object]:
         "--host",
         HOST,
         "--port",
-        str(PORT),
+        str(port),
     ]
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     process = subprocess.Popen(
@@ -68,10 +80,10 @@ def start_backend() -> tuple[subprocess.Popen, object]:
     return process, log_file
 
 
-def wait_for_backend(timeout_seconds: float = 20.0) -> bool:
+def wait_for_backend(port: int, timeout_seconds: float = 20.0) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        if is_backend_ready():
+        if is_backend_ready(port):
             return True
         QApplication.processEvents()
         time.sleep(0.2)
@@ -119,12 +131,12 @@ class DesktopWindow(QMainWindow):
         self.backend_log_file = log_file
         self.started_by_us = started_by_us
 
-    def show_frontend(self) -> None:
+    def show_frontend(self, port: int) -> None:
         """后端就绪后加载正式页面(只加载一次)"""
         if self._frontend_loaded:
             return
         self._frontend_loaded = True
-        self.web_view.load(QUrl(BASE_URL))
+        self.web_view.load(QUrl(base_url(port)))
 
     def stop_owned_backend(self) -> None:
         if self._backend_stopped or not self.started_by_us or self.backend_process is None:
@@ -159,11 +171,14 @@ def main() -> int:
     process = None
     log_file = None
     started_by_us = False
+    port = PREFERRED_PORT
 
-    if not is_backend_ready():
-        process, log_file = start_backend()
+    if not is_backend_ready(port):
+        # 首选端口被占用/处于系统保留段时自动顺延，并让后端用同一端口
+        port = port_picker.pick_free_port(HOST, port)
+        process, log_file = start_backend(port)
         started_by_us = True
-        if not wait_for_backend():
+        if not wait_for_backend(port):
             if process.poll() is None:
                 process.terminate()
             QMessageBox.critical(
@@ -175,7 +190,7 @@ def main() -> int:
             return 1
 
     window.attach_backend(process, log_file, started_by_us)
-    window.show_frontend()
+    window.show_frontend(port)
     app.aboutToQuit.connect(window.stop_owned_backend)
     atexit.register(window.stop_owned_backend)
     return app.exec()

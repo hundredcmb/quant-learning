@@ -49,10 +49,10 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 | `shenwan_industry/industry_ranking.py` | 排行榜算法库：单日榜 + 单日榜编排（`run_daily_ranking`，CLI/Web 共用）+ 区间累计涨幅榜（等权 / 流通市值加权），含耗时输出工具 `print_timing` |
 | `shenwan_industry/daily_ranking.py` | 单日行业涨幅榜入口脚本（含耗时分析输出） |
 | `shenwan_industry/range_ranking.py` | 区间累计涨幅榜入口脚本（区间在文件内配置，含耗时分析输出） |
-| `shenwan_industry/SW2021.json` | 申万 2021 行业分类本地数据（推荐的数据源） |
-| `shenwan_industry/sw_index_daily_available.json` | 官方指数日线可用性缓存（探测生成、随仓库提交，30 天自动刷新；L1 全覆盖，L2/L3 据此决定 K 线是否可点击） |
+| `shenwan_industry/data/` | 需提交的数据/缓存子目录：`SW2021.json`（申万 2021 行业分类本地数据，推荐的数据源）、`sw_index_daily_available.json`（官方指数日线可用性缓存，探测生成、随仓库提交，每周六 00:00 过期、约合每周刷新；L1 全覆盖，L2/L3 据此决定 K 线是否可点击） |
 | `shenwan_industry/config_store.py` | 申万模块本地配置存储：Tushare token 存于项目根目录 `.quant-learning/settings.json`（已 gitignore、不随仓库提交，权限 600）；CLI 与 Web 统一从这读取，不依赖 vnpy |
 | `shenwan_industry/web/server.py` | 申万行业本地 FastAPI 入口：单日/区间排行提交、任务进度查询、成分股子表、静态页面托管 |
+| `shenwan_industry/web/port_picker.py` | 端口自动选择：首选端口被占用/落在系统保留段（WinError 10013）时逐端口顺延（方案 B），server.py 与 desktop.pyw 共用 |
 | `shenwan_industry/web/jobs.py` | Web 后台单 worker 任务队列与 Job 状态/进度管理 |
 | `shenwan_industry/web/service.py` | Web 接口与现有行业排行算法的适配层 |
 | `shenwan_industry/web/static/` | Web 前端页面：查询表单、进度条、主表和成分股子表 |
@@ -70,7 +70,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 # 以下命令以 Linux/macOS 路径为例（Windows 为 .venv\Scripts\python.exe / .venv-vnpy\Scripts\python.exe）
 
 # ---------- 申万行业（.venv，不依赖 vnpy；token 在 Web 页面「数据配置」填写） ----------
-.venv/bin/python -m shenwan_industry.web.server --host 127.0.0.1 --port 8080   # Web 服务
+.venv/bin/python -m shenwan_industry.web.server --host 127.0.0.1 --port 9010   # Web 服务（默认端口被占/在保留段时自动顺延）
 .venv/bin/python shenwan_industry/daily_ranking.py                              # 单日涨幅榜示例
 .venv/bin/python shenwan_industry/range_ranking.py                              # 区间涨幅榜示例（区间在文件内配置）
 .venv/bin/python shenwan_industry/web/desktop.pyw                               # 桌面窗口（GUI 需 PySide6）
@@ -128,17 +128,17 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 
 ### 申万行业（shenwan_industry/）
 
-- 行业树优先用本地 `SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
+- 行业树优先用本地 `data/SW2021.json` 构建（`build_industries()`），tushare 版本 `build_industries_by_tushare()` 仅作备用
 - **申万模块已彻底脱离 vnpy**（不 import 任何 vnpy 包）：Tushare token 从本地配置 `shenwan_industry/config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；CLI 与 Web 均不读 vnpy `SETTINGS`。依赖（fastapi/uvicorn/pydantic/tushare/pandas）见根 `requirements.txt`，Windows 下仍可复用 vnpy 环境运行
 - Web 页面保存新 token 后，后台自动重置已构建的行业树上下文，下次查询用新 token 重建（`service.save_token` / `PreparedContext.ensure`）
 - 流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近流通市值），改动时不要破坏该逻辑
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
-- 若启动报 `WinError 10013`（端口绑定被拒）：多为 Windows 动态保留端口段覆盖了默认端口 9010，用 `netsh interface ipv4 show excludedportrange protocol=tcp` 检查，`net stop winnat && net start winnat`（管理员）释放后重试，或用 `--port` 换端口
-- **智能体浏览器测试用独立端口**：ZCode 等 AI 代理通过浏览器插件/工具对 Web 页面做自动化测试时，**不要占用默认端口 9010**（该端口可能正被用户桌面窗口或手动启动的服务占用）；应使用 `--port` 显式指定其他端口启动测试用服务（如 9120），测试完成后自行关闭该进程，避免端口冲突与遗留进程
+- 端口冲突已内置自动处理（方案 B）：Web 服务与桌面启动器都会先实测首选端口可绑定性，被占用或落在 Windows 动态保留段（`WinError 10013`）时自动 +1 顺延并打印实际端口（如 9010 不可用自动改 9024）；仍需要排查保留段时用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看，或 `net stop winnat && net start winnat`（管理员）释放后配合 `--port` 固定端口
+- **智能体浏览器测试用独立端口**：ZCode 等 AI 代理通过浏览器插件/工具对 Web 页面做自动化测试时，**不要占用默认端口 9010**（该端口可能正被用户桌面窗口或手动启动的服务占用）；应使用 `--port` 显式指定其他端口启动测试用服务（如 9400，避开常见保留段；服务端仍会自动顺延），测试完成后自行关闭该进程，避免端口冲突与遗留进程
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端
-- 行业排行榜中，仅行业名称列可点击查看官方指数 K 线（代码列不响应点击；一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
+- 行业排行榜中，仅行业名称列可点击查看官方指数 K 线（代码列不响应点击；一级全覆盖；二级/三级仅官方指数有日线数据的行业可点击，可用性缓存于 `shenwan_industry/data/sw_index_daily_available.json`）；数据来自 Tushare `sw_daily`，前端使用本地 ECharts 绘制，副图支持成交额/成交量切换
 
 ### vnpy 示例（vnpy_examples/）
 

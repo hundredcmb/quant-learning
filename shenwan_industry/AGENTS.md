@@ -11,10 +11,9 @@
   - `industry_ranking.py`：排行榜算法库（`daily_rank_equal_weight` / `daily_rank_float_weight` / `run_daily_ranking` / `rank_range`）+ 耗时工具 `print_timing`
   - `config_store.py`：本地配置存储（Tushare token，存项目根目录 `.quant-learning/settings.json`、已 gitignore 不提交），CLI 与 Web 统一从这里读 token
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
-  - `SW2021.json`：申万 2021 行业分类本地数据（推荐数据源，勿删）
-  - `sw_index_daily_available.json`：官方指数日线可用性缓存（探测生成、随仓库提交，30 天自动刷新）
+  - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、`sw_index_daily_available.json`（官方指数日线可用性缓存，探测生成、随仓库提交，每周六 00:00 过期、约合每周刷新）
   - `__init__.py`：空
-  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
+  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；`port_picker.py` 负责端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
 - 子文档（按需查阅）：
   - `interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
   - `known_issues.md`：已知边界与易错点（17 条）
@@ -28,7 +27,7 @@
 
 ### 1. 行业树构建
 
-- 默认 `build_industries()`：读本地 `SW2021.json` 逐行 `parse_industry_row()` 构建；备用 `build_industries_by_tushare()`（`pro.index_classify(src='SW2021')`），行业数据长期不变，本地优先
+- 默认 `build_industries()`：读本地 `data/SW2021.json` 逐行 `parse_industry_row()` 构建；备用 `build_industries_by_tushare()`（`pro.index_classify(src='SW2021')`），行业数据长期不变，本地优先
 - `parse_industry_row()`：`level` 为字符串 `"L1"/"L2"/"L3"`；L1 挂到 root，其余按 `parent_code` 在 `industry_code_to_node` 找父节点挂接；登记 `index_code` / `industry_code` / `industry_name` 三种映射
 - 全称 `industry_name_long`：L1=自身名；L2=父名+"-"+自身名；L3=父全称+"-"+自身名；父节点缺失直接 `KeyError`（当前未兜底）
 

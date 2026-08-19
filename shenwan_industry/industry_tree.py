@@ -56,7 +56,7 @@ class ShenWanIndustryTree:
         """从本地 JSON 数据源构建申万三级行业树"""
         current_file_path = os.path.abspath(__file__)
         current_dir_path = os.path.dirname(current_file_path)
-        with open(f"{current_dir_path}/SW2021.json", "r", encoding="utf-8") as f:
+        with open(f"{current_dir_path}/data/SW2021.json", "r", encoding="utf-8") as f:
             sw2021_list = json.load(f)
             for row in sw2021_list:
                 self.parse_industry_row(row)
