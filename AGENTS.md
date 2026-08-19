@@ -58,6 +58,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 | `shenwan_industry/web/static/` | Web 前端页面：查询表单、进度条、主表和成分股子表 |
 | `shenwan_industry/web/static/vendor/echarts.min.js` | 前端 ECharts 本地资源，用于行业指数 K 线图 |
 | `shenwan_industry/web/desktop.pyw` | 桌面窗口启动器：后台自动启动 FastAPI，并用 Qt WebEngine 打开前端页面 |
+| `shenwan_industry/docs/` | 申万模块文档目录：`interface_notes.md`（Tushare 接口交互明细）、`known_issues.md`（已知边界与易错点）、`roadmap.md`（未来规划）、`Shenwan_Index_Series_Algorithm_Text.md`（申万官方指数算法纯文字版，只读禁止修改） |
 | `vnpy_examples/` | vnpy 学习示例目录（配置、数据、图表、指标、回测等），按编号顺序学习 |
 
 ## 常用命令
@@ -132,9 +133,10 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - **申万模块已彻底脱离 vnpy**（不 import 任何 vnpy 包）：Tushare token 从本地配置 `shenwan_industry/config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；CLI 与 Web 均不读 vnpy `SETTINGS`。依赖（fastapi/uvicorn/pydantic/tushare/pandas）见根 `requirements.txt`，Windows 下仍可复用 vnpy 环境运行
 - Web 页面保存新 token 后，后台自动重置已构建的行业树上下文，下次查询用新 token 重建（`service.save_token` / `PreparedContext.ensure`）
 - 自由流通市值加权算法对停牌股票做了特殊处理（回退查询停牌前最近自由流通市值，`circ_mv × free_share / float_share` 三字段同行取值），改动时不要破坏该逻辑
-- **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/roadmap.md`
+- **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/docs/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
-- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/roadmap.md`
+- **申万官方指数算法纯文字版**见 `shenwan_industry/docs/Shenwan_Index_Series_Algorithm_Text.md`：官方发布文本，**只能读、禁止任何修改**（确需变更须用户提供新版本覆盖）；项目内所有市值类加权算法（自由流通市值加权、总市值加权）将逐步与其**完全同步**，同步进度见 `shenwan_industry/AGENTS.md` 第 8 节（当前尚未同步任何章节）
+- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/docs/roadmap.md`
 - 端口冲突已内置自动处理（方案 B）：Web 服务与桌面启动器都会先实测首选端口可绑定性，被占用或落在 Windows 动态保留段（`WinError 10013`）时自动 +1 顺延并打印实际端口（如 9010 不可用自动改 9024）；仍需要排查保留段时用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看，或 `net stop winnat && net start winnat`（管理员）释放后配合 `--port` 固定端口
 - **智能体浏览器测试用独立端口**：ZCode 等 AI 代理通过浏览器插件/工具对 Web 页面做自动化测试时，**不要占用默认端口 9010**（该端口可能正被用户桌面窗口或手动启动的服务占用）；应使用 `--port` 显式指定其他端口启动测试用服务（如 9400，避开常见保留段；服务端仍会自动顺延），测试完成后自行关闭该进程，避免端口冲突与遗留进程
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端

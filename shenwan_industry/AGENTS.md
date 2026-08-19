@@ -14,10 +14,12 @@
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、`sw_index_daily_available.json`（官方指数日线可用性缓存，探测生成、随仓库提交，每周六 00:00 过期、约合每周刷新）
   - `__init__.py`：空
   - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；`port_picker.py` 负责端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
-- 子文档（按需查阅）：
-  - `interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `known_issues.md`：已知边界与易错点（17 条）
-  - `roadmap.md`：未来规划（自建行业指数）与 Web 优化
+  - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
+- 子文档（按需查阅，均在 `docs/` 下）：
+  - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
+  - `docs/known_issues.md`：已知边界与易错点（17 条）
+  - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
+  - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
 
 ## 运行环境与数据源
 
@@ -80,9 +82,16 @@
 - 网络策略：`trade_cal` 1 次 + 每交易日 `daily` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退（**非简单重复 N 次单日接口**）；逐日 `daily` 线程池并发（8 worker）+ 固定速率（`MAX_DAILY_FETCH_RATE=7.5 次/秒`≈450 次/分钟，留 10% 余量）平摊请求，避免瞬时爆发触发 429；单日失败重试 3 次，仍失败抛错（不静默）
 - `timings`：`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`mv_fetch`/`mv_fallback`/`compute`/`trading_days`；`progress_callback`：`(percent, message)` 阶段回调，不参与数值计算；`detail`：写入 `stock_ret`/`last_close`/`ts_code_to_free_mv`/`ts_code_to_total_mv` 供 Web 子表，传 `None` 行为与旧版一致
 
+### 8. 申万官方指数算法（只读权威文档）与同步进度
+
+- `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方行业指数计算方法的纯文字版**（申银万国股价系列指数算法，官方发布文本，随仓库提交）
+- 该文件**只能阅读、禁止任何修改**（包括格式、文字、公式与错别字勘误）；确需变更必须先征求用户同意，由用户提供新版本覆盖
+- **未来目标**：把项目内**所有市值类加权算法**（自由流通市值加权、总市值加权，单日榜与区间榜）逐步与官方算法**完全同步**
+- **当前同步进度：尚未同步任何章节**（0/N）；后续每完成一个章节的对照与同步，必须在本节更新进度记录
+
 ## 强制核对流程（任务完成通知前必做）
 
-1. 报告"完成"前，重新通读本文件「核心算法约定」与 `interface_notes.md`「接口交互明细」
-2. 逐条对照交付与描述一致，核对点至少包括：涨跌幅是否仍由 `close/pre_close` 重算（尤其复权/除权除息）；等权平均公式与加权公式（`ΔM=M*p/(p+100)`、`M_pre=M/(1+p/100)`）；停牌按 0% 计入与 730 天回退；股票池过滤规则；区间榜参与口径 / 连乘基准 / 起始日权重锚定（第 7 节）；Tushare 接口、参数、分页、token 获取（`interface_notes.md`）
+1. 报告"完成"前，重新通读本文件「核心算法约定」、`docs/interface_notes.md`「接口交互明细」与 `docs/Shenwan_Index_Series_Algorithm_Text.md`（官方算法，只读）
+2. 逐条对照交付与描述一致，核对点至少包括：涨跌幅是否仍由 `close/pre_close` 重算（尤其复权/除权除息）；等权平均公式与加权公式（`ΔM=M*p/(p+100)`、`M_pre=M/(1+p/100)`）；**市值类加权口径与官方算法文本的对照（第 8 节）**；停牌按 0% 计入与 730 天回退；股票池过滤规则；区间榜参与口径 / 连乘基准 / 起始日权重锚定（第 7 节）；Tushare 接口、参数、分页、token 获取（`docs/interface_notes.md`）
 3. 发现不一致（无论本次引入还是历史遗留）**必须在最终回复中明确列出**，不得静默通过；涉及算法变更同步更新本文件并说明变更点
 4. 本文件与代码冲突时以代码为准，但必须把冲突点报告给用户
