@@ -17,7 +17,7 @@
   - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、`sync_progress.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
 - 子文档（按需查阅，均在 `docs/` 下）：
   - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `docs/known_issues.md`：已知边界与易错点（21 条）
+  - `docs/known_issues.md`：已知边界与易错点（22 条）
   - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
   - `docs/sync_progress.md`：官方指数算法同步进度记录（独立子文档，见第 8 节）
   - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
