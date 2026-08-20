@@ -94,13 +94,13 @@ def daily_rank_equal_weight(
     for node_l3 in tree.level_to_nodes[3]:
         l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
 
-    stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.constituent_stock_to_l3_node)
+    stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
     tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
 
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
-        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
 
@@ -188,13 +188,24 @@ def daily_rank_float_weight(
         l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
         l3_mv_map[node_l3.index_code] = (0, 0)
 
-    stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.constituent_stock_to_l3_node)
+    stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
     tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
+
+    # 新策略: 先批回填缺失市值(近→远全市场、早停), 大幅减少逐股点查; legacy 模式自动退化(不做批回填)
+    missing_codes = [c for c in stock_pool if pd.isna(ts_code_to_mv.get(c))]
+    if missing_codes:
+        _t0 = time.perf_counter()
+        market_data.resolve_missing_mv(missing_codes, date, cancel_check)
+        if timings is not None:
+            timings["mv_backfill"] = timings.get("mv_backfill", 0.0) + (time.perf_counter() - _t0)
+
+    # 整个上市期都没有市值数据(或 legacy 模式超 730 天)的股票: 跳过加权、仅参与等权榜(类同区间榜)
+    no_weight_stocks: list[str] = []
 
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
-        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
 
@@ -207,24 +218,26 @@ def daily_rank_float_weight(
         pct_chg = ts_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
         if pct_chg is None:
             continue  # 数据异常(涨跌幅非有限值), 不计入
+
+        # 处理当日停牌的情况: 需要获取停牌前的权重市值(最多支持连续停牌 2 年); 每股只解析一次, 供 L3/L2/L1 共用
+        weight_mv = ts_code_to_mv.get(ts_code)
+        if weight_mv is None or pd.isna(weight_mv):
+            if timings is not None:
+                _t0 = time.perf_counter()
+            weight_mv = resolve_mv(ts_code, date, cancel_check)
+            if timings is not None:
+                timings["mv_fallback"] = timings.get("mv_fallback", 0.0) + (
+                    time.perf_counter() - _t0
+                )
+            if weight_mv is None:
+                no_weight_stocks.append(ts_code)
+                continue
+            ts_code_to_mv[ts_code] = weight_mv
+
         for l_node, l_chg_map, l_mv_map in data_list:
             l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
             l_mv1, l_mv2 = l_mv_map.get(l_node.index_code)
             l_count_new = l_count + 1
-            weight_mv = ts_code_to_mv.get(ts_code)
-
-            # 处理当日停牌的情况: 需要获取停牌前的权重市值(最多支持连续停牌 2 年)
-            if weight_mv is None or pd.isna(weight_mv):
-                if timings is not None:
-                    _t0 = time.perf_counter()
-                weight_mv = resolve_mv(ts_code, date, cancel_check)
-                if timings is not None:
-                    timings["mv_fallback"] = timings.get("mv_fallback", 0.0) + (
-                        time.perf_counter() - _t0
-                    )
-                if weight_mv is None:
-                    raise ValueError(f"没有获取到 {ts_code} 的{mv_label}数据")
-                ts_code_to_mv[ts_code] = weight_mv
 
             # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值
             l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
@@ -235,6 +248,13 @@ def daily_rank_float_weight(
             l_pct_chg_new = l_mv1_new / l_mv2_new * 100
             l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
             l_mv_map[l_node.index_code] = (l_mv1_new, l_mv2_new)
+
+    if no_weight_stocks:
+        samples = ", ".join(no_weight_stocks[:3])
+        logger.warning(
+            f"{date_str} 无法获取 {len(no_weight_stocks)} 只成分股的{mv_label}"
+            f"(如 {samples}{'...' if len(no_weight_stocks) > 3 else ''}, 多为超长停牌/数据缺失), 仅参与等权榜"
+        )
 
     # 对行业涨幅由大到小排序
     l1_rank_list = sorted(
@@ -271,7 +291,8 @@ def run_daily_ranking(
     """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权榜, 自由流通市值加权榜, 总市值加权榜, timings)
 
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
-    timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback
+    timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback / float_backfill
+    / total_compute / total_fallback / total_backfill
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -310,6 +331,7 @@ def run_daily_ranking(
     )
     timings["float_compute"] = time.perf_counter() - t0
     timings["float_fallback"] = fw_timings.get("mv_fallback", 0.0)
+    timings["float_backfill"] = fw_timings.get("mv_backfill", 0.0)
 
     _notify(89.0, "计算总市值加权涨幅", "计算排行榜")
     tw_timings: dict[str, float] = {}
@@ -324,6 +346,7 @@ def run_daily_ranking(
     )
     timings["total_compute"] = time.perf_counter() - t0
     timings["total_fallback"] = tw_timings.get("mv_fallback", 0.0)
+    timings["total_backfill"] = tw_timings.get("mv_backfill", 0.0)
 
     return ew, fw, tw, timings
 
@@ -393,12 +416,13 @@ def rank_range(
     # 1) 参与股票: 起始日已在成分 且 区间末仍在 (共用 filter_stock_pool, 锚点=起始日, 末日=终点)
     if timings is not None:
         _t0 = time.perf_counter()
-    participating: set[str] = set(tree.constituent_stock_to_l3_node)
+    participating: set[str] = set(tree.all_member_codes)
     excluded = tree.filter_stock_pool(
         participating, start_date, end_date, cancel_check=cancel_check
     )
     excluded_before_listing: list[str] = excluded["not_listed"]  # 起始日尚未上市
-    excluded_mid_range: list[str] = excluded["in_date_later"]    # 中段才纳入
+    excluded_not_member: list[str] = excluded["not_member"]      # 起始日无归属区间(未来纳入/历史已退出)
+    excluded_left_mid: list[str] = excluded["left_mid_range"]    # 起始日在成分但区间末前已调出
     # 剔除告警按类型汇总为一行, 避免大量同类日志刷屏
     if excluded_before_listing:
         samples = ", ".join(
@@ -409,13 +433,23 @@ def rank_range(
             f"区间榜剔除起始日尚未上市股票 {len(excluded_before_listing)} 只"
             f"(如 {samples}{'...' if len(excluded_before_listing) > 3 else ''})"
         )
-    if excluded_mid_range:
+    if excluded_not_member:
         samples = ", ".join(
-            f"{c}(in_date={tree.ts_code_to_in_date.get(c)})" for c in excluded_mid_range[:3]
+            f"{c}(in_date={tree.ts_code_to_in_date.get(c, '?')})"
+            for c in excluded_not_member[:3]
         )
         logger.warning(
-            f"区间榜剔除中段纳入股票 {len(excluded_mid_range)} 只"
-            f"(如 {samples}{'...' if len(excluded_mid_range) > 3 else ''})"
+            f"区间榜剔除起始日无归属区间股票 {len(excluded_not_member)} 只"
+            f"(如 {samples}{'...' if len(excluded_not_member) > 3 else ''})"
+        )
+    if excluded_left_mid:
+        out_samples = []
+        for c in excluded_left_mid[:3]:
+            rec = tree._get_interval_on(c, start_str)
+            out_samples.append(f"{c}(out_date={rec[2] if rec else '?'})")
+        logger.warning(
+            f"区间榜剔除区间末前已调出股票 {len(excluded_left_mid)} 只"
+            f"(如 {', '.join(out_samples)}{'...' if len(excluded_left_mid) > 3 else ''})"
         )
     if timings is not None:
         timings["participate"] = time.perf_counter() - _t0
@@ -467,6 +501,13 @@ def rank_range(
     ts_code_to_total_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(weight_date)
     if timings is not None:
         timings["mv_fetch"] = time.perf_counter() - _t0
+    # 新策略: 先批回填缺失市值(近→远全市场、早停), 减少逐股点查; legacy 模式自动退化(不做批回填)
+    _missing_mv = [c for c in stock_ret if pd.isna(ts_code_to_free_mv.get(c))]
+    if _missing_mv:
+        _b0 = time.perf_counter()
+        market_data.resolve_missing_mv(_missing_mv, weight_date, cancel_check)
+        if timings is not None:
+            timings["mv_backfill"] = timings.get("mv_backfill", 0.0) + (time.perf_counter() - _b0)
     _notify(86.0, "市值拉取完成")
     _check_cancel()
     if timings is not None:
@@ -525,7 +566,7 @@ def rank_range(
         l3_tw[node_l3.index_code] = [0.0, 0.0, 0]
 
     for ts_code, ret in stock_ret.items():
-        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, start_date)
         if not l1_node or not l2_node or not l3_node:
             continue
 

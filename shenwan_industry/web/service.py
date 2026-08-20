@@ -617,7 +617,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     total_map: dict[str, float] = context["total_mv"]
     amount_map: dict[str, float] = context["amount"]
 
-    stock_pool = set(pct_map) | set(tree.constituent_stock_to_l3_node)
+    stock_pool = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(stock_pool, rank_date, rank_date)
 
     # 市值加权子表口径: float 用自由流通市值、total 用总市值, 缺失市值不参与
@@ -626,7 +626,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
-        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, rank_date)
         if not l1_node or not l2_node or not l3_node:
             continue
 
@@ -671,8 +671,9 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     weight_filtered = weight in ("float", "total")
 
     rows: list[dict[str, Any]] = []
+    start_date: datetime = context["start_date"]
     for ts_code, pct_chg in stock_ret.items():
-        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code)
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, start_date)
         if not l1_node or not l2_node or not l3_node:
             continue
 

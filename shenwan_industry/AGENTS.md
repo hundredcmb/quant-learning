@@ -17,7 +17,7 @@
   - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、`sync_progress.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
 - 子文档（按需查阅，均在 `docs/` 下）：
   - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `docs/known_issues.md`：已知边界与易错点（22 条）
+  - `docs/known_issues.md`：已知边界与易错点（23 条）
   - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
   - `docs/sync_progress.md`：官方指数算法同步进度记录（独立子文档，见第 8 节）
   - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
@@ -36,13 +36,14 @@
 
 ### 2. 成分股加载与过滤
 
-- `build_constituent_stocks_by_tushare(filter_unlisted=True)`：`pro.stock_basic` 一次拉取**上市(L)+退市(D)+暂停(P)** 三态股票（D 的 `delist_date` 记入 `ts_code_to_delist_date`）；`pro.index_member_all(offset, limit=1999)` 循环拉成分，按 `l3_code` 把 `ts_code` 同时挂入 L3 及其 L2/L1 祖先节点并登记 `constituent_stock_to_l3_node`，`in_date` 记入 `ts_code_to_in_date`；不在 `stock_basic` 的股票跳过，`l3_code` 找不到节点 → `ValueError`
-- `filter_stock_pool(stock_pool, anchor_date, end_date, cancel_check=None)`：锚点/末日参数化（单日榜传 `(date,date)`，区间榜传 `(起始日,末日)`），返回剔除类别明细 `{类别: [ts_code]}`（`no_industry` / `in_date_later` / `delisted` / `not_listed`）供区间榜汇总告警
+- `build_constituent_stocks_by_tushare(filter_unlisted=True)`：`pro.stock_basic` 一次拉取**上市(L)+退市(D)+暂停(P)** 三态股票（D 的 `delist_date` 记入 `ts_code_to_delist_date`）；**每次构建实时拉两次** `index_member_all`——默认（is_new=Y，当前成分）与 `is_new='N'`（历史退出，out_date 非空），合并为每股历史归属区间 `ts_code_membership`（`{ts_code: [(l3_code, in_date, out_date|None), ...]}`，按 in_date 升序；**不落盘、不缓存**）；当前成分(Y) 同时维护当前快照（`constituent_stock_to_l3_node` / 节点成分集合 / `ts_code_to_in_date`），历史退出(N) 只入 `ts_code_membership` / `all_member_codes`；不在 `stock_basic` 的股票跳过，Y 的 `l3_code` 找不到节点 → `ValueError`，N 的 l3 找不到节点则跳过并告警
+- `filter_stock_pool(stock_pool, anchor_date, end_date, cancel_check=None)`：锚点/末日参数化（单日榜传 `(date,date)`，区间榜传 `(起始日,末日)`），返回剔除类别明细 `{类别: [ts_code]}`（`no_industry` / `not_member` / `left_mid_range` / `delisted` / `not_listed`）供区间榜汇总告警
   - 剔除 `no_industry_stocks`（本实例累计解析失败、无行业归属的股票）
-  - 剔除 `in_date > anchor` 的成分（**消除"未来纳入"前视偏差**）
+  - 剔除 anchor 日**无覆盖归属区间**的成分（`not_member`：含未来纳入 `in_date>anchor` 与历史已退出 `out_date<=anchor`，由 `ts_code_membership` 判定，**消除"未来纳入"前视偏差并剔除历史退出残留**）
+  - 区间模式额外剔除 anchor 日覆盖区间在 end 前已结束的股票（`left_mid_range`：区间末前已调出，满足"区间末仍在"口径）
   - 剔除 `delist_date < end` 的股票（**修复退市股被整体剔除的幸存者偏差**；退市日当天及之前正常参与）
   - 剔除 `list_date >= anchor` 的股票（当天及之后才上市不参与）
-- 排名时股票池 = **当日行情股票 ∪ 已加载成分股**，再做上述过滤
+- 排名时股票池 = **当日行情股票 ∪ `all_member_codes`**（有(过)申万归属的全部股票）；归属解析 `get_stock_industry_nodes(ts_code, date)` **按历史区间取当日所属 L1/L2/L3**（有记录但当日不在任一行业则安静跳过，视为正常历史退出；无任何归属记录才记入无行业集合）
 
 ### 3. 行情获取与涨跌幅/自由流通市值口径（`market_data.MarketDataProvider` 方法）
 
@@ -63,7 +64,10 @@
 
 - `mv_kind`：`"free"`=自由流通市值加权、`"total"`=总市值加权；同一套公式、市值来源参数化（**不要复制两套代码**）
 - 单股单级公式（M=当日收盘权重市值，p=当日涨跌幅%）：当日新增市值 `ΔM=M*p/(p+100)`；开盘前市值 `M_pre=M/(1+p/100)`；行业涨幅 = `ΣΔM/ΣM_pre*100`（三级分别累计后取比值）
-- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date=前 730 天, end_date=date)`，**一次请求同时回退自由流通市值/总市值**（`resolve_free_mv` 返回自由流通市值并顺带缓存总市值，`resolve_total_mv` 优先读缓存避免重复请求），取降序第一条 `trade_date<=date` 的有效值作"停牌前最近自由流通市值"并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算，避免混搭不同日期股本；**最多支持连续停牌约 2 年（730 天）**，再往前查不到 → `ValueError`
+- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date)`，一次请求同时回退自由流通/总市值（`resolve_free_mv` 返回 free 并顺带缓存 total，`resolve_total_mv` 优先读缓存）并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算，避免混搭不同日期股本；**自由流通市值是决定性字段**（以 free 为准，避免 total 命中却漏掉 free）。回退策略（`MV_RESOLVE_MODE`，默认 `new`，可用 `SW_MV_RESOLVE_MODE=legacy` 切回对比）：
+  - **`new`（默认）**：每股先近 730 天窗口、按 **limit 阶梯（1 → 100 行，响应降序取最近，极小 payload）** 命中自由流通市值；未命中则**全窗回到上市日（19900101 起）——尽量不放弃任何股票**，只有整个上市期都没有 `daily_basic` 数据才跳仅等权榜并汇总告警；近期行 `free_share>float_share`（股本异常、total 正常）时会逐级放大/向更早行找到正常 free
+  - **`legacy`（保留以对比耗时）**：旧行为——固定前 730 天窗口全量扫描，超 2 年停牌取不到 → 仅参与等权榜并告警
+  - 可选批回填（`SW_MV_BACKFILL_MAX_DAYS>0`，默认 0 关闭）：突发大量短期停牌时以少量全市场请求换掉逐股点查；历史稠密长期停牌日实测反而更慢，不建议开
 - 停牌股涨幅按 0% 计 → `ΔM=0`，但 `M_pre=M` 仍计入分母（稀释行业涨幅）；数据异常跳过规则与等权一致，回退扫描跳过 NaN 行取最近有效值
 - 其余规则（股票池、节点解析、排序、返回结构）与等权一致
 
