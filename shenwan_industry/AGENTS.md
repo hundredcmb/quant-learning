@@ -14,11 +14,12 @@
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、`sw_index_daily_available.json`（官方指数日线可用性缓存，探测生成、随仓库提交，每周六 00:00 过期、约合每周刷新）
   - `__init__.py`：空
   - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；`port_picker.py` 负责端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
-  - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
+  - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、`sync_progress.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
 - 子文档（按需查阅，均在 `docs/` 下）：
   - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `docs/known_issues.md`：已知边界与易错点（17 条）
+  - `docs/known_issues.md`：已知边界与易错点（21 条）
   - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
+  - `docs/sync_progress.md`：官方指数算法同步进度记录（独立子文档，见第 8 节）
   - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
 
 ## 运行环境与数据源
@@ -48,7 +49,7 @@
 - `get_ts_code_to_pct_chg(date)`：`pro.daily(trade_date, offset, limit=5999)` 循环拉全市场；**涨跌幅自行重算** `pct=(close−pre_close)/pre_close*100`（不用接口 `pct_chg` 字段）；按日期存内存缓存
 - **涨跌幅口径（已实测验证）**：`daily.pre_close` 在除权除息日返回交易所**除权参考价**（实测：招行 20250711 除息 `46.24=48.24−2.0`；药明康德 20190702 除权 `64.66=(91.10−0.58)/1.4`），故 `close/pre_close` 与 `adj_factor` 比值法**等价**（实测 −1.2976% vs −1.2980%），无需额外拉取 `adj_factor`
 - 该口径为**价格指数口径**：除权除息无虚假跳变，但现金分红**不计入收益**（除息价差被除权参考价抵消）；做"红利再投资全收益指数"需在除息日另行加回股息率；改动涨跌幅逻辑须保持该口径，如改用 `adj_factor`/复权行情须确认同一价格口径并同步更新本文件
-- `get_ts_code_to_free_mv(date)`：`pro.daily_basic(ts_code='', trade_date, fields='ts_code,circ_mv,total_mv,free_share,float_share', offset, limit=5999)` 循环拉全市场（官方上限 6000）；**同一次请求同时缓存自由流通市值与总市值**（`get_ts_code_to_total_mv` 读同一缓存，零额外请求）；**自由流通市值 = `circ_mv × free_share / float_share`**（三字段取同一行、同一交易日；`circ_mv`/`total_mv` 单位万元、`free_share`/`float_share` 单位万股，加权只用比值不影响结果）；股本异常防御：三字段任一缺失/非有限值、`free_share`/`float_share` ≤ 0 或比例 >1（自由流通股本超过流通股本，数据异常）时该股不记入，等同无市值处理；按日期存内存缓存
+- `get_ts_code_to_free_mv(date)`：`pro.daily_basic(ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share', offset, limit=5999)` 循环拉全市场（官方上限 6000）；**同一次请求同时缓存自由流通市值与总市值**（`get_ts_code_to_total_mv` 读同一缓存，零额外请求）；**自由流通市值 = `free_share × close`**（自由流通股本×收盘价，三字段取同一行、同一交易日，等价于旧式 `circ_mv × free_share / float_share`：恒等推导 `circ_mv = float_share × close`，实测 `daily_basic.close` 与 `daily.close` 逐股完全一致；`total_mv` 单位万元、`free_share`/`float_share` 单位万股、`close` 单位元，加权只用比值不影响结果）；股本异常防御：三字段任一缺失/非有限值、`close`/`free_share`/`float_share` ≤ 0 或比例 >1（自由流通股本超过流通股本，数据异常）时该股不记入，等同无市值处理；按日期存内存缓存。**口径来源说明**：`free_share` 为 Tushare 自有自由流通口径（黑盒返回最终股本，无法获取扣减明细），与官方《编制说明》附录二六类扣减定义**无法逐条核对**，本模块以 Tushare 口径为准（见 `docs/known_issues.md` 第 18 条）
 
 ### 4. 单日等权涨幅 `daily_rank_equal_weight(tree, market_data, date)`
 
@@ -62,7 +63,7 @@
 
 - `mv_kind`：`"free"`=自由流通市值加权、`"total"`=总市值加权；同一套公式、市值来源参数化（**不要复制两套代码**）
 - 单股单级公式（M=当日收盘权重市值，p=当日涨跌幅%）：当日新增市值 `ΔM=M*p/(p+100)`；开盘前市值 `M_pre=M/(1+p/100)`；行业涨幅 = `ΣΔM/ΣM_pre*100`（三级分别累计后取比值）
-- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,circ_mv,total_mv,free_share,float_share', start_date=前 730 天, end_date=date)`，**一次请求同时回退自由流通市值/总市值**（`resolve_free_mv` 返回自由流通市值并顺带缓存总市值，`resolve_total_mv` 优先读缓存避免重复请求），取降序第一条 `trade_date<=date` 的有效值作"停牌前最近自由流通市值"并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算比值，避免混搭不同日期股本；**最多支持连续停牌约 2 年（730 天）**，再往前查不到 → `ValueError`
+- 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date=前 730 天, end_date=date)`，**一次请求同时回退自由流通市值/总市值**（`resolve_free_mv` 返回自由流通市值并顺带缓存总市值，`resolve_total_mv` 优先读缓存避免重复请求），取降序第一条 `trade_date<=date` 的有效值作"停牌前最近自由流通市值"并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算，避免混搭不同日期股本；**最多支持连续停牌约 2 年（730 天）**，再往前查不到 → `ValueError`
 - 停牌股涨幅按 0% 计 → `ΔM=0`，但 `M_pre=M` 仍计入分母（稀释行业涨幅）；数据异常跳过规则与等权一致，回退扫描跳过 NaN 行取最近有效值
 - 其余规则（股票池、节点解析、排序、返回结构）与等权一致
 
@@ -87,7 +88,7 @@
 - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方行业指数计算方法的纯文字版**（申银万国股价系列指数算法，官方发布文本，随仓库提交）
 - 该文件**只能阅读、禁止任何修改**（包括格式、文字、公式与错别字勘误）；确需变更必须先征求用户同意，由用户提供新版本覆盖
 - **未来目标**：把项目内**所有市值类加权算法**（自由流通市值加权、总市值加权，单日榜与区间榜）逐步与官方算法**完全同步**
-- **当前同步进度：尚未同步任何章节**（0/N）；后续每完成一个章节的对照与同步，必须在本节更新进度记录
+- **同步进度**：单独记录在独立子文档 `docs/sync_progress.md`（本文件只保留规则、不内嵌进度明细）；每完成一个章节的对照与同步，必须到该文件更新进度记录
 
 ## 强制核对流程（任务完成通知前必做）
 

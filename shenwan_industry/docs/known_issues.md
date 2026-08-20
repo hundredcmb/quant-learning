@@ -1,6 +1,6 @@
 # 申万模块：已知边界与易错点
 
-本文件为 `shenwan_industry/AGENTS.md` 的子文档，汇总模块已知边界与易错点（共 17 条，均经实测验证或代码确认）。涉及本模块任务时，改动前后请对照本清单确认未破坏既有行为。
+本文件为 `shenwan_industry/AGENTS.md` 的子文档，汇总模块已知边界与易错点（共 21 条，均经实测验证或代码确认）。涉及本模块任务时，改动前后请对照本清单确认未破坏既有行为。
 
 1. 涨跌幅口径见 `shenwan_industry/AGENTS.md` 第 3 节；改动时必须保持该口径，或明示切换为全收益口径
 2. 停牌股等权按 0% 计入平均、加权按 0% 涨幅 + 停牌前自由流通市值计入分母；停牌占比高的日期，等权涨幅会被系统性拉低
@@ -10,7 +10,7 @@
 6. `no_industry_stocks` 在 tree 实例上累积，后续日期过滤会一直沿用
 7. `MarketDataProvider` 内存缓存按日期键分开；同一实例跨日期复用不会串数据（停牌回填值也写在对应日期字典里）
 8. 非交易日 `daily` 返回空 → 排名方法抛 `ValueError`
-9. NaN/缺失值防御（已加固）：`pre_close`/`close` 缺失、为 0 或非有限值时，`get_ts_code_to_pct_chg` 记为 None 并告警，排名时该股票不计入平均/加权（不再污染 NaN）；自由流通市值 = `circ_mv × free_share / float_share`，三字段缺失/为 0/非有限值或比例 >1（数据异常）时该股不记入（等同无市值），缺失时走停牌回退，回退扫描同样跳过异常行；`stock_basic` 的 `list_date` 为 NaN/None 时跳过（不再 `strptime` 崩溃）
+9. NaN/缺失值防御（已加固）：`pre_close`/`close` 缺失、为 0 或非有限值时，`get_ts_code_to_pct_chg` 记为 None 并告警，排名时该股票不计入平均/加权（不再污染 NaN）；自由流通市值 = `free_share × close`（等价于 `circ_mv × free_share / float_share`），三字段缺失/为 0/非有限值或比例 >1（数据异常）时该股不记入（等同无市值），缺失时走停牌回退，回退扫描同样跳过异常行；`stock_basic` 的 `list_date` 为 NaN/None 时跳过（不再 `strptime` 崩溃）
 10. 复权字段单位（已实测验证）：tushare `dividend` 的 `stk_div` 为每股送转股数（10送10 → 1.0）、`cash_div` 为每股派现元（10派10 → 1.0）；`adj_factor` 与 `daily.pre_close` 同属**除权参考价（价格）口径**，比值收益 = close/除权参考价 − 1，现金分红不计入收益；曾被独立实现的"送转除、派现减"静态前复权算法（原 `qfq_adjust.py`，已删除）与上述口径一致
 11. 停牌复牌（已实测验证）：`daily` 在停牌日**没有记录**；普通复牌日 `pre_close` = 停牌前最后收盘价（实测 300862/300955），停牌期间发生除权除息时复牌日 `pre_close` = 交易所发布的除权参考价，因此复牌日涨跌幅直接用 `close/pre_close` 即为交易所口径，无需额外处理
 12. **除权参考价可能不是"免费送转"公式**（000793.SZ 实测案例）：*ST华闻 2026-06-22 复牌日为重整计划"有偿转增"（10转12，转增平均价格 2.41 元/股），交易所除权参考价 = (前收 2.63 + 2.41×1.2)/(1+1.2) = **2.51**，而非普通免费送转的 2.63/2.2≈1.20；`dividend` 接口只含转增比例、不含转增价格，**无法自行推导除权参考价**；第三方"不复权"行情（如东财显示 0.38%）未采用交易所参考价，与官方口径（Tushare `pct_chg` 5.18%）不同。**结论：当日涨跌幅/昨收一律以 `daily.pre_close`（交易所口径）为准，`dividend` 只用于了解方案本身**
@@ -19,3 +19,7 @@
 15. 性能约定：DataFrame 逐行遍历统一使用 `itertuples(index=False)`（实测 5500 行 × 66 天解析：`iterrows` 约 5.7s vs `itertuples` 约 0.1s），不要改回 `iterrows`；行内取值用 `row.列名`（可选列用 `getattr(row, '列名', None)`），转 dict 用 `row._asdict()`
 16. `sw_daily` 字段单位（已实测验证，官方文档确认）：`amount` 为**万元**、`vol` 为**万股**（非元/手），后端透传不改单位；前端 `formatAxisMax` 按"万"为单位解释（≥1e4 显示亿、≥1 显示万、<1 显示元数字），`formatAmount` 为 万元÷1e4→亿元，`formatVolume` 直接以"万股"标注——改动前端单位换算前先确认输入单位
 17. 行业指数 K 线可用性（L2/L3）：官方指数日线覆盖非全量（实测 L2 124/134、L3 259/346 有数据）；可用性由 `sw_daily(trade_date=最新交易日)` 全市场一次拉取与 `data/SW2021.json` 求交集判定，缓存于 `shenwan_industry/data/sw_index_daily_available.json`（每周六 00:00 过期、约合每周刷新，随仓库提交）；前端据此决定行业代码/名称是否可点击，无官方日线的行业保持纯文本（不提示"无指数"）；探测失败时回退为仅 L1 可点击
+18. **自由流通口径无法与官方附录二核对（已知边界，不可核实）**：官方《编制说明》附录二定义自由流通量需从无限售条件 A 股中扣减六类非自由流通量（国有股、法人股、管理层持股、职工股、其他受限股、特殊情况等，正文已录入 `Shenwan_Index_Series_Algorithm_Text.md` 附录二）；但项目唯一的数据源 Tushare `daily_basic` 只返回 `free_share`（自由流通股本）、`close`（收盘价）等**最终结果**，属 Tushare 自有口径的黑盒数据，**无法获取背后的扣减明细，故无法（也不需要）逐条核对官方六类定义**；项目现状即以 Tushare 口径为准（`free_share × close`，见 AGENTS.md 第 3 节；等价于旧式 `circ_mv × free_share / float_share`），两者是否完全一致无从验证，属可接受的已知边界，后续同步工作不应再要求对齐附录二名目
+19. **公司停牌一律按一般停牌处理（有意取舍）**：停牌按 0% 涨幅、停牌前自由流通市值计入加权分母（见 AGENTS.md 第 5 节）；官方 4.4.10 的「股改公司复牌首日退出指数、复牌后第 2 个交易日重新计入」**未实现**——Tushare 无法标识停牌是否属股改，且 2010 年后股改基本完毕、影响可忽略；对照结论与「全部视为一般停牌」假设见 `docs/sync_progress.md` 4.4.10
+20. **送转股股本在除权日当天即更新（已实测验证）**：`daily_basic` 的 `total_share`/`float_share`/`free_share` 在**除权日（ex_date）当天**即按送转比例更新（实测 301261.SZ 10转2 → `free_share` 精确 ×1.2000；603400.SH 10转3+派0.3 → ×1.294，Tushare 按实际登记股本），A 股红股上市日（`div_listdate`）＝除权日；官方 4.4.4 面向「股本滞后到上市日」的「除权日至上市日 / 上市日」两阶段在 A 股 `daily_basic` 中不出现（扫 2026-06~07 全部除权日，唯一「上市日晚于除权日」样本 200028.SZ 为 B 股、不在 A 股 daily_basic 内），故项目靠 `M=p_t·q_t`（当日股本已含送转）+ `pre_close` 除权参考价口径自洽即可，无需实现送转滞后阶段；对照结论见 `docs/sync_progress.md` 4.4.4（捆绑派现的价格口径差异见 AGENTS.md 第 3 节）
+21. **`circ_mv` 与 `free_share`/`float_share` 在股本变动窗口可能不同步（已实测验证，建议固化用 `free_share × close`）**：正常情况下 `daily_basic.circ_mv = float_share × close` 精确成立（逐日核对比例恒 1.0）；但非分红类股本变动时（实测 300806.SZ：20260717 `float_share`/`free_share` 突发 +1041.30 万股，0717~0724 窗口内），`circ_mv` 仍按变动前旧基数计算（`circ_mv/close` ≈ 旧 `float_share`），该窗口 `circ_mv/(float_share×close)≈0.968`、旧式 `circ_mv×free_share/float_share` 与新式 `free_share×close` 相差约 3.3%；**结论：自由流通市值一律用 `free_share × close`（与当日报告股本自洽、即官方「自由流通量×市价」），勿改用 `circ_mv` 派生，避免继承其更新滞后**

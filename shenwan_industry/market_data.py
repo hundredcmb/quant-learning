@@ -2,7 +2,7 @@
 申万行业行情数据层 (MarketDataProvider)
 
 - 行情/市值获取: daily / daily_basic, 带按日内存缓存(涨跌幅口径见 shenwan_industry/AGENTS.md 第 3 节)
-- 停牌自由流通市值回退: 730 天内最近一个有效值(circ_mv/free_share/float_share 同行取值)
+- 停牌自由流通市值回退: 730 天内最近一个有效值(close/free_share/float_share 同行取值)
 - 交易日历: trade_cal
 - 区间逐日行情: 并发拉取 + 固定速率限流 + 重试
 - API 调用计数: 构造时包装 pro, snapshot_api_calls() 取快照,
@@ -50,26 +50,29 @@ DAILY_FETCH_RETRY = 3         # 单日失败重试次数(网络抖动/瞬时 429
 
 
 def _calc_free_mv(
-    circ_mv,
+    close,
     free_share,
     float_share,
 ) -> float | None:
-    """自由流通市值(万元) = circ_mv × free_share / float_share, 三字段须取自同一交易日
+    """自由流通市值(万元) = free_share × close (自由流通股本×收盘价), 三字段须取自同一交易日
 
-    任一字段缺失/非有限值, 或 free_share/float_share ≤ 0、比例 >1(自由流通股本超过流通股本,
-    数据异常)时返回 None, 该股不参与加权(等同无市值处理)
+    等价于旧式 circ_mv × free_share / float_share (流通市值×自由流通占比, 恒等推导:
+    circ_mv=float_share×close 时两式相等); 实测 daily_basic.close 与 daily.close 逐股完全一致,
+    且此式即官方《编制说明》附录「自由流通市值 = 自由流通量 × 市价」的直接表述。
+    任一字段缺失/非有限值, 或 close/free_share/float_share ≤ 0、比例 >1(自由流通股本超过
+    流通股本, 数据异常)时返回 None, 该股不参与加权(等同无市值处理)
     """
-    if pd.isna(circ_mv) or pd.isna(free_share) or pd.isna(float_share):
+    if pd.isna(close) or pd.isna(free_share) or pd.isna(float_share):
         return None
-    circ_f, free_f, float_f = float(circ_mv), float(free_share), float(float_share)
-    if not (math.isfinite(circ_f) and math.isfinite(free_f) and math.isfinite(float_f)):
+    close_f, free_f, float_f = float(close), float(free_share), float(float_share)
+    if not (math.isfinite(close_f) and math.isfinite(free_f) and math.isfinite(float_f)):
         return None
-    if float_f <= 0 or free_f <= 0:
+    if close_f <= 0 or float_f <= 0 or free_f <= 0:
         return None
     ratio = free_f / float_f
     if ratio > 1.0:
         return None
-    return circ_f * ratio
+    return free_f * close_f
 
 
 class MarketDataProvider:
@@ -159,8 +162,9 @@ class MarketDataProvider:
     def get_ts_code_to_free_mv(self, date: datetime) -> dict[str, float]:
         """获取A股某日的自由流通市值数据: ts_code -> 自由流通市值(万元)
 
-        自由流通市值 = circ_mv × free_share / float_share, 三字段取同一行(同一交易日);
-        与总市值同一次请求拉取并缓存; 股本异常(缺失/除零/比例越界)的股票不记入
+        自由流通市值 = free_share × close (自由流通股本×收盘价), 三字段取同一行(同一交易日),
+        等价于 circ_mv × free_share / float_share;
+        与总市值同一次请求拉取并缓存; 股本异常(缺失/非正/比例越界)的股票不记入
         """
         ts_code_to_free_mv: dict[str, float] = self.ts_code_to_free_mv_cache.get(date) or {}
         if ts_code_to_free_mv:
@@ -174,14 +178,14 @@ class MarketDataProvider:
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
-                fields='ts_code,circ_mv,total_mv,free_share,float_share',
+                fields='ts_code,close,total_mv,free_share,float_share',
                 offset=offset,
                 limit=batch_size,
             )
             for row in df.itertuples(index=False):
                 ts_code = row.ts_code
                 free_mv = _calc_free_mv(
-                    row.circ_mv,
+                    row.close,
                     getattr(row, "free_share", None),
                     getattr(row, "float_share", None),
                 )
@@ -214,14 +218,14 @@ class MarketDataProvider:
     ) -> tuple[float | None, float | None]:
         """停牌股回退: 一次请求查 730 天内最近的有效自由流通市值与总市值, 查不到返回 None
 
-        自由流通市值要求 circ_mv/free_share/float_share 取自同一行(同一交易日)计算比值,
+        自由流通市值要求 close/free_share/float_share 取自同一行(同一交易日)计算,
         避免混搭不同日期的股本; 总市值可独立取最近有效值
         """
         if cancel_check is not None:
             cancel_check()
         df = self.pro.daily_basic(
             ts_code=ts_code,
-            fields='trade_date,circ_mv,total_mv,free_share,float_share',
+            fields='trade_date,close,total_mv,free_share,float_share',
             start_date=(date - timedelta(days=730)).strftime("%Y%m%d"),
             end_date=date.strftime("%Y%m%d"),
         )
@@ -236,7 +240,7 @@ class MarketDataProvider:
                 continue
             if free is None:
                 free = _calc_free_mv(
-                    row.circ_mv,
+                    row.close,
                     getattr(row, "free_share", None),
                     getattr(row, "float_share", None),
                 )
