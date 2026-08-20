@@ -136,7 +136,7 @@ quant-learning 是一个 A 股量化学习项目（"量化小白从零开始学�
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少）；历史成分缓存与指数构建规划见 `shenwan_industry/docs/roadmap.md`
 - 本模块的算法权威描述与强制核对流程见 `shenwan_industry/AGENTS.md`；涉及申万行业的任务在完成通知用户前，必须先对照该文件核对算法一致性
 - **申万官方指数算法纯文字版**见 `shenwan_industry/docs/Shenwan_Index_Series_Algorithm_Text.md`：官方发布文本，**只能读、禁止任何修改**（确需变更须用户提供新版本覆盖）；项目内所有市值类加权算法（自由流通市值加权、总市值加权）将逐步与其**完全同步**，同步进度见 `shenwan_industry/docs/sync_progress.md`（独立文档，AGENTS.md 第 8 节导读）
-- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/docs/roadmap.md`
+- 本地 Web 服务入口为 `shenwan_industry/web/server.py`，浏览器访问 `http://127.0.0.1:9010/`；首版采用单 worker 串行任务队列，长任务通过前端轮询进度条展示，并支持取消运行中/排队中的任务。多 worker 并发暂未实现，已写入 `shenwan_industry/docs/roadmap.md`。**服务启动/保存 token 后会在后台预建行业树**（token 已配置时，`service.prebuild_context` → `PreparedContext.build_async`，构建互斥，首次查询即就绪、无需等建树）
 - 端口冲突已内置自动处理（方案 B）：Web 服务与桌面启动器都会先实测首选端口可绑定性，被占用或落在 Windows 动态保留段（`WinError 10013`）时自动 +1 顺延并打印实际端口（如 9010 不可用自动改 9024）；仍需要排查保留段时用 `netsh interface ipv4 show excludedportrange protocol=tcp` 查看，或 `net stop winnat && net start winnat`（管理员）释放后配合 `--port` 固定端口
 - **智能体浏览器测试用独立端口**：ZCode 等 AI 代理通过浏览器插件/工具对 Web 页面做自动化测试时，**不要占用默认端口 9010**（该端口可能正被用户桌面窗口或手动启动的服务占用）；应使用 `--port` 显式指定其他端口启动测试用服务（如 9400，避开常见保留段；服务端仍会自动顺延），测试完成后自行关闭该进程，避免端口冲突与遗留进程
 - 桌面窗口客户端入口为 `shenwan_industry/web/desktop.pyw`，Windows 使用 `pythonw.exe` 双击启动（Linux/macOS 用 `.venv/bin/python` 直接运行）会后台拉起 FastAPI 并打开 Qt WebEngine 窗口；关闭窗口会自动结束由该启动器拉起的后端

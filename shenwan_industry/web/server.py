@@ -164,6 +164,7 @@ def main() -> None:
     if port != args.port:
         print(f"警告：端口 {args.port} 不可用，已自动改用端口 {port}", flush=True)
     print(f"申万行业研究台已启动：http://{args.host}:{port}/", flush=True)
+    service.prebuild_context()  # 后台预建行业树(不阻塞启动), 首次查询即可就绪
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 

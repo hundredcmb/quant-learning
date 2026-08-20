@@ -110,9 +110,10 @@ def _mask_token(token: str) -> str:
 
 
 def save_token(token: str) -> None:
-    """保存 token 并重置已构建的行业数据上下文，下次查询自动用新 token 重建。"""
+    """保存 token 并重置已构建的行业数据上下文，随后后台用新 token 重建（首次查询即可就绪）。"""
     set_token(token)
     _CONTEXT.reset()
+    _CONTEXT.build_async()
 
 
 def test_token() -> tuple[bool, str]:
@@ -386,38 +387,78 @@ class PreparedContext:
     """缓存行业树与行情数据层，首版仅单 worker 访问。
 
     MarketDataProvider 内部包装 pro 并累计 API 调用计数，任务前后快照求差即本次任务调用；
-    行情/市值按日期内存缓存跨任务复用（单 worker 串行，无需加锁）。
+    行情/市值按日期内存缓存跨任务复用（单 worker 串行）。
     构建时记录所用 token，token 变更（页面重新保存）后自动重建。
+    支持启动后后台预建（build_async）：任一时刻至多一个构建在跑（_building + 条件变量），
+    任务侧 ensure 遇到预建进行中会等待其完成、不重复构建；预建失败自动回退到首次查询构建。
     """
 
     def __init__(self) -> None:
         self._tree: ShenWanIndustryTree | None = None
         self._provider: MarketDataProvider | None = None
         self._token: str | None = None
-        self._lock = threading.Lock()
+        self._building = False  # 是否有(后台或任务触发的)构建正在进行
+        self._cond = threading.Condition()  # 兼作锁与构建完成通知
+
+    def _do_build(self, token: str) -> tuple[ShenWanIndustryTree, MarketDataProvider]:
+        """实际构建（调用方须已置 _building=True 且保证同一时刻只一个构建在跑）"""
+        base_pro = ts.pro_api(token=token)
+        provider = MarketDataProvider(base_pro)
+        tree = ShenWanIndustryTree(tushare_pro=provider.pro)
+        tree.build_industries()
+        tree.build_constituent_stocks_by_tushare()
+        with self._cond:
+            self._tree = tree
+            self._provider = provider
+            self._token = token
+        return tree, provider
 
     def ensure(self) -> tuple[ShenWanIndustryTree, MarketDataProvider]:
-        with self._lock:
+        with self._cond:
             token = _get_token()
             if self._tree is not None and token != self._token:
                 self._tree = None
                 self._provider = None
                 self._token = None
+            while self._building:
+                self._cond.wait()  # 后台/他处构建进行中, 等待其完成
             if self._tree is not None:
                 return self._tree, self._provider
+            self._building = True
+        try:
+            return self._do_build(token)
+        finally:
+            with self._cond:
+                self._building = False
+                self._cond.notify_all()
 
-            base_pro = ts.pro_api(token=token)
-            provider = MarketDataProvider(base_pro)
-            tree = ShenWanIndustryTree(tushare_pro=provider.pro)
-            tree.build_industries()
-            tree.build_constituent_stocks_by_tushare()
-            self._tree = tree
-            self._provider = provider
-            self._token = token
-            return tree, provider
+    def build_async(self) -> None:
+        """后台预建行业树（服务启动/保存 token 后调用）；token 未配置则跳过，
+        保持 not-ready，待保存 token 时再触发。构建失败由 worker 捕获记录、不阻塞服务，
+        且 ensure 的懒构建会自动兜底重试。
+        """
+        token = get_token()
+        if not token:
+            return
+        with self._cond:
+            if self._tree is not None or self._building:
+                return
+            self._building = True
+
+        def _worker() -> None:
+            try:
+                self._do_build(token)
+            except Exception:
+                logger.exception("后台预建行业树失败, 将回退到首次查询时构建")
+            finally:
+                with self._cond:
+                    self._building = False
+                    self._cond.notify_all()
+
+        threading.Thread(target=_worker, daemon=True, name="shenwan-prebuild").start()
 
     def reset(self) -> None:
-        with self._lock:
+        with self._cond:
             self._tree = None
             self._provider = None
             self._token = None
@@ -427,6 +468,11 @@ class PreparedContext:
 
 
 _CONTEXT = PreparedContext()
+
+
+def prebuild_context() -> None:
+    """服务启动后在后台预建行业树（token 未配置则跳过），首次查询即可就绪。"""
+    _CONTEXT.build_async()
 
 
 def run_worker(
