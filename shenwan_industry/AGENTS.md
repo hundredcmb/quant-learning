@@ -67,7 +67,7 @@
 - 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date)`，一次请求同时回退自由流通/总市值（`resolve_free_mv` 返回 free 并顺带缓存 total，`resolve_total_mv` 优先读缓存）并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算，避免混搭不同日期股本；**自由流通市值是决定性字段**（以 free 为准，避免 total 命中却漏掉 free）。回退策略（`MV_RESOLVE_MODE`，默认 `new`，可用 `SW_MV_RESOLVE_MODE=legacy` 切回对比）：
   - **`new`（默认）**：每股先近 730 天窗口、按 **limit 阶梯（1 → 100 行，响应降序取最近，极小 payload）** 命中自由流通市值；未命中则**全窗回到上市日（19900101 起）——尽量不放弃任何股票**，只有整个上市期都没有 `daily_basic` 数据才跳仅等权榜并汇总告警；近期行 `free_share>float_share`（股本异常、total 正常）时会逐级放大/向更早行找到正常 free
   - **`legacy`（保留以对比耗时）**：旧行为——固定前 730 天窗口全量扫描，超 2 年停牌取不到 → 仅参与等权榜并告警
-  - 可选批回填（`SW_MV_BACKFILL_MAX_DAYS>0`，默认 0 关闭）：突发大量短期停牌时以少量全市场请求换掉逐股点查；历史稠密长期停牌日实测反而更慢，不建议开
+  - **并发解析**：缺失市值股票的逐股回退查询由 `resolve_missing_mv` 用线程池（`MV_RESOLVE_WORKERS`，默认 8）并发补齐并写缓存，把 N 次串行网络往返压到 ~N/workers 倍（实测 2026-07 区间首查 mv 阶段 18.6s → ~2s）；曾评估"批量回填"方案，实测冗余/更差，已移除
 - 停牌股涨幅按 0% 计 → `ΔM=0`，但 `M_pre=M` 仍计入分母（稀释行业涨幅）；数据异常跳过规则与等权一致，回退扫描跳过 NaN 行取最近有效值
 - 其余规则（股票池、节点解析、排序、返回结构）与等权一致
 

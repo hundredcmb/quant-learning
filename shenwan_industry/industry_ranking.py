@@ -191,13 +191,13 @@ def daily_rank_float_weight(
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
     tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
 
-    # 新策略: 先批回填缺失市值(近→远全市场、早停), 大幅减少逐股点查; legacy 模式自动退化(不做批回填)
+    # 新策略: 先并发补齐缺失市值(线程池, 见 market_data.resolve_missing_mv), 避免循环内逐股串行点查
     missing_codes = [c for c in stock_pool if pd.isna(ts_code_to_mv.get(c))]
     if missing_codes:
         _t0 = time.perf_counter()
         market_data.resolve_missing_mv(missing_codes, date, cancel_check)
         if timings is not None:
-            timings["mv_backfill"] = timings.get("mv_backfill", 0.0) + (time.perf_counter() - _t0)
+            timings["mv_resolve"] = timings.get("mv_resolve", 0.0) + (time.perf_counter() - _t0)
 
     # 整个上市期都没有市值数据(或 legacy 模式超 730 天)的股票: 跳过加权、仅参与等权榜(类同区间榜)
     no_weight_stocks: list[str] = []
@@ -291,8 +291,8 @@ def run_daily_ranking(
     """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权榜, 自由流通市值加权榜, 总市值加权榜, timings)
 
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
-    timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback / float_backfill
-    / total_compute / total_fallback / total_backfill
+    timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback / float_resolve
+    / total_compute / total_fallback / total_resolve
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -331,7 +331,7 @@ def run_daily_ranking(
     )
     timings["float_compute"] = time.perf_counter() - t0
     timings["float_fallback"] = fw_timings.get("mv_fallback", 0.0)
-    timings["float_backfill"] = fw_timings.get("mv_backfill", 0.0)
+    timings["float_resolve"] = fw_timings.get("mv_resolve", 0.0)
 
     _notify(89.0, "计算总市值加权涨幅", "计算排行榜")
     tw_timings: dict[str, float] = {}
@@ -346,7 +346,7 @@ def run_daily_ranking(
     )
     timings["total_compute"] = time.perf_counter() - t0
     timings["total_fallback"] = tw_timings.get("mv_fallback", 0.0)
-    timings["total_backfill"] = tw_timings.get("mv_backfill", 0.0)
+    timings["total_resolve"] = tw_timings.get("mv_resolve", 0.0)
 
     return ew, fw, tw, timings
 
@@ -501,13 +501,13 @@ def rank_range(
     ts_code_to_total_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(weight_date)
     if timings is not None:
         timings["mv_fetch"] = time.perf_counter() - _t0
-    # 新策略: 先批回填缺失市值(近→远全市场、早停), 减少逐股点查; legacy 模式自动退化(不做批回填)
+    # 新策略: 先并发补齐缺失市值(线程池, 见 market_data.resolve_missing_mv), 减少逐股点查
     _missing_mv = [c for c in stock_ret if pd.isna(ts_code_to_free_mv.get(c))]
     if _missing_mv:
         _b0 = time.perf_counter()
         market_data.resolve_missing_mv(_missing_mv, weight_date, cancel_check)
         if timings is not None:
-            timings["mv_backfill"] = timings.get("mv_backfill", 0.0) + (time.perf_counter() - _b0)
+            timings["mv_resolve"] = timings.get("mv_resolve", 0.0) + (time.perf_counter() - _b0)
     _notify(86.0, "市值拉取完成")
     _check_cancel()
     if timings is not None:
