@@ -430,7 +430,7 @@ def rank_range(
             for c in excluded_before_listing[:3]
         )
         logger.warning(
-            f"区间榜剔除起始日尚未上市股票 {len(excluded_before_listing)} 只"
+            f"区间榜剔除起始日未上市或新上市未满6交易日股票 {len(excluded_before_listing)} 只"
             f"(如 {samples}{'...' if len(excluded_before_listing) > 3 else ''})"
         )
     if excluded_not_member:

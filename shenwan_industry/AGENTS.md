@@ -17,7 +17,7 @@
   - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、`sync_progress.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
 - 子文档（按需查阅，均在 `docs/` 下）：
   - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `docs/known_issues.md`：已知边界与易错点（23 条）
+  - `docs/known_issues.md`：已知边界与易错点（24 条）
   - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
   - `docs/sync_progress.md`：官方指数算法同步进度记录（独立子文档，见第 8 节）
   - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
@@ -42,7 +42,7 @@
   - 剔除 anchor 日**无覆盖归属区间**的成分（`not_member`：含未来纳入 `in_date>anchor` 与历史已退出 `out_date<=anchor`，由 `ts_code_membership` 判定，**消除"未来纳入"前视偏差并剔除历史退出残留**）
   - 区间模式额外剔除 anchor 日覆盖区间在 end 前已结束的股票（`left_mid_range`：区间末前已调出，满足"区间末仍在"口径）
   - 剔除 `delist_date < end` 的股票（**修复退市股被整体剔除的幸存者偏差**；退市日当天及之前正常参与）
-  - 剔除 `list_date >= anchor` 的股票（当天及之后才上市不参与）
+  - 剔除未上市 / 上市未满 6 个交易日的股票（`not_listed`：官方 4.4.3 新股上市**第 6 个交易日**才纳入，注册制新股前 5 日无涨跌幅、波动剧烈；以 `list_date` 起计交易日，近 24 历日上市的新股用 `trade_cal` 精确数、实例内窗口缓存）
 - 排名时股票池 = **当日行情股票 ∪ `all_member_codes`**（有(过)申万归属的全部股票）；归属解析 `get_stock_industry_nodes(ts_code, date)` **按历史区间取当日所属 L1/L2/L3**（有记录但当日不在任一行业则安静跳过，视为正常历史退出；无任何归属记录才记入无行业集合）
 
 ### 3. 行情获取与涨跌幅/自由流通市值口径（`market_data.MarketDataProvider` 方法）

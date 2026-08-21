@@ -12,7 +12,7 @@
 import os
 import json
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 import pandas as pd
@@ -54,6 +54,7 @@ class ShenWanIndustryTree:
         self.ts_code_to_delist_date: dict[str, str] = {}  # 成分股 -> 退市日期(YYYYMMDD), 用于历史日期过滤
         self.ts_code_membership: dict[str, list[tuple[str, str, str | None]]] = {}  # 每股历史归属区间: [(l3_code, in_date, out_date|None), ...], 按 in_date 升序
         self.all_member_codes: set[str] = set()  # 有(过)申万行业归属的股票集合(Y∪N), 榜单股票池底
+        self._trade_days_cache: dict[tuple[str, str], list[str]] = {}  # 新股"上市第6交易日"计数的交易日窗口缓存
 
     def build_industries(self):
         """从本地 JSON 数据源构建申万三级行业树"""
@@ -246,7 +247,7 @@ class ShenWanIndustryTree:
           与历史已退出 out_date<=anchor, 避免前视偏差与历史退出残留)
         - 区间模式额外剔除 anchor 覆盖区间在 end 之前已结束的股票 (left_mid_range, 区间末前调出)
         - 剔除 end 日期之前已退市的股票 (delisted, 退市日当天及之前正常参与)
-        - 剔除 anchor 日期当天及之后才上市的股票 (not_listed)
+        - 剔除未上市 / 上市未满 6 个交易日的股票 (not_listed, 官方 4.4.3 新股上市第 6 个交易日才纳入)
         单日榜调用传 (date, date); 区间榜传 (区间起始日, 区间末日)。
         """
         anchor_str = anchor_date.strftime("%Y%m%d")
@@ -288,19 +289,50 @@ class ShenWanIndustryTree:
                 stock_pool.discard(ts_code)
                 excluded["delisted"].append(ts_code)
 
-        # 剔除 anchor 日期当天及之后才上市的股票
+        # 剔除未上市 / 上市未满 6 个交易日的股票(官方 4.4.3: 新股上市第 6 个交易日才纳入指数;
+        # 注册制新股前 5 日无涨跌幅限制、波动剧烈, 过早计入会污染行业涨幅)
+        # 快路径: list_date 距 anchor 超过 24 历日的必有 ≥6 个交易日(含周末/节假日余量), 直接放行;
+        # 仅对近 24 历日上市的新股按交易日历精确计数(一次 trade_cal, 窗口在实例内缓存复用)
+        borderline: list[tuple[str, str]] = []  # (ts_code, list_date_YYYYMMDD)
         for idx, ts_code in enumerate(list(stock_pool)):
             if cancel_check is not None and idx % 500 == 0:
                 cancel_check()
             list_date_str = self.stock_basic.get(ts_code, {}).get('list_date')
             if pd.isna(list_date_str) or str(list_date_str).strip() == "":
                 continue
-            list_date = datetime.strptime(str(list_date_str), "%Y%m%d")
-            if list_date >= anchor_date:
-                stock_pool.discard(ts_code)
-                excluded["not_listed"].append(ts_code)
+            list_date_s = str(list_date_str)
+            if datetime.strptime(list_date_s, "%Y%m%d") < (anchor_date - timedelta(days=24)):
+                continue  # 早已上市, 必有 ≥6 个交易日
+            borderline.append((ts_code, list_date_s))
+        if borderline:
+            earliest = min(d for _, d in borderline)
+            if earliest > anchor_str:
+                earliest = anchor_str
+            days = self._trading_days_window(earliest, anchor_str)
+            for ts_code, list_date_s in borderline:
+                # [list_date, anchor] 内含 anchor 的交易日数 < 6 → 未满第 6 个交易日, 剔除
+                if sum(1 for d in days if list_date_s <= d <= anchor_str) < 6:
+                    stock_pool.discard(ts_code)
+                    excluded["not_listed"].append(ts_code)
 
         return excluded
+
+    def _trading_days_window(self, start_str: str, end_str: str) -> list[str]:
+        """[start_str, end_str] 区间内的交易日(升序, YYYYMMDD)"""
+        key = (start_str, end_str)
+        cached = self._trade_days_cache.get(key)
+        if cached is not None:
+            return cached
+        df = self.pro.trade_cal(
+            exchange='SSE',
+            start_date=start_str,
+            end_date=end_str,
+            is_open='1',
+            fields='cal_date',
+        )
+        result = sorted(df['cal_date'].astype(str).tolist())
+        self._trade_days_cache[key] = result
+        return result
 
     def _get_interval_on(self, ts_code: str, date_str: str) -> tuple[str, str, str | None] | None:
         """返回 ts_code 覆盖 date_str(YYYYMMDD) 的归属区间 (l3_code, in_date, out_date|None), 无则 None"""
