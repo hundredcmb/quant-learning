@@ -43,7 +43,7 @@ _MV_LISTING_FLOOR = "19900101"
 def wrap_api_counter(pro) -> dict[str, int]:
     """包装 tushare pro 常用接口以统计调用次数, 返回按接口名计数的 dict"""
     counter: dict[str, int] = {}
-    for name in ("stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal"):
+    for name in ("stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal", "dividend"):
         orig = getattr(pro, name)
 
         def make_wrapper(n: str, o):
@@ -106,6 +106,7 @@ class MarketDataProvider:
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
+        self._ex_div_cash_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> 除息日现金分红: {ts_code: 每股派现(元)}
 
     def snapshot_api_calls(self) -> dict[str, int]:
         """返回当前 API 调用计数快照(副本), 任务前后快照求差即任务实际调用"""
@@ -224,6 +225,24 @@ class MarketDataProvider:
         """获取A股某日的总市值数据: ts_code -> 总市值(与自由流通市值同一次请求拉取)"""
         self.get_ts_code_to_free_mv(date)
         return self.ts_code_to_total_mv_cache.get(date) or {}
+
+    def get_ex_div_cash(self, date: datetime) -> dict[str, float]:
+        """date 当日除息(ex_date==date)且每股现金分红>0 的股票: ts_code -> 每股派现(元)
+
+        供"官方价格式"自由流通市值加权(单日榜): 除息日把 M_pre 覆盖为昨日实际自由流通市值时,
+        需先识别当日除息股。按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
+        """
+        cached = self._ex_div_cash_cache.get(date)
+        if cached is not None:
+            return cached
+        result: dict[str, float] = {}
+        df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
+        for row in df.itertuples(index=False):
+            cash = getattr(row, "cash_div", None)
+            if cash is not None and not pd.isna(cash) and float(cash) > 0:
+                result[row.ts_code] = float(cash)
+        self._ex_div_cash_cache[date] = result
+        return result
 
     def _resolve_mvs_in_window(
         self,

@@ -504,7 +504,7 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, fw, tw, timings = run_daily_ranking(
+    ew, fw, fw_reinvest, tw, timings = run_daily_ranking(
         tree,
         provider,
         rank_date,
@@ -522,7 +522,7 @@ def _run_daily(
     result = {
         "mode": "daily",
         "date": date_str,
-        "levels": _build_levels(tree, ew, fw, tw),
+        "levels": _build_levels(tree, ew, fw, fw_reinvest, tw),
     }
     context = {
         "mode": "daily",
@@ -572,7 +572,7 @@ def _run_range(
         "start_date": start_date.strftime("%Y%m%d"),
         "end_date": end_date.strftime("%Y%m%d"),
         "trading_days": timings.get("trading_days"),
-        "levels": _build_levels(tree, ew, fw, tw),
+        "levels": _build_levels(tree, ew, fw, fw, tw),
     }
     context = {
         "mode": "range",
@@ -595,17 +595,22 @@ def _build_levels(
     tree: ShenWanIndustryTree,
     ew: tuple[list, list, list],
     fw: tuple[list, list, list],
+    fw_reinvest: tuple[list, list, list],
     tw: tuple[list, list, list],
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
-    for level_name, ew_list, fw_list, tw_list in zip(("1", "2", "3"), ew, fw, tw):
+    for level_name, ew_list, fw_list, fr_list, tw_list in zip(("1", "2", "3"), ew, fw, fw_reinvest, tw):
         ew_by_code = {code: (pct, count) for code, pct, count in ew_list}
+        fr_by_code = {code: (pct, count) for code, pct, count in fr_list}
         tw_by_code = {code: (pct, count) for code, pct, count in tw_list}
         rows: list[dict[str, Any]] = []
         for index_code, fw_pct, fw_count in fw_list:
             ew_item = ew_by_code.get(index_code)
             if ew_item is None:
                 raise ValueError(f"没有获取到等权涨幅数据: index_code={index_code}")
+            fr_item = fr_by_code.get(index_code)
+            if fr_item is None:
+                raise ValueError(f"没有获取到自由流通·分红再投资涨幅数据: index_code={index_code}")
             tw_item = tw_by_code.get(index_code)
             if tw_item is None:
                 raise ValueError(f"没有获取到总市值加权涨幅数据: index_code={index_code}")
@@ -618,9 +623,11 @@ def _build_levels(
                     "industry_name": node.industry_name_long,
                     "total_weighted_pct": tw_item[0],
                     "float_weighted_pct": fw_pct,
+                    "float_tr_weighted_pct": fr_item[0],
                     "equal_weighted_pct": ew_item[0],
                     "total_constituent_count": tw_item[1],
                     "float_constituent_count": fw_count,
+                    "float_tr_constituent_count": fr_item[1],
                     "equal_constituent_count": ew_item[1],
                 }
             )
@@ -668,7 +675,7 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
 
     # 市值加权子表口径: float 用自由流通市值、total 用总市值, 缺失市值不参与
     mv_map = context["total_mv"] if weight == "total" else free_map
-    weight_filtered = weight in ("float", "total")
+    weight_filtered = weight in ("float", "float_tr", "total")
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
@@ -714,7 +721,7 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
 
     # 市值加权子表口径: float 用起始日自由流通市值、total 用起始日总市值, 缺失市值不参与
     mv_map = context["ts_code_to_total_mv"] if weight == "total" else free_map
-    weight_filtered = weight in ("float", "total")
+    weight_filtered = weight in ("float", "float_tr", "total")
 
     rows: list[dict[str, Any]] = []
     start_date: datetime = context["start_date"]

@@ -14,7 +14,7 @@
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 import pandas as pd
@@ -140,10 +140,13 @@ def daily_rank_float_weight(
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
     mv_kind: str = "free",
+    div_kind: str = "price",
 ) -> tuple[RankList, RankList, RankList]:
     """获取指定日期的行业涨幅(市值加权)排名
 
     mv_kind: "free"=自由流通市值加权, "total"=总市值加权
+    div_kind(仅 mv_kind=="free" 有意义): "price"=官方价格式(除息计入下跌, 默认; 除息日 M_pre 用昨日
+    实际自由流通市值=官方 LV_{t-1}^{Adj}); "reinvest"=分红再投资/全收益式(除息中性, 原行为)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -202,6 +205,28 @@ def daily_rank_float_weight(
     # 整个上市期都没有市值数据(或 legacy 模式超 730 天)的股票: 跳过加权、仅参与等权榜(类同区间榜)
     no_weight_stocks: list[str] = []
 
+    # 官方价格式(div_kind=="price")的除息日处理: 除息股 M_pre 用昨日实际自由流通市值
+    # (= close_{t-1}×free_share_{t-1} = 官方 LV_{t-1}^{Adj}); 其余事件(送转/配股/解禁/普通)仍用 pre_close×q_t。
+    # reinvest 式(原行为)与 total 不覆盖。已按官方公式数值校验过"两日股本不同"的捆绑送转+派现情形。
+    ex_div_override: dict[str, float] = {}
+    if mv_kind == "free" and div_kind == "price":
+        ex_div_stocks = market_data.get_ex_div_cash(date)
+        if ex_div_stocks:
+            prev_days = market_data.get_trading_days(
+                (date - timedelta(days=12)).strftime("%Y%m%d"), date_str
+            )
+            prev_td = [d for d in prev_days if d < date_str]
+            if prev_td:
+                y_mv_map = market_data.get_ts_code_to_free_mv(
+                    datetime.strptime(prev_td[-1], "%Y%m%d")
+                )
+                for ts_code in ex_div_stocks:
+                    if ts_code not in stock_pool:
+                        continue
+                    y_mv = y_mv_map.get(ts_code)
+                    if y_mv is not None and not pd.isna(y_mv):
+                        ex_div_override[ts_code] = y_mv
+
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
@@ -234,16 +259,23 @@ def daily_rank_float_weight(
                 continue
             ts_code_to_mv[ts_code] = weight_mv
 
+        # 官方价格式除息股的昨日实际自由流通市值(其余股票为空)
+        y_mv = ex_div_override.get(ts_code)
+
         for l_node, l_chg_map, l_mv_map in data_list:
             l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
             l_mv1, l_mv2 = l_mv_map.get(l_node.index_code)
             l_count_new = l_count + 1
 
-            # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值
-            l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
-
-            # 当日开盘前的权重市值
-            l_mv2_new = weight_mv / (pct_chg / 100 + 1) + l_mv2
+            if y_mv is not None:
+                # 除息日官方价格式: 新增市值 = 今日实际自由流通市值 − 昨日实际自由流通市值; 开盘前 = 昨日实际
+                l_mv1_new = (weight_mv - y_mv) + l_mv1
+                l_mv2_new = y_mv + l_mv2
+            else:
+                # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值(pre_close×q_t)
+                l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
+                # 当日开盘前的权重市值
+                l_mv2_new = weight_mv / (pct_chg / 100 + 1) + l_mv2
 
             l_pct_chg_new = l_mv1_new / l_mv2_new * 100
             l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
@@ -286,10 +318,13 @@ def run_daily_ranking(
     tuple[RankList, RankList, RankList],
     tuple[RankList, RankList, RankList],
     tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
     dict[str, float],
 ]:
-    """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权榜, 自由流通市值加权榜, 总市值加权榜, timings)
+    """单日榜编排: 拉行情/市值 -> 等权 -> 加权, 返回 (等权, 自由流通·官方价格式, 自由流通·分红再投资式, 总市值, timings)
 
+    自由流通市值加权提供两种口径: "官方价格式"(默认, 除息计入下跌, 与申万官方价格指数一致)与
+    "分红再投资/全收益式"(除息中性, 原行为); 等权/总市值维持原(全收益式)口径。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
     timings key: daily_fetch / mv_fetch / equal_compute / float_compute / float_fallback / float_resolve
     / total_compute / total_fallback / total_resolve
@@ -319,7 +354,7 @@ def run_daily_ranking(
     ew = daily_rank_equal_weight(tree, market_data, date, cancel_check)
     timings["equal_compute"] = time.perf_counter() - t0
 
-    _notify(78.0, "计算自由流通市值加权涨幅", "计算排行榜")
+    _notify(78.0, "计算自由流通市值加权涨幅(官方价格式)", "计算排行榜")
     fw_timings: dict[str, float] = {}
     t0 = time.perf_counter()
     fw = daily_rank_float_weight(
@@ -328,10 +363,28 @@ def run_daily_ranking(
         date,
         timings=fw_timings,
         cancel_check=cancel_check,
+        mv_kind="free",
+        div_kind="price",
     )
     timings["float_compute"] = time.perf_counter() - t0
     timings["float_fallback"] = fw_timings.get("mv_fallback", 0.0)
     timings["float_resolve"] = fw_timings.get("mv_resolve", 0.0)
+
+    _notify(84.0, "计算自由流通市值加权涨幅(分红再投资式)", "计算排行榜")
+    fr_timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+    fw_reinvest = daily_rank_float_weight(
+        tree,
+        market_data,
+        date,
+        timings=fr_timings,
+        cancel_check=cancel_check,
+        mv_kind="free",
+        div_kind="reinvest",
+    )
+    timings["float_tr_compute"] = time.perf_counter() - t0
+    timings["float_tr_fallback"] = fr_timings.get("mv_fallback", 0.0)
+    timings["float_tr_resolve"] = fr_timings.get("mv_resolve", 0.0)
 
     _notify(89.0, "计算总市值加权涨幅", "计算排行榜")
     tw_timings: dict[str, float] = {}
@@ -348,7 +401,7 @@ def run_daily_ranking(
     timings["total_fallback"] = tw_timings.get("mv_fallback", 0.0)
     timings["total_resolve"] = tw_timings.get("mv_resolve", 0.0)
 
-    return ew, fw, tw, timings
+    return ew, fw, fw_reinvest, tw, timings
 
 
 def rank_range(

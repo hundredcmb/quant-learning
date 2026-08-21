@@ -19,13 +19,14 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -68,6 +69,8 @@ def start_backend(port: int) -> tuple[subprocess.Popen, object]:
         HOST,
         "--port",
         str(port),
+        "--parent-pid",
+        str(os.getpid()),  # 后端带父进程看门狗: 即使本启动器被强制终止(如 IDE 停止)也会连带退出
     ]
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     process = subprocess.Popen(
@@ -193,7 +196,27 @@ def main() -> int:
     window.show_frontend(port)
     app.aboutToQuit.connect(window.stop_owned_backend)
     atexit.register(window.stop_owned_backend)
-    return app.exec()
+
+    # Qt 事件循环运行期间, Python 默认信号处理器不会及时把 KeyboardInterrupt 抛进 C++ 循环,
+    # 导致 IDE 首轮"软停止"(SIGINT/SIGTERM)无响应、要第二次强杀才结束。
+    # 显式把信号转成 app.quit() 让事件循环正常返回, 并用周期 QTimer 唤醒循环(macOS/Linux 必备)。
+    def _quit(*_args) -> None:
+        QApplication.instance().quit()
+
+    signal.signal(signal.SIGINT, _quit)
+    if os.name != "nt":
+        signal.signal(signal.SIGTERM, _quit)
+    _waker = QTimer()
+    _waker.timeout.connect(lambda: None)
+    _waker.start(500)  # 每 0.5s 唤醒主循环, 保证待处理信号/异常有机会被执行
+
+    try:
+        return app.exec()
+    except KeyboardInterrupt:
+        # 兜底: 个别平台信号未映射到 _quit 时, KeyboardInterrupt 也可能被抛出
+        return 0
+    finally:
+        window.stop_owned_backend()  # 释放由本启动器拉起的后端与日志句柄(幂等, _backend_stopped 守卫)
 
 
 if __name__ == "__main__":

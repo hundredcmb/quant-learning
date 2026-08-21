@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -13,6 +16,49 @@ from fastapi.staticfiles import StaticFiles
 from . import port_picker, service
 from .jobs import JobManager
 from .schemas import DailyRankingRequest, RangeRankingRequest, TokenConfigRequest
+
+
+def _parent_alive_windows(pid: int) -> bool:
+    """Windows: 父进程是否存活(OpenProcess + GetExitCodeProcess == STILL_ACTIVE)"""
+    import ctypes
+    from ctypes import wintypes
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ERROR_ACCESS_DENIED = 5
+    STILL_ACTIVE = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # 权限不足(打不开但进程可能在)视为存活, 避免误杀; 其余(无此进程)视为已退出
+        return kernel32.GetLastError() == ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        return bool(ok) and code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _parent_alive_posix(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _parent_alive(pid: int) -> bool:
+    return _parent_alive_windows(pid) if os.name == "nt" else _parent_alive_posix(pid)
+
+
+def _run_parent_watchdog(parent_pid: int) -> None:
+    """后台看门狗(daemon): 父进程(桌面启动器)退出后自动结束本服务, 避免端口/进程残留。
+
+    覆盖"启动器被强制终止(如 IDE 停止/杀进程)"等 closeEvent/atexit 均无法触发清理的场景。
+    """
+    while True:
+        time.sleep(2)
+        if not _parent_alive(parent_pid):
+            os._exit(1)
 
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -135,7 +181,7 @@ def get_constituents(
     job_id: str,
     level: int,
     index_code: str,
-    weight: str = Query(default="float", pattern="^(total|float|equal)$"),
+    weight: str = Query(default="float", pattern="^(total|float|float_tr|equal)$"),
 ) -> dict:
     job = job_manager.get(job_id)
     if job is None:
@@ -158,12 +204,22 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="启动申万行业研究台本地 Web 服务")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9010)
+    parser.add_argument(
+        "--parent-pid",
+        type=int,
+        default=0,
+        help="父进程(桌面启动器) PID; 提供时启动后台看门狗, 父进程退出后本服务自动结束(防端口/进程残留)",
+    )
     args = parser.parse_args()
     # 首选端口被占用或落在系统保留段（WinError 10013）时自动顺延，并打印实际端口
     port = port_picker.pick_free_port(args.host, args.port)
     if port != args.port:
         print(f"警告：端口 {args.port} 不可用，已自动改用端口 {port}", flush=True)
     print(f"申万行业研究台已启动：http://{args.host}:{port}/", flush=True)
+    if args.parent_pid and args.parent_pid > 0:
+        threading.Thread(
+            target=_run_parent_watchdog, args=(args.parent_pid,), daemon=True, name="parent-watchdog"
+        ).start()
     service.prebuild_context()  # 后台预建行业树(不阻塞启动), 首次查询即可就绪
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 
