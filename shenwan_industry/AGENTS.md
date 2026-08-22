@@ -86,7 +86,7 @@
 - 参与股票：**起始日**已在成分（`in_date<=起点`）**且**区间末仍在（`delist_date>=终点`）**且起始日已上市**（`list_date<起点`，Tushare 新股 `in_date` 可能早于实际上市）；中段纳入 / 起始日未上市 / 区间末前退市均剔除；剔除告警**按类型汇总为一行**（数量+少量样例，避免刷屏）；筛选复用 `filter_stock_pool(股票池, 起点, 终点)`，其类别明细即告警数据源
 - 个股区间收益 = 区间内各交易日官方涨跌幅（`close/pre_close`，口径见第 3 节）连乘，**包含起始日当天涨跌**，隐含基准 = 首个有行情日 `pre_close`；整段无行情的股票剔除；停牌日自动按 0% 累计（无需逐股回退）
 - 权重锚定**区间首日盘前市值**（`M_pre = 首日 pre_close×股本`，= 首日上一交易日调整后市值，与单日榜 reinvest 式 M_pre 同一口径，见第 5 节；实现为 收盘市值×(pre_close/close) 折算，零额外请求）：等权 = 起始成分简单平均；加权 = 首日盘前自由流通/总市值权重（首日停牌按 730 天回退，回退市值即盘前市值、不折算；仍取不到仅参与等权榜并告警）
-- 网络策略：`trade_cal` 1 次 + 每交易日 `daily` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退（**非简单重复 N 次单日接口**）；**全局请求节流器**（`MarketDataProvider._acquire_rate_slot`，全进程行情/市值/除息请求——批拉、分页、停牌点查、8 worker 并发补齐——共用一把锁，开始时刻按 `MAX_DAILY_FETCH_RATE=7.5 次/秒`≈450 次/分钟平摊，为 Tushare 500 次/分钟上限留 10% 余量，避免任何路径瞬时爆发触发限流）；单日失败重试 3 次，仍失败抛错（不静默）。**注意：限流器是进程内的，同一 token 下 Web 与 CLI 同时跑任务时各自计数、互不协调（实测超限报错多源于此），避免并发使用**
+- 网络策略：`trade_cal` 1 次 + 每交易日 `daily` 1 次 + 起始日 `daily_basic` 1 次 + 少量停牌回退（**非简单重复 N 次单日接口**）；**按接口独立的请求节流器**（`MarketDataProvider._acquire_rate_slot(接口名)`，`daily`/`daily_basic`/`dividend` 各持一把锁，同接口内批拉、分页、停牌点查、8 worker 并发补齐共享 450 次/分钟，为 Tushare **每接口** 500 次/分钟上限留 10% 余量；**不同接口限额互相独立、可并行**——链式区间榜行情/市值/除息三池并发预取的基础）；单日失败重试 3 次，仍失败抛错（不静默）。**注意：限流器是进程内的，同一 token 下 Web 与 CLI 同时跑任务时各自计数、互不协调（实测超限报错多源于此），避免并发使用**
 - `timings`：`trade_cal`/`participate`/`daily_fetch`/`accumulate`/`mv_fetch`/`mv_fallback`/`compute`/`trading_days`；`progress_callback`：`(percent, message)` 阶段回调，不参与数值计算；`detail`：写入 `stock_ret`/`last_close`/`ts_code_to_free_mv`/`ts_code_to_total_mv` 供 Web 子表，传 `None` 行为与旧版一致
 - **静态版保留为对照模式**（Web 区间查询默认官方逐日链、无选择 UI；静态版仅 API `chain=false` 或 CLI `range_ranking.py` 的 `RANGE_CHAIN` 双输出可看）；与官方指数的精确对齐如下面的逐日链式
 
@@ -94,9 +94,9 @@
 
 - **每日再平衡**（= 区间形态的自建指数引擎，`LV_T/LV_{t0-1}^{Adj}` 链）：区间内每个交易日按**当日**成分（逐日过滤，新股纳入/退市即单日榜口径，不再锚定起始日行业）与当日盘前市值权重，复用单日榜同款日级函数算 **6 条序列**（等权/自由流通/总市值 × 官方价格式/全收益式），逐行业连乘 `Π(1+pct/100)` 得区间累计
 - 返回 `(等权·价格, 等权·全收益, 自由流通·价格, 自由流通·全收益, 总市值·价格, 总市值·全收益)`（各为 L1/L2/L3 榜单）；`_build_levels` 两分支同构，前端不用区分
-- **数据/性能约定**：`daily` 批拉一次（`fetch_daily_batch` 已回填 pct/close 缓存）；`daily_basic` 由 `fetch_mv_batch`、除息识别由 `fetch_ex_div_batch` 预取（均受全局节流器限流，逐日命中缓存零请求）；**日历跨度切片缓存**（`market_data.get_trading_days` 与 `tree._trading_days_window` 预取宽区间后子窗口切片命中，除息日 12 天窗口与新股 6 交易日门槛的逐日查询全部归零）；**停牌股跨日复用 memo**——当日不在全市场市值数据中的参与股沿用最近一次已知市值（停牌期间必然不变、零重复点查），memo 仅对**当日参与股票**（逐日过滤后）生效，避免为退市已久/尚未上市的历史成分发起无谓点查；复牌/新上市日由全市场数据自动刷新
-- 实测（2024-09-24~2024-12-31，66 交易日）：链式总计约 42 秒（逐日 6 序列聚合纯 CPU 约 0.19 秒/天，行情/市值/除息预拉约占 70%）；`trade_cal` 仅 4 次（预取+切片）、`daily_basic` 77 次（66 全市场 + 11 停牌点查）、`dividend` 66 次（预取）；与申万官方指数 L1 区间涨幅对照 31/31 行业平均差 0.44pp、最大 1.09pp（差异来源=Tushare 自由流通口径 vs 官方附录二扣减明细，见 known_issues 第 18 条）
-- `timings`：`trade_cal`/`daily_fetch`/`mv_prefetch`/`accumulate`/`mv_resolve`/`compute`/`trading_days`；`detail` 语义与静态版一致（`ts_code_to_*` 为首日盘前市值）
+- **数据/性能约定**：`daily_basic`/`dividend`/行情三池**并行**预取（`fetch_daily_batch`/`fetch_mv_batch`/`fetch_ex_div_batch` 同时提交，各接口独立 450 次/分钟节流，并行总时长 ≈ 单段时长；`fetch_daily_batch` 已回填 pct/close 缓存，逐日命中零请求）；**日历跨度切片缓存**（`market_data.get_trading_days` 与 `tree._trading_days_window` 预取宽区间后子窗口切片命中，除息日 12 天窗口与新股 6 交易日门槛的逐日查询全部归零）；**停牌股跨日复用 memo**——当日不在全市场市值数据中的参与股沿用最近一次已知市值（停牌期间必然不变、零重复点查），memo 仅对**当日参与股票**（逐日过滤后）生效，避免为退市已久/尚未上市的历史成分发起无谓点查；复牌/新上市日由全市场数据自动刷新
+- 实测（2024-09-24~2024-12-31，66 交易日）：链式总计约 **24 秒**（预取三池并行 9.3s + 逐日 6 序列聚合纯 CPU 12.2s + 首日点查 2.4s）；默认月区间（23 天，2026-07）约 **11 秒**；`trade_cal` 仅 3 次（预取+切片）、`daily_basic` 66+点查（66 全市场 + 11 停牌点查）、`dividend` 66 次（预取）；与申万官方指数 L1 区间涨幅对照 31/31 行业平均差 0.44pp、最大 1.09pp（差异来源=Tushare 自由流通口径 vs 官方附录二扣减明细，见 known_issues 第 18 条）
+- `timings`：`trade_cal`/`prefetch`(三池并行总时长)/`daily_fetch`/`mv_prefetch`/`ex_prefetch`/`accumulate`/`mv_resolve`/`compute`/`trading_days`；`detail` 语义与静态版一致（`ts_code_to_*` 为首日盘前市值）
 
 ### 8. 申万官方指数算法（只读权威文档）与同步进度
 

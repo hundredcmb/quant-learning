@@ -107,19 +107,25 @@ class MarketDataProvider:
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
         self._ex_div_cash_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> 除息日现金分红: {ts_code: 每股派现(元)}
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
-        self._rate_lock = threading.Lock()  # 全局请求节流锁: 所有行情/市值/除息请求(批拉+点查+并发补齐)共享
-        self._rate_next_start = [0.0]       # 下一个允许的请求开始时刻(单调时钟)
+        self._rate_slots: dict[str, list] = {}  # 接口名 -> [锁, 下一请求开始时刻]; 每接口独立 7.5/s 节流
 
-    def _acquire_rate_slot(self) -> None:
-        """全局请求开始速率节制: 开始时刻按 MAX_DAILY_FETCH_RATE 平摊(≈450 次/分钟, 为 Tushare
-        500 次/分钟上限留 10% 余量)。**必须放在每个实际请求点**(全市场分页/停牌点查/并发补齐都走这里),
-        保证整进程对同一接口的请求速率不超标; 各批拉与点查共用同一把节流锁, 不各自为政
+    def _acquire_rate_slot(self, api_name: str) -> None:
+        """按**接口独立**的请求开始速率节制: 每接口开始时刻按 MAX_DAILY_FETCH_RATE 平摊
+        (≈450 次/分钟, 为 Tushare 每接口 500 次/分钟上限留 10% 余量)。
+        **必须放在每个实际请求点**(全市场分页/停牌点查/并发补齐都走这里, 传对应接口名);
+        同接口所有请求(批拉+点查+并发补齐)共享同一把节流锁、不各自为政;
+        不同接口(Tushare 限额各自独立)可并行、互不等待——行情/市值/除息三池并发预取的前提
         """
-        with self._rate_lock:
-            wait = self._rate_next_start[0] - time.perf_counter()
+        slot = self._rate_slots.get(api_name)
+        if slot is None:
+            slot = [threading.Lock(), [0.0]]
+            self._rate_slots[api_name] = slot
+        lock, next_start = slot
+        with lock:
+            wait = next_start[0] - time.perf_counter()
             if wait > 0:
                 time.sleep(wait)
-            self._rate_next_start[0] = time.perf_counter() + 1.0 / MAX_DAILY_FETCH_RATE
+            next_start[0] = time.perf_counter() + 1.0 / MAX_DAILY_FETCH_RATE
 
     def snapshot_api_calls(self) -> dict[str, int]:
         """返回当前 API 调用计数快照(副本), 任务前后快照求差即任务实际调用"""
@@ -137,7 +143,7 @@ class MarketDataProvider:
         batch_size = 5999
         date_str = date.strftime("%Y%m%d")
         while True:
-            self._acquire_rate_slot()
+            self._acquire_rate_slot("daily")
             df = self.pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
             if len(df) == 0:
                 break
@@ -205,7 +211,7 @@ class MarketDataProvider:
         date_str = date.strftime("%Y%m%d")
         ts_code_to_total_mv: dict[str, float] = {}
         while True:
-            self._acquire_rate_slot()
+            self._acquire_rate_slot("daily_basic")
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
@@ -268,7 +274,7 @@ class MarketDataProvider:
         if cached is not None:
             return cached
         result: dict[str, float] = {}
-        self._acquire_rate_slot()
+        self._acquire_rate_slot("dividend")
         df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
         for row in df.itertuples(index=False):
             cash = getattr(row, "cash_div", None)
@@ -306,7 +312,7 @@ class MarketDataProvider:
             }
             if rows_limit is not None:
                 kw["limit"] = rows_limit
-            self._acquire_rate_slot()
+            self._acquire_rate_slot("daily_basic")
             df = self.pro.daily_basic(**kw)
             free: float | None = None
             total: float | None = None
@@ -482,7 +488,7 @@ class MarketDataProvider:
         while True:
             if cancel_check is not None:
                 cancel_check()
-            self._acquire_rate_slot()
+            self._acquire_rate_slot("daily")
             df = self.pro.daily(
                 trade_date=date_str,
                 offset=offset,

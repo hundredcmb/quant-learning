@@ -396,7 +396,7 @@ function renderMainTable() {
     row.rank = index + 1;
   });
 
-  $("#table-title").textContent = `申万 L${state.level} 级行业排行`;
+  $("#table-title").textContent = `申万${["", "一", "二", "三"][state.level] || state.level}级行业排行`;
   $("#table-count").textContent = `共 ${rows.length} 个行业`;
   updateMainPctHeader();
   updateSortArrows("#main-table", state.mainSort);
@@ -430,6 +430,40 @@ function renderMainTable() {
     `;
     tbody.appendChild(tr);
   });
+  fitIndustryNameColumn(rows);
+}
+
+// 行业名称列宽策略: 二级/三级按"当前级最长名称"测量设宽(表格撑满, 剩余空间由其他列吸收);
+// **一级恢复最初的自动布局**(名称短, 列宽随容器动态、吃剩余空间, 不做固定测量)
+function fitIndustryNameColumn(rows) {
+  const th = $("#main-name-header");
+  if (!th) {
+    return;
+  }
+  if (state.level === 1) {
+    th.style.width = "";
+    return;
+  }
+  if (!rows.length) {
+    return;
+  }
+  let longest = "";
+  for (const row of rows) {
+    const name = String(row.industry_name || "");
+    if (name.length > longest.length) {
+      longest = name;
+    }
+  }
+  if (!longest) {
+    return;
+  }
+  const span = document.createElement("span");
+  span.style.cssText = "visibility:hidden;position:absolute;white-space:nowrap;font-size:14px;padding:0 14px;";
+  span.textContent = longest;
+  document.body.appendChild(span);
+  const width = span.getBoundingClientRect().width;
+  span.remove();
+  th.style.width = `${Math.ceil(width)}px`;
 }
 
 function handleMainTableClick(event) {

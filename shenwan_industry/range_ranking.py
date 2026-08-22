@@ -105,8 +105,8 @@ if __name__ == "__main__":
         print_timing(
             [
                 ("链式数据", [
-                    ("逐日行情拉取", chain_timings.get("daily_fetch", 0.0)),
-                    ("市值(daily_basic 预取+停牌复用)", chain_timings.get("mv_prefetch", 0.0) + chain_timings.get("mv_resolve", 0.0)),
+                    ("预取(行情+市值+除息并行)", chain_timings.get("prefetch", 0.0)),
+                    ("停牌/缺失股点查", chain_timings.get("mv_resolve", 0.0)),
                 ]),
                 ("链式计算", [
                     ("每日 6 序列聚合", chain_timings.get("compute", 0.0)),

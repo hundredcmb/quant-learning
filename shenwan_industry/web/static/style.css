@@ -349,6 +349,12 @@ th.sortable:hover {
   font-size: 12px;
 }
 
+/* 主表名称列宽由 JS 在每次渲染时按"当前级最长行业名称"测量设置(renderMainTable),
+   表格仍撑满容器, 剩余空间由排名/代码/数量/成分股列吸收; 加权涨幅列固定(见下) */
+#main-table th#main-name-header {
+  min-width: 96px;
+}
+
 /* 加权涨幅列固定列宽：容纳最长表头“自由流通市值加权(全收益)涨幅”+排序箭头，
    切换加权方式只替换表头文字，列宽与其它列不随文字长短变化 */
 #main-table th#main-pct-header {

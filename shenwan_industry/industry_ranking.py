@@ -13,7 +13,9 @@
 """
 
 import logging
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -829,7 +831,7 @@ def rank_range_chain(
     市值每日一次全市场 daily_basic(同请求缓存 free/total); 除息识别每日一次 dividend(仅价格式需要, 缓存共享);
     **停牌股跨日复用**: 当日不在全市场市值数据中的股票(=停牌)沿用最近一次已知市值(停牌期间必然不变),
     零重复点查, 复牌/新上市当日由全市场数据自动刷新(见 market_data 缓存机制)。
-    timings key: trade_cal / daily_fetch / mv_prefetch / accumulate / mv_resolve / compute / trading_days
+    timings key: trade_cal / prefetch(三池并行总时长) / daily_fetch / mv_prefetch / ex_prefetch / accumulate / mv_resolve / compute / trading_days
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -863,35 +865,63 @@ def rank_range_chain(
     _notify(6.0, f"区间内共 {len(trading_days)} 个交易日")
     _check_cancel()
 
-    # 行情: 一次批拉全区间(同时回填逐日 pct/close 缓存, 后续 daily_rank_* 零额外请求)
-    _notify(8.0, "拉取区间行情")
+    # 行情/市值/除息**三池并行**预取(Tushare 每接口限额互相独立, 各自 7.5/s 节流, 接口间不互相等待):
+    # 进度按份额加权合并(行情 20% + 市值 18% + 除息 18%, 完成度单调 => 合并进度单调),
+    # 各段完成时说明切换为"X完成"; 宽日历(±12/±24 天)随后一次预取供逐日窗口切片
+    _notify(6.0, "拉取区间行情/市值/除息数据(并行)")
+    prefetch_state = {"daily": 0.0, "mv": 0.0, "ex": 0.0}
+    prefetch_lock = threading.Lock()
+    prefetch_results: dict[str, dict] = {}
     if timings is not None:
         _t0 = time.perf_counter()
-    batch_data = market_data.fetch_daily_batch(
-        trading_days,
-        progress_callback=lambda pct, message: _notify(9.0 + pct * 0.5, message),
-        cancel_check=cancel_check,
-    )
-    if timings is not None:
-        timings["daily_fetch"] = time.perf_counter() - _t0
-    _notify(59.0, "区间行情拉取完成")
-    _check_cancel()
 
-    # 市值与除息识别预取: 每日全市场 daily_basic + dividend(并发+限流), 计算循环内零请求;
-    # 宽日历(区间±12天)一次预取, 价格式逐日 12 天窗口查询全部切片命中
-    _notify(60.0, "预拉区间市值与除息数据")
+    def _prefetch_percent() -> float:
+        # 各段完成度(0~1) × 份额(%) 加权: 行情 20% + 市值 18% + 除息 18% = 最大 62%
+        return 6.0 + 20.0 * prefetch_state["daily"] + 18.0 * prefetch_state["mv"] + 18.0 * prefetch_state["ex"]
+
+    def _prefetch_notify(key: str, pct: float, message: str) -> None:
+        with prefetch_lock:
+            prefetch_state[key] = pct / 100.0
+            merged = _prefetch_percent()
+        _notify(merged, message)
+
+    def _run_prefetch(key: str, label: str, fn: Callable, timings_key: str) -> None:
+        _p0 = time.perf_counter()
+        res = fn(
+            trading_days,
+            progress_callback=lambda pct, message: _prefetch_notify(key, pct, message),
+            cancel_check=cancel_check,
+        )
+        if timings is not None:
+            timings[timings_key] = time.perf_counter() - _p0
+        with prefetch_lock:
+            prefetch_state[key] = 1.0
+            merged = _prefetch_percent()
+        if res is not None:
+            prefetch_results[key] = res
+        _notify(merged, f"{label}完成")
+
+    prefetch_futures = []
+    with ThreadPoolExecutor(max_workers=3) as prefetch_executor:
+        prefetch_futures.append(
+            prefetch_executor.submit(
+                _run_prefetch, "daily", "区间行情", market_data.fetch_daily_batch, "daily_fetch"
+            )
+        )
+        prefetch_futures.append(
+            prefetch_executor.submit(
+                _run_prefetch, "mv", "市值", market_data.fetch_mv_batch, "mv_prefetch"
+            )
+        )
+        prefetch_futures.append(
+            prefetch_executor.submit(
+                _run_prefetch, "ex", "除息识别", market_data.fetch_ex_div_batch, "ex_prefetch"
+            )
+        )
+    for _future in prefetch_futures:
+        _future.result()  # 任务异常在此抛出, 不静默吞掉
     if timings is not None:
-        _t0 = time.perf_counter()
-    market_data.fetch_mv_batch(
-        trading_days,
-        progress_callback=lambda pct, message: _notify(60.0 + pct * 0.15, message),
-        cancel_check=cancel_check,
-    )
-    market_data.fetch_ex_div_batch(
-        trading_days,
-        progress_callback=lambda pct, message: _notify(75.0 + pct * 0.12, message),
-        cancel_check=cancel_check,
-    )
+        timings["prefetch"] = time.perf_counter() - _t0
     market_data.get_trading_days(
         (start_date - timedelta(days=12)).strftime("%Y%m%d"), end_str
     )
@@ -899,10 +929,9 @@ def rank_range_chain(
     tree._trading_days_window(
         (start_date - timedelta(days=24)).strftime("%Y%m%d"), end_str
     )
-    if timings is not None:
-        timings["mv_prefetch"] = time.perf_counter() - _t0
-    _notify(88.0, "区间数据预拉完成")
+    _notify(64.0, "区间数据预拉完成")
     _check_cancel()
+    batch_data = prefetch_results.get("daily") or {}
 
     # 个股区间收益(子表展示口径, 与静态版相同的逐日累乘)
     if timings is not None:
@@ -942,6 +971,10 @@ def rank_range_chain(
         total_map = market_data.get_ts_code_to_total_mv(day_dt)
         if timings is not None:
             timings["mv_fetch"] = timings.get("mv_fetch", 0.0) + (time.perf_counter() - _t0)
+
+        # 首日一次性解析(停牌/缺失股市值点查, 2~4 秒)单独占用进度段, 避免 UI 停在"数据预拉完成"
+        if day_idx == 0:
+            _notify(68.0, "解析首日停牌股与缺失股市值(一次性)")
 
         # 停牌跨日复用(memo): 先刷新当日参与股(逐日过滤口径), 再对缺失市值者复用或首次点查。
         # **仅对当日参与股票生效**——退市已久/尚未上市的历史成分由过滤剔除, 不为它们发起无谓点查;
@@ -1008,7 +1041,7 @@ def rank_range_chain(
                     target[code] = target.get(code, 1.0) * (1.0 + pct / 100.0)
                     count_target[code] = count
 
-        _notify(88.0 + (day_idx + 1) / total_days * 10.0,
+        _notify(72.0 + (day_idx + 1) / total_days * 25.0,
                 f"逐日链式计算中 {day_idx + 1}/{total_days} 个交易日")
 
     # 结果: 连乘因子转累计涨幅, 按涨幅降序
@@ -1051,7 +1084,7 @@ def rank_range_chain(
         detail["ts_code_to_free_mv"] = {c: _to_pre_mv(c, mv) for c, mv in first_free.items()}
         detail["ts_code_to_total_mv"] = {c: _to_pre_mv(c, mv) for c, mv in first_total.items()}
 
-    _notify(99.0, "计算完成")
+    _notify(98.0, "计算完成")
     return (
         levels["ew_p"], levels["ew_r"], levels["fw_p"], levels["fw_r"], levels["tw_p"], levels["tw_r"]
     )
