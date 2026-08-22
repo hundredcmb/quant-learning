@@ -1,8 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
-// 加权方式显示名（与 index.html 下拉选项一致），主表“加权涨幅”列头与子表副标题共用
-const WEIGHT_LABELS = { total: "总市值加权", float: "自由流通市值加权(官方价格)", float_tr: "自由流通·分红再投资(全收益)", equal: "等权" };
+// 加权方式显示名（与 index.html 下拉选项严格一致：选项文本 + “涨幅”即为表头），主表“加权涨幅”列头与子表副标题共用
+const WEIGHT_LABELS = { total: "总市值加权", total_tr: "总市值加权(全收益)", float: "自由流通市值加权", float_tr: "自由流通市值加权(全收益)", equal: "等权", equal_tr: "等权(全收益)" };
 
 function updateMainPctHeader() {
   const label = WEIGHT_LABELS[state.weight] || WEIGHT_LABELS.float;
@@ -11,7 +11,7 @@ function updateMainPctHeader() {
 
 const state = {
   mode: "daily",
-  weight: "float",
+  weight: "float_tr",
   level: 1,
   jobId: null,
   pollTimer: null,
@@ -384,8 +384,8 @@ function renderMainTable() {
 
   const level = String(state.level);
   const sourceRows = state.result.levels[level] || [];
-  const pctField = { total: "total_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct" }[state.weight] || "float_weighted_pct";
-  const countField = { total: "total_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count" }[state.weight] || "float_constituent_count";
+  const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
+  const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
   const rows = sourceRows.map((row, index) => ({
     ...row,
     rank: index + 1,

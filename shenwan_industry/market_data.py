@@ -229,7 +229,7 @@ class MarketDataProvider:
     def get_ex_div_cash(self, date: datetime) -> dict[str, float]:
         """date 当日除息(ex_date==date)且每股现金分红>0 的股票: ts_code -> 每股派现(元)
 
-        供"官方价格式"自由流通市值加权(单日榜): 除息日把 M_pre 覆盖为昨日实际自由流通市值时,
+        供"官方价格式"市值加权(单日榜, 自由流通/总市值): 除息日把 M_pre 覆盖为昨日实际市值时,
         需先识别当日除息股。按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
         """
         cached = self._ex_div_cash_cache.get(date)

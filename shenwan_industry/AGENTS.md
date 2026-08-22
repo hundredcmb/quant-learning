@@ -49,7 +49,7 @@
 
 - `get_ts_code_to_pct_chg(date)`：`pro.daily(trade_date, offset, limit=5999)` 循环拉全市场；**涨跌幅自行重算** `pct=(close−pre_close)/pre_close*100`（不用接口 `pct_chg` 字段）；按日期存内存缓存
 - **涨跌幅口径（已实测验证）**：`daily.pre_close` 在除权除息日返回交易所**除权参考价**（实测：招行 20250711 除息 `46.24=48.24−2.0`；药明康德 20190702 除权 `64.66=(91.10−0.58)/1.4`），故 `close/pre_close` 与 `adj_factor` 比值法**等价**（实测 −1.2976% vs −1.2980%），无需额外拉取 `adj_factor`
-- 该口径为**除权参考价（复权式）口径**：`close/pre_close` 对送转/除息/配股都无虚假跳变（参考价编码对应调整），**现金分红被中性化**（除息日按 0% 计、分红不计入收益），等价于复权/全收益式涨跌幅（分红视作再投资）。**注意与发布型价格指数的区别**：真正的价格指数（申万官方/上证）在除息日把派现当作下跌计入（`LV_t/LV_{t-1}^{Adj}` 用实际市值），与本口径在除息日差一个股息率。因此**单日榜自由流通市值加权提供两种口径**：`div_kind="price"`（官方价格式，默认，除息计入下跌，见第 5 节）与 `div_kind="reinvest"`（分红再投资/全收益式，原行为，可选）；等权/总市值/区间榜仍全收益式。改动涨跌幅逻辑须保持该口径，如改用 `adj_factor`/复权行情须确认同一价格口径并同步更新本文件
+- 该口径为**除权参考价（复权式）口径**：`close/pre_close` 对送转/除息/配股都无虚假跳变（参考价编码对应调整），**现金分红被中性化**（除息日按 0% 计、分红不计入收益），等价于复权/全收益式涨跌幅（分红视作再投资）。**注意与发布型价格指数的区别**：真正的价格指数（申万官方/上证）在除息日把派现当作下跌计入（`LV_t/LV_{t-1}^{Adj}` 用实际市值），与本口径在除息日差一个股息率。因此**单日榜等权与市值加权（自由流通/总市值）各提供两种口径**：`div_kind="price"`（官方价格式，默认，除息计入下跌，见第 4/5 节）与 `div_kind="reinvest"`（分红再投资/全收益式，原行为，可选）；区间榜仍全收益式。改动涨跌幅逻辑须保持该口径，如改用 `adj_factor`/复权行情须确认同一价格口径并同步更新本文件
 - `get_ts_code_to_free_mv(date)`：`pro.daily_basic(ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share', offset, limit=5999)` 循环拉全市场（官方上限 6000）；**同一次请求同时缓存自由流通市值与总市值**（`get_ts_code_to_total_mv` 读同一缓存，零额外请求）；**自由流通市值 = `free_share × close`**（自由流通股本×收盘价，三字段取同一行、同一交易日，等价于旧式 `circ_mv × free_share / float_share`：恒等推导 `circ_mv = float_share × close`，实测 `daily_basic.close` 与 `daily.close` 逐股完全一致；`total_mv` 单位万元、`free_share`/`float_share` 单位万股、`close` 单位元，加权只用比值不影响结果）；股本异常防御：三字段任一缺失/非有限值、`close`/`free_share`/`float_share` ≤ 0 或比例 >1（自由流通股本超过流通股本，数据异常）时该股不记入，等同无市值处理；按日期存内存缓存。**口径来源说明**：`free_share` 为 Tushare 自有自由流通口径（黑盒返回最终股本，无法获取扣减明细），与官方《编制说明》附录二六类扣减定义**无法逐条核对**，本模块以 Tushare 口径为准（见 `docs/known_issues.md` 第 18 条）
 
 ### 4. 单日等权涨幅 `daily_rank_equal_weight(tree, market_data, date)`
@@ -58,12 +58,13 @@
 - 单股涨跌幅：有行情用实际值；**停牌（行情缺失）按 0% 计入，且计入成分股数量**
 - 数据异常（涨跌幅非有限值）：记为 None 并告警，**直接跳过，不计入平均与数量**（与停牌按 0% 不同）
 - 行业涨幅 = 成分股涨跌幅简单算术平均（增量平均 `new_avg=(old_avg*old_count+pct)/(old_count+1)`），L3/L2/L1 三级同时累计
+- 单股涨跌幅有两种口径（`div_kind`，见第 5 节）：`"reinvest"`=分红再投资/全收益式（原行为，`close/pre_close`，除息中性）；`"price"`=官方价格式（默认，**除息股实际市值比** `今日 total_mv/昨日 total_mv − 1`，除息计入下跌；纯派现等价 raw close 比、捆绑送转+派现时送转部分价值中性，用总市值比避免解禁/股本变动对 free_share 的干扰；取不到两日市值时回退 `close/pre_close`）。**增量平均按当日混合口径累计，不改累计公式**
 - 排序：剔除 `count==0` 的行业，按涨幅降序；返回 `(index_code, pct, count)` 列表（三级各一个）
 
 ### 5. 单日市值加权涨幅 `daily_rank_float_weight(tree, market_data, date, mv_kind="free")`
 
 - `mv_kind`：`"free"`=自由流通市值加权、`"total"`=总市值加权；同一套公式、市值来源参数化（**不要复制两套代码**）
-- `div_kind`（仅 `mv_kind=="free"` 有意义）：`"price"`=官方价格式（默认，除息计入下跌）、`"reinvest"`=分红再投资/全收益式（除息中性，原行为）。**除息日官方价格式**：M_pre 不再用 `pre_close×q_t`，而用**昨日实际自由流通市值** `M_pre = 昨日 free_mv = close_{t-1}×free_share_{t-1}`（=官方 `LV_{t-1}^{Adj}`；`market_data.get_ex_div_cash(date)` 识别当日除息股、`get_ts_code_to_free_mv(T-1)` 取昨日市值），`ΔM = M − M_pre`。已按官方公式数值校验（纯除息与捆绑送转+派现、两日股本不同均严格等于 `LV_t/LV_{t-1}^{Adj}`）；其余事件（送转/配股/解禁/普通）仍 `pre_close×q_t`（与官方一致）。`reinvest` 式即原逻辑
+- `div_kind`（对 `mv_kind=="free"` 与 `"total"` 均有效）：`"price"`=官方价格式（默认，除息计入下跌）、`"reinvest"`=分红再投资/全收益式（除息中性，原行为）。**除息日官方价格式**：M_pre 不再用 `pre_close×q_t`，而用**昨日实际市值** `M_pre = 昨日 mv = close_{t-1}×股本_{t-1}`（自由流通用 free_mv、总市值用 total_mv，=官方 `LV_{t-1}^{Adj}`；`market_data.get_ex_div_cash(date)` 识别当日除息股、`get_ts_code_to_free_mv(T-1)`/`get_ts_code_to_total_mv(T-1)` 取昨日市值，同一请求同时缓存两者、零额外费用），`ΔM = M − M_pre`。已按官方公式数值校验（纯除息与捆绑送转+派现、两日股本不同均严格等于 `LV_t/LV_{t-1}^{Adj}`）；其余事件（送转/配股/解禁/普通）仍 `pre_close×q_t`（与官方一致）。`reinvest` 式即原逻辑
 - 单股单级公式（M=当日收盘权重市值，p=当日涨跌幅%）：当日新增市值 `ΔM=M*p/(p+100)`；开盘前市值 `M_pre=M/(1+p/100)`；行业涨幅 = `ΣΔM/ΣM_pre*100`（三级分别累计后取比值）
 - 停牌处理（本模块最特殊逻辑）：当天 `daily_basic` 无自由流通市值时回退查询 `daily_basic(ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date)`，一次请求同时回退自由流通/总市值（`resolve_free_mv` 返回 free 并顺带缓存 total，`resolve_total_mv` 优先读缓存）并回填缓存；**自由流通市值三字段必须取自同一行（同一交易日）**计算，避免混搭不同日期股本；**自由流通市值是决定性字段**（以 free 为准，避免 total 命中却漏掉 free）。回退策略（`MV_RESOLVE_MODE`，默认 `new`，可用 `SW_MV_RESOLVE_MODE=legacy` 切回对比）：
   - **`new`（默认）**：每股先近 730 天窗口、按 **limit 阶梯（1 → 100 行，响应降序取最近，极小 payload）** 命中自由流通市值；未命中则**全窗回到上市日（19900101 起）——尽量不放弃任何股票**，只有整个上市期都没有 `daily_basic` 数据才跳仅等权榜并汇总告警；近期行 `free_share>float_share`（股本异常、total 正常）时会逐级放大/向更早行找到正常 free
@@ -74,9 +75,9 @@
 
 ### 6. 输出与示例
 
-- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印四列涨幅（总市值加权/自由流通市值加权·官方价格/自由流通·分红再投资/等权）、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
+- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印六列涨幅（总市值加权·官方价格/总市值·分红再投资/自由流通市值加权·官方价格/自由流通·分红再投资/等权·官方价格/等权·分红再投资）、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
 - 运行结束输出**耗时分析**（组小计、各阶段耗时/占比、总耗时与 API 调用次数）：耗时统计 `print_timing`，API 次数由 `MarketDataProvider.snapshot_api_calls()` 提供（构造时即包装计数，含建树阶段）；大阶段按"接口拉取 vs 本地计算/回退"拆分
-- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权 → 自由流通（官方价格式）→ 自由流通（分红再投资式）→ 总市值，避免两套编排漂移），**返回 5 元组 `(等权, 自由流通·官方价格式, 自由流通·分红再投资式, 总市值, timings)`**；timings key：`daily_fetch`/`mv_fetch`/`equal_compute`/`float_compute`/`float_fallback`/`float_tr_compute`/`total_compute`/`total_fallback`；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
+- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权（官方价格式）→ 等权（分红再投资式）→ 自由流通（官方价格式）→ 自由流通（分红再投资式）→ 总市值（官方价格式）→ 总市值（分红再投资式），避免两套编排漂移），**返回 7 元组 `(等权·官方价格式, 等权·分红再投资式, 自由流通·官方价格式, 自由流通·分红再投资式, 总市值·官方价格式, 总市值·分红再投资式, timings)`**；timings key：`daily_fetch`/`mv_fetch`/`equal_compute`/`equal_tr_compute`/`float_compute`/`float_fallback`/`float_tr_compute`/`total_compute`/`total_fallback`/`total_tr_compute`/`total_tr_fallback`；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
 - 模块暂无图片产物，仅控制台输出
 
 ### 7. 区间累计涨幅榜 `rank_range(tree, market_data, start_date, end_date, timings=None, progress_callback=None, detail=None)`

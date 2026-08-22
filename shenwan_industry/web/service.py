@@ -504,7 +504,7 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, fw, fw_reinvest, tw, timings = run_daily_ranking(
+    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings = run_daily_ranking(
         tree,
         provider,
         rank_date,
@@ -522,7 +522,7 @@ def _run_daily(
     result = {
         "mode": "daily",
         "date": date_str,
-        "levels": _build_levels(tree, ew, fw, fw_reinvest, tw),
+        "levels": _build_levels(tree, ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest),
     }
     context = {
         "mode": "daily",
@@ -572,7 +572,7 @@ def _run_range(
         "start_date": start_date.strftime("%Y%m%d"),
         "end_date": end_date.strftime("%Y%m%d"),
         "trading_days": timings.get("trading_days"),
-        "levels": _build_levels(tree, ew, fw, fw, tw),
+        "levels": _build_levels(tree, ew, ew, fw, fw, tw, tw),
     }
     context = {
         "mode": "range",
@@ -594,26 +594,38 @@ def _run_range(
 def _build_levels(
     tree: ShenWanIndustryTree,
     ew: tuple[list, list, list],
+    ew_reinvest: tuple[list, list, list],
     fw: tuple[list, list, list],
     fw_reinvest: tuple[list, list, list],
     tw: tuple[list, list, list],
+    tw_reinvest: tuple[list, list, list],
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
-    for level_name, ew_list, fw_list, fr_list, tw_list in zip(("1", "2", "3"), ew, fw, fw_reinvest, tw):
+    for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
+        ("1", "2", "3"), ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest
+    ):
         ew_by_code = {code: (pct, count) for code, pct, count in ew_list}
+        ewt_by_code = {code: (pct, count) for code, pct, count in ew_tr_list}
         fr_by_code = {code: (pct, count) for code, pct, count in fr_list}
         tw_by_code = {code: (pct, count) for code, pct, count in tw_list}
+        tfr_by_code = {code: (pct, count) for code, pct, count in tfr_list}
         rows: list[dict[str, Any]] = []
         for index_code, fw_pct, fw_count in fw_list:
             ew_item = ew_by_code.get(index_code)
             if ew_item is None:
                 raise ValueError(f"没有获取到等权涨幅数据: index_code={index_code}")
+            ewt_item = ewt_by_code.get(index_code)
+            if ewt_item is None:
+                raise ValueError(f"没有获取到等权·分红再投资涨幅数据: index_code={index_code}")
             fr_item = fr_by_code.get(index_code)
             if fr_item is None:
                 raise ValueError(f"没有获取到自由流通·分红再投资涨幅数据: index_code={index_code}")
             tw_item = tw_by_code.get(index_code)
             if tw_item is None:
                 raise ValueError(f"没有获取到总市值加权涨幅数据: index_code={index_code}")
+            tfr_item = tfr_by_code.get(index_code)
+            if tfr_item is None:
+                raise ValueError(f"没有获取到总市值·分红再投资涨幅数据: index_code={index_code}")
             node = tree.index_code_to_node.get(index_code)
             if node is None:
                 continue
@@ -622,13 +634,17 @@ def _build_levels(
                     "index_code": index_code,
                     "industry_name": node.industry_name_long,
                     "total_weighted_pct": tw_item[0],
+                    "total_tr_weighted_pct": tfr_item[0],
                     "float_weighted_pct": fw_pct,
                     "float_tr_weighted_pct": fr_item[0],
                     "equal_weighted_pct": ew_item[0],
+                    "equal_tr_weighted_pct": ewt_item[0],
                     "total_constituent_count": tw_item[1],
+                    "total_tr_constituent_count": tfr_item[1],
                     "float_constituent_count": fw_count,
                     "float_tr_constituent_count": fr_item[1],
                     "equal_constituent_count": ew_item[1],
+                    "equal_tr_constituent_count": ewt_item[1],
                 }
             )
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
@@ -673,9 +689,9 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     stock_pool = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(stock_pool, rank_date, rank_date)
 
-    # 市值加权子表口径: float 用自由流通市值、total 用总市值, 缺失市值不参与
-    mv_map = context["total_mv"] if weight == "total" else free_map
-    weight_filtered = weight in ("float", "float_tr", "total")
+    # 市值加权子表口径: float/float_tr 用自由流通市值、total/total_tr 用总市值, 缺失市值不参与
+    mv_map = context["total_mv"] if weight in ("total", "total_tr") else free_map
+    weight_filtered = weight in ("float", "float_tr", "total", "total_tr")
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
@@ -719,9 +735,9 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     end_total_mv: dict[str, float] = context["end_total_mv"]
     end_amount: dict[str, float] = context["end_amount"]
 
-    # 市值加权子表口径: float 用起始日自由流通市值、total 用起始日总市值, 缺失市值不参与
-    mv_map = context["ts_code_to_total_mv"] if weight == "total" else free_map
-    weight_filtered = weight in ("float", "float_tr", "total")
+    # 市值加权子表口径: float/float_tr 用起始日自由流通市值、total/total_tr 用起始日总市值, 缺失市值不参与
+    mv_map = context["ts_code_to_total_mv"] if weight in ("total", "total_tr") else free_map
+    weight_filtered = weight in ("float", "float_tr", "total", "total_tr")
 
     rows: list[dict[str, Any]] = []
     start_date: datetime = context["start_date"]

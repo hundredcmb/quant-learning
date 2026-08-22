@@ -349,10 +349,10 @@ th.sortable:hover {
   font-size: 12px;
 }
 
-/* 加权涨幅列固定列宽：容纳最长表头“自由流通市值加权涨幅”+排序箭头，
+/* 加权涨幅列固定列宽：容纳最长表头“自由流通市值加权(全收益)涨幅”+排序箭头，
    切换加权方式只替换表头文字，列宽与其它列不随文字长短变化 */
 #main-table th#main-pct-header {
-  width: 190px;
+  width: 245px;
 }
 
 tbody tr:hover {
