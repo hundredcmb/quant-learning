@@ -12,6 +12,7 @@ class DailyRankingRequest(BaseModel):
 class RangeRankingRequest(BaseModel):
     start_date: date
     end_date: date
+    chain: bool = True  # True=官方逐日链式(默认, Web 无选择 UI); False=静态权重(仅 API/CLI 对照用)
 
 
 class TokenConfigRequest(BaseModel):

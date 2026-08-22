@@ -231,8 +231,7 @@ function bindEvents() {
 function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
-  $("#range-start-field").classList.toggle("hidden", isDaily);
-  $("#range-end-field").classList.toggle("hidden", isDaily);
+  $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
 }
 
 function submit() {

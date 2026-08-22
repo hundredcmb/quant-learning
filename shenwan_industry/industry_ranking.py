@@ -496,7 +496,8 @@ def rank_range(
       同类剔除告警按类型汇总为一行(数量 + 少量样例), 避免大量日志刷屏
     - 个股区间收益 = 区间内所有有行情日的每日官方涨跌幅连乘(除权除息自动修正),
       隐含基准 = 区间内首个有行情日的 pre_close(即区间前一交易日收盘/停牌前收盘), **包含起始日当天涨跌**
-    - 权重 = 区间起始日自由流通市值/总市值(起始日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
+    - 权重 = 区间**首日盘前市值**(pre_close×q = 首日上一交易日调整后市值, 与单日榜 reinvest 式 M_pre 一致;
+      首日停牌的按 730 天回退; 仍取不到则仅参与等权榜并告警)
     - timings: 可选 dict, 记录各阶段耗时
       (trade_cal/participate/daily_fetch/accumulate/mv_fetch/mv_fallback/compute/trading_days)
     - progress_callback: 可选进度回调 (0~100, 阶段说明), 不影响计算结果
@@ -614,7 +615,10 @@ def rank_range(
         if stock_prod.get(ts_code) is not None:
             stock_ret[ts_code] = (stock_prod.get(ts_code, 1.0) - 1.0) * 100.0
 
-    # 3) 权重: 区间起始日(=区间内第一个交易日)自由流通市值/总市值, 停牌回退
+    # 3) 权重: 区间首日**开盘前市值** M_pre = pre_close_{t0}×q_{t0}
+    #    (= 首日上一交易日调整后市值 = 单日榜 reinvest 式 M_pre, 均按除权参考价口径),
+    #    由当日收盘市值折算: M_pre = 收盘市值×(pre_close/close), 零额外请求; 停牌股无首日行情,
+    #    后续回退市值本身即盘前市值(最新可用日收盘×股本), 不折算
     if timings is not None:
         _t0 = time.perf_counter()
     weight_date_str = trading_days[0]
@@ -623,6 +627,25 @@ def rank_range(
     ts_code_to_total_mv: dict[str, float] = market_data.get_ts_code_to_total_mv(weight_date)
     if timings is not None:
         timings["mv_fetch"] = time.perf_counter() - _t0
+    first_td_data = batch_data.get(weight_date_str, {})
+
+    def _to_pre_mv(ts_code: str, mv: float) -> float:
+        rec = first_td_data.get(ts_code)
+        if rec is None:
+            return mv
+        close, pre_close = rec
+        if (
+            close is None
+            or pre_close is None
+            or close == 0
+            or pd.isna(close)
+            or pd.isna(pre_close)
+        ):
+            return mv
+        return mv * (pre_close / close)
+
+    ts_code_to_free_mv = {c: _to_pre_mv(c, mv) for c, mv in ts_code_to_free_mv.items()}
+    ts_code_to_total_mv = {c: _to_pre_mv(c, mv) for c, mv in ts_code_to_total_mv.items()}
     # 新策略: 先并发补齐缺失市值(线程池, 见 market_data.resolve_missing_mv), 减少逐股点查
     _missing_mv = [c for c in stock_ret if pd.isna(ts_code_to_free_mv.get(c))]
     if _missing_mv:
@@ -774,4 +797,261 @@ def rank_range(
         (l1_ew_list, l2_ew_list, l3_ew_list),
         (l1_fw_list, l2_fw_list, l3_fw_list),
         (l1_tw_list, l2_tw_list, l3_tw_list),
+    )
+
+
+def rank_range_chain(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    start_date: datetime,
+    end_date: datetime,
+    timings: dict[str, float] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    detail: dict[str, dict[str, float]] | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[
+    tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
+    tuple[RankList, RankList, RankList],
+]:
+    """官方逐日链式区间累计涨幅榜(区间形态的自建指数引擎), 与静态版 rank_range 并存对照
+
+    每日按**当日**成分(逐日归属, 新股纳入/退市规则即单日榜口径)与当日盘前市值权重, 复用
+    单日榜同款 6 条序列(等权/自由流通/总市值 × 官方价格式/全收益式), 逐行业连乘
+    Π(1+pct/100) 得到区间累计涨幅。
+    返回 (等权·价格, 等权·全收益, 自由流通·价格, 自由流通·全收益, 总市值·价格, 总市值·全收益),
+    每项为 (L1, L2, L3) 榜单。
+
+    性能约定: 行情从 fetch_daily_batch 一次拉取(并回填 pct/close 缓存), 逐日不再重复请求;
+    市值每日一次全市场 daily_basic(同请求缓存 free/total); 除息识别每日一次 dividend(仅价格式需要, 缓存共享);
+    **停牌股跨日复用**: 当日不在全市场市值数据中的股票(=停牌)沿用最近一次已知市值(停牌期间必然不变),
+    零重复点查, 复牌/新上市当日由全市场数据自动刷新(见 market_data 缓存机制)。
+    timings key: trade_cal / daily_fetch / mv_prefetch / accumulate / mv_resolve / compute / trading_days
+    """
+    if not tree.root.children:
+        raise RuntimeError("请先构建行业树结构")
+
+    if not tree.constituent_stock_to_l3_node:
+        raise RuntimeError("请先加载行业成分股")
+
+    start_str = start_date.strftime("%Y%m%d")
+    end_str = end_date.strftime("%Y%m%d")
+    if start_str > end_str:
+        raise ValueError(f"区间起点不能晚于终点: {start_str} > {end_str}")
+
+    def _notify(percent: float, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(max(0.0, min(100.0, percent)), message)
+
+    def _check_cancel() -> None:
+        if cancel_check is not None:
+            cancel_check()
+
+    _check_cancel()
+    _notify(2.0, "拉取交易日历")
+    if timings is not None:
+        _t0 = time.perf_counter()
+    trading_days = market_data.get_trading_days(start_str, end_str)
+    if timings is not None:
+        timings["trade_cal"] = time.perf_counter() - _t0
+        timings["trading_days"] = float(len(trading_days))
+    if not trading_days:
+        raise ValueError(f"区间内没有交易日: {start_str} ~ {end_str}")
+    _notify(6.0, f"区间内共 {len(trading_days)} 个交易日")
+    _check_cancel()
+
+    # 行情: 一次批拉全区间(同时回填逐日 pct/close 缓存, 后续 daily_rank_* 零额外请求)
+    _notify(8.0, "拉取区间行情")
+    if timings is not None:
+        _t0 = time.perf_counter()
+    batch_data = market_data.fetch_daily_batch(
+        trading_days,
+        progress_callback=lambda pct, message: _notify(9.0 + pct * 0.5, message),
+        cancel_check=cancel_check,
+    )
+    if timings is not None:
+        timings["daily_fetch"] = time.perf_counter() - _t0
+    _notify(59.0, "区间行情拉取完成")
+    _check_cancel()
+
+    # 市值与除息识别预取: 每日全市场 daily_basic + dividend(并发+限流), 计算循环内零请求;
+    # 宽日历(区间±12天)一次预取, 价格式逐日 12 天窗口查询全部切片命中
+    _notify(60.0, "预拉区间市值与除息数据")
+    if timings is not None:
+        _t0 = time.perf_counter()
+    market_data.fetch_mv_batch(
+        trading_days,
+        progress_callback=lambda pct, message: _notify(60.0 + pct * 0.15, message),
+        cancel_check=cancel_check,
+    )
+    market_data.fetch_ex_div_batch(
+        trading_days,
+        progress_callback=lambda pct, message: _notify(75.0 + pct * 0.12, message),
+        cancel_check=cancel_check,
+    )
+    market_data.get_trading_days(
+        (start_date - timedelta(days=12)).strftime("%Y%m%d"), end_str
+    )
+    # 树侧窗口日历(新股6交易日门槛用, ±24 天然日覆盖): 逐日 filter_stock_pool 的窗口查询全部切片命中
+    tree._trading_days_window(
+        (start_date - timedelta(days=24)).strftime("%Y%m%d"), end_str
+    )
+    if timings is not None:
+        timings["mv_prefetch"] = time.perf_counter() - _t0
+    _notify(88.0, "区间数据预拉完成")
+    _check_cancel()
+
+    # 个股区间收益(子表展示口径, 与静态版相同的逐日累乘)
+    if timings is not None:
+        _t0 = time.perf_counter()
+    stock_prod: dict[str, float] = {}
+    for day_str in trading_days:
+        day_data = batch_data.get(day_str) or {}
+        for ts_code, (close, pre_close) in day_data.items():
+            stock_prod[ts_code] = stock_prod.get(ts_code, 1.0) * (close / pre_close)
+    stock_ret: dict[str, float] = {
+        ts_code: (prod - 1.0) * 100.0 for ts_code, prod in stock_prod.items() if prod is not None
+    }
+    if timings is not None:
+        timings["accumulate"] = time.perf_counter() - _t0
+
+    # 6 条序列的连乘容器: series -> 层级"1/2/3" -> index_code -> 累计因子
+    series_names = ("ew_p", "ew_r", "fw_p", "fw_r", "tw_p", "tw_r")
+    chain_prod: dict[str, dict[str, dict[str, float]]] = {
+        series: {"1": {}, "2": {}, "3": {}} for series in series_names
+    }
+    # 末次已知成分股数量(各序列同日一致, 以最后一天的榜单为准)
+    last_counts: dict[str, dict[str, int]] = {"1": {}, "2": {}, "3": {}}
+
+    # 停牌市值跨日复用: ts_code -> (自由流通市值, 总市值); 当日活跃时刷新为全市场数据,
+    # 当日缺失(=停牌/未上市)时沿用最近一次已知值, 零重复点查; 复牌/新上市日自动刷新
+    susp_memo: dict[str, tuple[float | None, float | None]] = {}
+    total_days = len(trading_days)
+
+    for day_idx, day_str in enumerate(trading_days):
+        _check_cancel()
+        day_dt = datetime.strptime(day_str, "%Y%m%d")
+
+        # 市值: 每日一次全市场(daily_basic 同一请求双缓存 free/total)
+        if timings is not None:
+            _t0 = time.perf_counter()
+        free_map = market_data.get_ts_code_to_free_mv(day_dt)
+        total_map = market_data.get_ts_code_to_total_mv(day_dt)
+        if timings is not None:
+            timings["mv_fetch"] = timings.get("mv_fetch", 0.0) + (time.perf_counter() - _t0)
+
+        # 停牌跨日复用(memo): 先刷新当日参与股(逐日过滤口径), 再对缺失市值者复用或首次点查。
+        # **仅对当日参与股票生效**——退市已久/尚未上市的历史成分由过滤剔除, 不为它们发起无谓点查;
+        # **free/total 两个口径分开判定**——"有行情、total 正常、free 异常被排除"的股票(known_issues 21 条类型)
+        # 必须在 free 口径点查一次并写回缓存, 否则 daily_rank(free) 每天重复点查
+        if timings is not None:
+            _t0 = time.perf_counter()
+        participating = set(market_data.get_ts_code_to_pct_chg(day_dt)) | set(tree.all_member_codes)
+        tree.filter_stock_pool(participating, day_dt, day_dt, cancel_check=cancel_check)
+        for ts_code in participating:
+            free_mv = free_map.get(ts_code)
+            total_mv = total_map.get(ts_code)
+            if free_mv is not None and not pd.isna(free_mv) and total_mv is not None and not pd.isna(total_mv):
+                susp_memo[ts_code] = (free_mv, total_mv)
+        for ts_code in participating:
+            free_ok = free_map.get(ts_code) is not None and not pd.isna(free_map.get(ts_code))
+            total_ok = total_map.get(ts_code) is not None and not pd.isna(total_map.get(ts_code))
+            if free_ok and total_ok:
+                continue  # 两口径当日都有数据(活跃/复牌/新上市), 无需处理
+            known = susp_memo.get(ts_code)
+            if known is not None:
+                known_free, known_total = known
+                if not free_ok and known_free is not None:
+                    free_map[ts_code] = known_free
+                if not total_ok and known_total is not None:
+                    total_map[ts_code] = known_total
+                continue
+            free_mv = free_map.get(ts_code) if free_ok else None
+            total_mv = total_map.get(ts_code) if total_ok else None
+            if not free_ok:
+                free_mv = market_data.resolve_free_mv(ts_code, day_dt, cancel_check)
+                if total_ok:
+                    # 点查行可能是为找正常 free 而向前的旧行, 恢复以全市场拉取的最新 total 为准
+                    total_map[ts_code] = total_mv
+            if not total_ok:
+                total_mv = market_data.resolve_total_mv(ts_code, day_dt, cancel_check)
+            susp_memo[ts_code] = (free_mv, total_mv)
+            if not free_ok and free_mv is not None:
+                free_map[ts_code] = free_mv
+            if not total_ok and total_mv is not None:
+                total_map[ts_code] = total_mv
+        if timings is not None:
+            timings["mv_resolve"] = timings.get("mv_resolve", 0.0) + (time.perf_counter() - _t0)
+
+        # 当日 6 条序列(与单日榜同一套函数/口径)
+        if timings is not None:
+            _t0 = time.perf_counter()
+        series_ranks = {
+            "ew_p": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="price"),
+            "ew_r": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="reinvest"),
+            "fw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="price"),
+            "fw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="reinvest"),
+            "tw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="price"),
+            "tw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="reinvest"),
+        }
+        if timings is not None:
+            timings["compute"] = timings.get("compute", 0.0) + (time.perf_counter() - _t0)
+
+        for series, (l1, l2, l3) in series_ranks.items():
+            for lv, rank_list in (("1", l1), ("2", l2), ("3", l3)):
+                target = chain_prod[series][lv]
+                count_target = last_counts[lv]
+                for code, pct, count in rank_list:
+                    target[code] = target.get(code, 1.0) * (1.0 + pct / 100.0)
+                    count_target[code] = count
+
+        _notify(88.0 + (day_idx + 1) / total_days * 10.0,
+                f"逐日链式计算中 {day_idx + 1}/{total_days} 个交易日")
+
+    # 结果: 连乘因子转累计涨幅, 按涨幅降序
+    def _make_rank(series: str, lv: str) -> RankList:
+        factored = chain_prod[series][lv]
+        return sorted(
+            (
+                (code, (factor - 1.0) * 100.0, last_counts[lv].get(code, 0))
+                for code, factor in factored.items()
+            ),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+    levels = {series: tuple(_make_rank(series, lv) for lv in ("1", "2", "3")) for series in series_names}
+
+    if detail is not None:
+        last_day_str = trading_days[-1]
+        last_day_data = batch_data.get(last_day_str, {})
+        detail["stock_ret"] = stock_ret
+        detail["last_close"] = {
+            ts_code: close for ts_code, (close, _pre_close) in last_day_data.items()
+        }
+        # 子表筛选口径与静态版一致: 首日盘前市值(当日收盘市值×pre_close/close 折算;
+        # 停牌股无首日行情, 缓存中的回退值即盘前市值, 不折算)
+        first_day_str = trading_days[0]
+        first_day_data = batch_data.get(first_day_str, {})
+
+        def _to_pre_mv(ts_code: str, mv: float) -> float:
+            rec = first_day_data.get(ts_code)
+            if rec is None:
+                return mv
+            close, pre_close = rec
+            if close is None or pre_close is None or close == 0 or pd.isna(close) or pd.isna(pre_close):
+                return mv
+            return mv * (pre_close / close)
+
+        first_free = market_data.get_ts_code_to_free_mv(datetime.strptime(first_day_str, "%Y%m%d"))
+        first_total = market_data.get_ts_code_to_total_mv(datetime.strptime(first_day_str, "%Y%m%d"))
+        detail["ts_code_to_free_mv"] = {c: _to_pre_mv(c, mv) for c, mv in first_free.items()}
+        detail["ts_code_to_total_mv"] = {c: _to_pre_mv(c, mv) for c, mv in first_total.items()}
+
+    _notify(99.0, "计算完成")
+    return (
+        levels["ew_p"], levels["ew_r"], levels["fw_p"], levels["fw_r"], levels["tw_p"], levels["tw_r"]
     )

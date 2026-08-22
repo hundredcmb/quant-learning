@@ -9,6 +9,7 @@
 - 排行榜算法见 industry_ranking.py (单日榜 + 区间榜), 入口脚本见 daily_ranking.py / range_ranking.py
 """
 
+import bisect
 import os
 import json
 import warnings
@@ -54,7 +55,8 @@ class ShenWanIndustryTree:
         self.ts_code_to_delist_date: dict[str, str] = {}  # 成分股 -> 退市日期(YYYYMMDD), 用于历史日期过滤
         self.ts_code_membership: dict[str, list[tuple[str, str, str | None]]] = {}  # 每股历史归属区间: [(l3_code, in_date, out_date|None), ...], 按 in_date 升序
         self.all_member_codes: set[str] = set()  # 有(过)申万行业归属的股票集合(Y∪N), 榜单股票池底
-        self._trade_days_cache: dict[tuple[str, str], list[str]] = {}  # 新股"上市第6交易日"计数的交易日窗口缓存
+        self._trade_days_cache: dict[tuple[str, str], list[str]] = {}  # 新股"上市第6交易日"计数的交易日窗口缓存(精确匹配)
+        self._trade_days_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
 
     def build_industries(self):
         """从本地 JSON 数据源构建申万三级行业树"""
@@ -318,11 +320,19 @@ class ShenWanIndustryTree:
         return excluded
 
     def _trading_days_window(self, start_str: str, end_str: str) -> list[str]:
-        """[start_str, end_str] 区间内的交易日(升序, YYYYMMDD)"""
+        """[start_str, end_str] 区间内的交易日(升序, YYYYMMDD)
+
+        先精确匹配, 再匹配已缓存的更宽跨度(如链式区间榜预取的 起点−24天然日), 子区间切片命中零请求
+        """
         key = (start_str, end_str)
         cached = self._trade_days_cache.get(key)
         if cached is not None:
             return cached
+        for span_start, span_end, days in self._trade_days_spans:
+            if span_start <= start_str and end_str <= span_end:
+                left = bisect.bisect_left(days, start_str)
+                right = bisect.bisect_right(days, end_str)
+                return days[left:right]
         df = self.pro.trade_cal(
             exchange='SSE',
             start_date=start_str,
@@ -332,6 +342,7 @@ class ShenWanIndustryTree:
         )
         result = sorted(df['cal_date'].astype(str).tolist())
         self._trade_days_cache[key] = result
+        self._trade_days_spans.append((start_str, end_str, result))
         return result
 
     def _get_interval_on(self, ts_code: str, date_str: str) -> tuple[str, str, str | None] | None:

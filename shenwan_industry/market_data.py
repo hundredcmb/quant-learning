@@ -11,6 +11,7 @@
   任务前后快照求差即该任务实际调用次数(缓存命中不计)
 """
 
+import bisect
 import math
 import os
 import threading
@@ -73,8 +74,9 @@ def _calc_free_mv(
     等价于旧式 circ_mv × free_share / float_share (流通市值×自由流通占比, 恒等推导:
     circ_mv=float_share×close 时两式相等); 实测 daily_basic.close 与 daily.close 逐股完全一致,
     且此式即官方《编制说明》附录「自由流通市值 = 自由流通量 × 市价」的直接表述。
-    任一字段缺失/非有限值, 或 close/free_share/float_share ≤ 0、比例 >1(自由流通股本超过
-    流通股本, 数据异常)时返回 None, 该股不参与加权(等同无市值处理)
+    **free_share > float_share 属 Tushare 自有口径(黑盒), 视为正常、直接采信 free_share×close**
+    (实测 2026-07 多只股票长期 free>float, 如 001216 比例 1.43——无法获知背后扣减明细, 不排除不回退);
+    仅字段缺失/非有限值或 close/free_share/float_share ≤ 0 时返回 None(该股不参与加权)
     """
     if pd.isna(close) or pd.isna(free_share) or pd.isna(float_share):
         return None
@@ -82,9 +84,6 @@ def _calc_free_mv(
     if not (math.isfinite(close_f) and math.isfinite(free_f) and math.isfinite(float_f)):
         return None
     if close_f <= 0 or float_f <= 0 or free_f <= 0:
-        return None
-    ratio = free_f / float_f
-    if ratio > 1.0:
         return None
     return free_f * close_f
 
@@ -107,6 +106,20 @@ class MarketDataProvider:
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
         self._ex_div_cash_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> 除息日现金分红: {ts_code: 每股派现(元)}
+        self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
+        self._rate_lock = threading.Lock()  # 全局请求节流锁: 所有行情/市值/除息请求(批拉+点查+并发补齐)共享
+        self._rate_next_start = [0.0]       # 下一个允许的请求开始时刻(单调时钟)
+
+    def _acquire_rate_slot(self) -> None:
+        """全局请求开始速率节制: 开始时刻按 MAX_DAILY_FETCH_RATE 平摊(≈450 次/分钟, 为 Tushare
+        500 次/分钟上限留 10% 余量)。**必须放在每个实际请求点**(全市场分页/停牌点查/并发补齐都走这里),
+        保证整进程对同一接口的请求速率不超标; 各批拉与点查共用同一把节流锁, 不各自为政
+        """
+        with self._rate_lock:
+            wait = self._rate_next_start[0] - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            self._rate_next_start[0] = time.perf_counter() + 1.0 / MAX_DAILY_FETCH_RATE
 
     def snapshot_api_calls(self) -> dict[str, int]:
         """返回当前 API 调用计数快照(副本), 任务前后快照求差即任务实际调用"""
@@ -124,6 +137,7 @@ class MarketDataProvider:
         batch_size = 5999
         date_str = date.strftime("%Y%m%d")
         while True:
+            self._acquire_rate_slot()
             df = self.pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
             if len(df) == 0:
                 break
@@ -180,7 +194,7 @@ class MarketDataProvider:
 
         自由流通市值 = free_share × close (自由流通股本×收盘价), 三字段取同一行(同一交易日),
         等价于 circ_mv × free_share / float_share;
-        与总市值同一次请求拉取并缓存; 股本异常(缺失/非正/比例越界)的股票不记入
+        与总市值同一次请求拉取并缓存; 字段缺失/非正的股票不记入(股本比例越界视为正常, 见 _calc_free_mv)
         """
         ts_code_to_free_mv: dict[str, float] = self.ts_code_to_free_mv_cache.get(date) or {}
         if ts_code_to_free_mv:
@@ -191,6 +205,7 @@ class MarketDataProvider:
         date_str = date.strftime("%Y%m%d")
         ts_code_to_total_mv: dict[str, float] = {}
         while True:
+            self._acquire_rate_slot()
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
@@ -221,6 +236,23 @@ class MarketDataProvider:
 
         return ts_code_to_free_mv
 
+    def _fill_pct_cache_from_batch(self, day_str: str, data: dict[str, tuple[float, float]]) -> None:
+        """把批拉行情回填 pct/close 缓存(与 get_ts_code_to_pct_chg 同一口径, 数据异常行已被跳过)
+
+        键统一为 datetime(链式区间榜逐日复用时不重复发 daily 请求); 已有缓存不覆盖
+        """
+        day_dt = datetime.strptime(day_str, "%Y%m%d")
+        if self.ts_code_to_pct_chg_cache.get(day_dt):
+            return
+        pct_map: dict[str, float | None] = {}
+        close_map: dict[str, float] = {}
+        for ts_code, (close, pre_close) in data.items():
+            pct_map[ts_code] = (close - pre_close) / pre_close * 100
+            close_map[ts_code] = close
+        if pct_map:
+            self.ts_code_to_pct_chg_cache[day_dt] = pct_map
+            self.ts_code_to_close_cache[day_dt] = close_map
+
     def get_ts_code_to_total_mv(self, date: datetime) -> dict[str, float]:
         """获取A股某日的总市值数据: ts_code -> 总市值(与自由流通市值同一次请求拉取)"""
         self.get_ts_code_to_free_mv(date)
@@ -236,6 +268,7 @@ class MarketDataProvider:
         if cached is not None:
             return cached
         result: dict[str, float] = {}
+        self._acquire_rate_slot()
         df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
         for row in df.itertuples(index=False):
             cash = getattr(row, "cash_div", None)
@@ -256,7 +289,7 @@ class MarketDataProvider:
 
         响应按 trade_date 降序(实测验证)。fast_limits 提供"阶梯式"取最近 N 行试命中(极小 payload,
         按 5 -> 100 逐级放大), 任何一级命中**自由流通市值**即返回(以 free 为准, 避免 total 命中却
-        漏掉 free——股本异常行 free_share>float_share 时 total 正常而 free 缺失, 需向前找正常行);
+        漏掉 free——free 缺失行(字段缺失/非正)需向前找正常行, 比例越界行现视为正常、直接采信);
         全部未命中才同一窗口全量扫描。free 是决定性字段。
         自由流通市值要求 close/free_share/float_share 取自同一行(同一交易日)计算,
         避免混搭不同日期的股本; 总市值可独立取最近有效值
@@ -273,6 +306,7 @@ class MarketDataProvider:
             }
             if rows_limit is not None:
                 kw["limit"] = rows_limit
+            self._acquire_rate_slot()
             df = self.pro.daily_basic(**kw)
             free: float | None = None
             total: float | None = None
@@ -379,15 +413,21 @@ class MarketDataProvider:
         date: datetime,
         cancel_check: CancelCheck | None = None,
     ) -> float | None:
-        """停牌股自由流通市值回退: 一次请求同时回退自由流通市值与总市值(总市值写入缓存), 返回自由流通市值
+        """停牌股自由流通市值回退: **优先读当日缓存**(全市场拉取/并发补齐已填充, 同日期重复调用零请求),
+        未命中再点查; 一次请求同时回退自由流通市值与总市值(均写回缓存), 返回自由流通市值
         resolve_mode=new 时逐股走 _resolve_mvs_until_listing(回到上市日), legacy 走旧 730 天逻辑
         """
+        cached = self.ts_code_to_free_mv_cache.get(date, {}).get(ts_code)
+        if cached is not None:
+            return cached
         if self.resolve_mode == "legacy":
             free, total = self._resolve_mvs(ts_code, date, cancel_check)
         else:
             free, total = self._resolve_mvs_until_listing(ts_code, date, cancel_check)
         if total is not None:
             self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
+        if free is not None:
+            self.ts_code_to_free_mv_cache.setdefault(date, {})[ts_code] = free
         return free
 
     def resolve_total_mv(
@@ -409,7 +449,16 @@ class MarketDataProvider:
         return total
 
     def get_trading_days(self, start_str: str, end_str: str) -> list[str]:
-        """获取区间内交易日列表(YYYYMMDD, 升序)"""
+        """获取区间内交易日列表(YYYYMMDD, 升序)
+
+        跨度包含缓存: 已请求过的更宽区间(如链式区间榜预取的 区间±12 天)可被任意子区间切片命中,
+        避免除息日 12 天窗口等高频小查询重复请求 trade_cal
+        """
+        for span_start, span_end, days in self._trade_cal_spans:
+            if span_start <= start_str and end_str <= span_end:
+                left = bisect.bisect_left(days, start_str)
+                right = bisect.bisect_right(days, end_str)
+                return days[left:right]
         df = self.pro.trade_cal(
             exchange='SSE',
             start_date=start_str,
@@ -417,7 +466,9 @@ class MarketDataProvider:
             is_open='1',
             fields='cal_date',
         )
-        return sorted(df['cal_date'].astype(str).tolist())
+        result = sorted(df['cal_date'].astype(str).tolist())
+        self._trade_cal_spans.append((start_str, end_str, result))
+        return result
 
     def fetch_daily_by_date(
         self,
@@ -431,6 +482,7 @@ class MarketDataProvider:
         while True:
             if cancel_check is not None:
                 cancel_check()
+            self._acquire_rate_slot()
             df = self.pro.daily(
                 trade_date=date_str,
                 offset=offset,
@@ -474,25 +526,17 @@ class MarketDataProvider:
         """
         并发拉取多日 daily, 返回 {日期: {ts_code: (close, pre_close)}}
 
-        - 线程池并发 + 全局请求节流: 请求开始时刻按 MAX_DAILY_FETCH_RATE 平摊,
-          60 秒滚动窗口内请求数 ≈ 交易日数, 远低于 500 次/分钟, 且不集中爆发
+        - 线程池并发; **请求速率由全局节流器 _acquire_rate_slot 在 fetch_daily_by_date 的实际请求点平摊**
+          (与 daily_basic 点查/并发补齐共用同一把锁, 全进程 ≤450 次/分钟, 不会触发 Tushare 500 次/分钟上限)
         - 单日失败自动重试 DAILY_FETCH_RETRY 次, 仍失败则抛错(不静默改变结果)
         """
         results: dict[str, dict[str, tuple[float, float]]] = {}
-        lock = threading.Lock()
-        next_start = [0.0]
-        interval = 1.0 / MAX_DAILY_FETCH_RATE
         total = len(trading_days)
         completed = 0
 
         def fetch_one(day_str: str) -> tuple[str, dict[str, tuple[float, float]]]:
             if cancel_check is not None:
                 cancel_check()
-            with lock:
-                wait = next_start[0] - time.perf_counter()
-                if wait > 0:
-                    time.sleep(wait)
-                next_start[0] = time.perf_counter() + interval
             last_err: Exception | None = None
             for attempt in range(1, DAILY_FETCH_RETRY + 1):
                 try:
@@ -513,4 +557,98 @@ class MarketDataProvider:
                 if progress_callback is not None:
                     pct = completed / total * 100.0 if total else 100.0
                     progress_callback(pct, f"已拉取 {completed}/{total} 个交易日行情")
+
+        # 回填当日 pct/close 缓存: 链式区间榜逐日调用 get_ts_code_to_pct_chg 时零额外请求
+        for day_str, data in results.items():
+            self._fill_pct_cache_from_batch(day_str, data)
         return results
+
+    def fetch_mv_batch(
+        self,
+        trading_days: list[str],
+        progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> None:
+        """预拉区间内每日全市场 daily_basic(自由流通/总市值同请求双缓存), 后续逐日调用零请求
+
+        线程池并发; 请求速率由全局节流器在 get_ts_code_to_free_mv 的实际请求点平摊
+        (与 _scan 点查共用同一把锁); 已有缓存的日期跳过。链式区间榜逐日算权重前调一次即可
+        """
+        days = [
+            d
+            for d in trading_days
+            if not self.ts_code_to_free_mv_cache.get(datetime.strptime(d, "%Y%m%d"))
+        ]
+        if not days:
+            return
+        total = len(days)
+        completed = 0
+
+        def fetch_mv(day_str: str) -> str:
+            if cancel_check is not None:
+                cancel_check()
+            last_err: Exception | None = None
+            for attempt in range(1, DAILY_FETCH_RETRY + 1):
+                try:
+                    self.get_ts_code_to_free_mv(datetime.strptime(day_str, "%Y%m%d"))
+                    return day_str
+                except Exception as err:
+                    last_err = err
+                    time.sleep(0.5 * attempt)
+            raise RuntimeError(
+                f"拉取 {day_str} 每日市值连续失败 {DAILY_FETCH_RETRY} 次: {last_err}"
+            )
+
+        with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
+            for day_str in executor.map(fetch_mv, days):
+                if cancel_check is not None:
+                    cancel_check()
+                completed += 1
+                if progress_callback is not None:
+                    pct = completed / total * 100.0 if total else 100.0
+                    progress_callback(pct, f"已拉取 {completed}/{total} 个交易日市值")
+
+    def fetch_ex_div_batch(
+        self,
+        trading_days: list[str],
+        progress_callback: ProgressCallback | None = None,
+        cancel_check: CancelCheck | None = None,
+    ) -> None:
+        """预取区间内每日除息识别(dividend 按 ex_date 缓存填充), 后续逐日调用零请求
+
+        线程池并发; 请求速率由全局节流器在 get_ex_div_cash 的实际请求点平摊;
+        已有缓存(含空结果)的日期跳过
+        """
+        days = [
+            d
+            for d in trading_days
+            if self._ex_div_cash_cache.get(datetime.strptime(d, "%Y%m%d")) is None
+        ]
+        if not days:
+            return
+        total = len(days)
+        completed = 0
+
+        def fetch_ex(day_str: str) -> str:
+            if cancel_check is not None:
+                cancel_check()
+            last_err: Exception | None = None
+            for attempt in range(1, DAILY_FETCH_RETRY + 1):
+                try:
+                    self.get_ex_div_cash(datetime.strptime(day_str, "%Y%m%d"))
+                    return day_str
+                except Exception as err:
+                    last_err = err
+                    time.sleep(0.5 * attempt)
+            raise RuntimeError(
+                f"拉取 {day_str} 除息识别连续失败 {DAILY_FETCH_RETRY} 次: {last_err}"
+            )
+
+        with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
+            for day_str in executor.map(fetch_ex, days):
+                if cancel_check is not None:
+                    cancel_check()
+                completed += 1
+                if progress_callback is not None:
+                    pct = completed / total * 100.0 if total else 100.0
+                    progress_callback(pct, f"已拉取 {completed}/{total} 个交易日除息识别")

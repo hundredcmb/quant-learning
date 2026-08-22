@@ -19,6 +19,7 @@ from ..config_store import config_path, get_token, set_token
 from ..industry_ranking import (
     run_daily_ranking,
     rank_range,
+    rank_range_chain,
 )
 from ..industry_tree import ShenWanIndustryTree
 from ..market_data import MarketDataProvider
@@ -551,19 +552,36 @@ def _run_range(
     end_date = datetime.combine(job.payload["end_date"], datetime_time.min)
     timings: dict[str, Any] = {}
     detail: dict[str, dict[str, float]] = {}
+    chain_mode = bool(job.payload.get("chain", True))  # Web 默认官方逐日链式; 静态版仅显式 chain=false 或 CLI
 
-    ew, fw, tw = rank_range(
-        tree,
-        provider,
-        start_date,
-        end_date,
-        timings=timings,
-        progress_callback=lambda pct, message: progress(pct, message, "拉取区间数据"),
-        detail=detail,
-        cancel_check=cancel_check,
-    )
+    if chain_mode:
+        # 官方逐日链式: 6 条序列(等权/自由流通/总市值 × 官方价格式/全收益式)逐日再平衡累计
+        ew_p, ew_r, fw_p, fw_r, tw_p, tw_r = rank_range_chain(
+            tree,
+            provider,
+            start_date,
+            end_date,
+            timings=timings,
+            progress_callback=lambda pct, message: progress(pct, message, "计算区间涨幅"),
+            detail=detail,
+            cancel_check=cancel_check,
+        )
+        levels = _build_levels(tree, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r)
+    else:
+        ew, fw, tw = rank_range(
+            tree,
+            provider,
+            start_date,
+            end_date,
+            timings=timings,
+            progress_callback=lambda pct, message: progress(pct, message, "拉取区间数据"),
+            detail=detail,
+            cancel_check=cancel_check,
+        )
+        # 静态版目前仅全收益式, 价格式列与全收益式同值(链式才有真正的官方价格式差异)
+        levels = _build_levels(tree, ew, ew, fw, fw, tw, tw)
     progress(99.0, "整理结果", "整理结果")
-    # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定起始日，市值列需另行补拉末日）
+    # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定首日盘前，市值列需另行补拉末日）
     end_free_mv = provider.get_ts_code_to_free_mv(end_date)
     end_total_mv = provider.get_ts_code_to_total_mv(end_date)
     end_amount = provider.get_ts_code_to_amount(end_date)
@@ -571,8 +589,9 @@ def _run_range(
         "mode": "range",
         "start_date": start_date.strftime("%Y%m%d"),
         "end_date": end_date.strftime("%Y%m%d"),
+        "chain": chain_mode,
         "trading_days": timings.get("trading_days"),
-        "levels": _build_levels(tree, ew, ew, fw, fw, tw, tw),
+        "levels": levels,
     }
     context = {
         "mode": "range",
@@ -735,7 +754,7 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     end_total_mv: dict[str, float] = context["end_total_mv"]
     end_amount: dict[str, float] = context["end_amount"]
 
-    # 市值加权子表口径: float/float_tr 用起始日自由流通市值、total/total_tr 用起始日总市值, 缺失市值不参与
+    # 市值加权子表口径: float/float_tr 用首日盘前自由流通市值、total/total_tr 用首日盘前总市值, 缺失市值不参与
     mv_map = context["ts_code_to_total_mv"] if weight in ("total", "total_tr") else free_map
     weight_filtered = weight in ("float", "float_tr", "total", "total_tr")
 
