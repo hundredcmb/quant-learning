@@ -221,6 +221,7 @@ def main() -> None:
             target=_run_parent_watchdog, args=(args.parent_pid,), daemon=True, name="parent-watchdog"
         ).start()
     service.prebuild_context()  # 后台预建行业树(不阻塞启动), 首次查询即可就绪
+    service.prebuild_sw_daily_available()  # 后台默默探测官方指数日线可用性(不阻塞启动, 前端无感)
     uvicorn.run(app, host=args.host, port=port, log_level="info")
 
 

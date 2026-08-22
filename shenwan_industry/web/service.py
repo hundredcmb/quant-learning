@@ -7,6 +7,7 @@ import logging
 import math
 import re
 import threading
+import time
 import warnings
 from contextlib import contextmanager
 from datetime import date, datetime, time as datetime_time, timedelta
@@ -29,16 +30,6 @@ logger = logging.getLogger("shenwan_industry.web.service")
 _NO_INDUSTRY_STOCKS: set[str] = set()
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SW2021_PATH = _REPO_ROOT / "shenwan_industry" / "data" / "SW2021.json"
-# 官方指数日线可用性缓存（随仓库提交，写入后最近一个周六 00:00 过期，过期后下次访问自动重探测，约合每周刷新一次）
-_SW_DAILY_AVAILABLE_PATH = _REPO_ROOT / "shenwan_industry" / "data" / "sw_index_daily_available.json"
-
-
-def _sw_daily_available_expire_time(write_date: datetime) -> datetime:
-    """缓存有效期截止：写入日期之后最近的一个周六 00:00（写入当天为周六则顺延一周）"""
-    days_ahead = 5 - write_date.weekday()  # 周一=0 ... 周六=5
-    if days_ahead <= 0:
-        days_ahead += 7
-    return datetime(write_date.year, write_date.month, write_date.day) + timedelta(days=days_ahead)
 
 with _SW2021_PATH.open("r", encoding="utf-8") as _fp:
     _sw2021_rows = json.load(_fp)
@@ -115,6 +106,8 @@ def save_token(token: str) -> None:
     set_token(token)
     _CONTEXT.reset()
     _CONTEXT.build_async()
+    reset_sw_daily_available()
+    prebuild_sw_daily_available()
 
 
 def test_token() -> tuple[bool, str]:
@@ -175,20 +168,9 @@ def get_default_dates() -> dict[str, str]:
     }
 
 
-_sw_daily_available: set[str] | None = None
-_sw_daily_available_lock = threading.Lock()
-
-
-def _load_sw_daily_available_cached() -> set[str] | None:
-    """读磁盘缓存（在写入后最近一个周六 00:00 前有效），缺失或过期返回 None"""
-    try:
-        data = json.loads(_SW_DAILY_AVAILABLE_PATH.read_text(encoding="utf-8"))
-        timestamp = datetime.strptime(data["timestamp"], "%Y-%m-%d")
-        if datetime.now() < _sw_daily_available_expire_time(timestamp):
-            return set(data["codes"])
-    except Exception:
-        pass
-    return None
+_sw_daily_available: set[str] | None = None  # 内存缓存: 官方指数日线可得代码集合(启动后台探测填充)
+_sw_daily_cond = threading.Condition()  # 兼作锁与探测完成通知
+_sw_daily_probing = False
 
 
 def _latest_trade_dates(count: int = 3) -> list[str]:
@@ -217,54 +199,87 @@ def _latest_trade_dates(count: int = 3) -> list[str]:
     return result
 
 
-def _probe_sw_daily_available() -> set[str] | None:
+def _compute_sw_daily_available() -> set[str] | None:
     """探测官方指数日线覆盖：sw_daily(trade_date=最新交易日) 一次拉全市场；
-    空结果回退前一个交易日再试，全部失败返回 None"""
+    空结果回退前一个交易日再试，与 SW2021.json 的 L2/L3 求交集（L1 全覆盖恒含），
+    全部失败返回 None。每次服务启动时后台默默执行一次（无文件缓存）"""
     try:
         pro = ts.pro_api(token=_get_token())
         for date_str in _latest_trade_dates():
             df = pro.sw_daily(trade_date=date_str)
             if df is not None and len(df) > 0:
-                return set(df["ts_code"].astype(str).tolist())
+                probed = set(df["ts_code"].astype(str).tolist())
+                return (probed & _L2_L3_INDEXES) | set(_L1_INDEXES)
     except Exception as err:  # noqa: BLE001 - 网络/token 异常
         logger.warning("探测官方指数日线可用性失败: %s", err)
         return None
     return None
 
 
+def prebuild_sw_daily_available() -> None:
+    """服务启动/保存 token 后**后台默默探测**官方指数日线可用性（不阻塞启动、无感完成）。
+
+    已就绪或探测进行中则跳过；token 未配置也跳过（保存 token 时再触发）。
+    前端 /api/index/available 与 K 线校验在探测完成前会等待其就绪（最多 30 秒），
+    失败则回退"仅 L1 可点击"。
+    """
+    global _sw_daily_available, _sw_daily_probing
+    if not get_token():
+        return
+    with _sw_daily_cond:
+        if _sw_daily_available is not None or _sw_daily_probing:
+            return
+        _sw_daily_probing = True
+
+    def _worker() -> None:
+        global _sw_daily_available, _sw_daily_probing
+        try:
+            available = _compute_sw_daily_available()
+            with _sw_daily_cond:
+                if available is not None:
+                    _sw_daily_available = available
+        except Exception:  # noqa: BLE001
+            logger.exception("后台探测官方指数可用性失败, 前端回退为仅 L1 可点击")
+        finally:
+            with _sw_daily_cond:
+                _sw_daily_probing = False
+                _sw_daily_cond.notify_all()
+
+    threading.Thread(target=_worker, daemon=True, name="sw-daily-probe").start()
+
+
+def reset_sw_daily_available() -> None:
+    """保存新 token 后清空内存缓存, 下次触发后按新 token 重新探测"""
+    with _sw_daily_cond:
+        _sw_daily_available = None
+
+
 def get_sw_daily_available() -> set[str] | None:
     """有官方指数日线数据的行业指数代码集合（L1 全覆盖恒含，L2/L3 以探测为准）。
 
-    - 磁盘缓存在写入后最近一个周六 00:00 前直接复用（约合每周刷新；sw_index_daily_available.json，随仓库提交，离线可用）
-    - 否则 sw_daily(trade_date=最新交易日) 全市场一次拉取，与 SW2021.json 的 L2/L3 求交集
-    - 探测失败返回 None：调用方回退为"仅 L1 可点击"，不缓存、下次再试
+    - 服务启动/保存 token 后后台探测一次并内存缓存（无文件、无过期——数据本身长期不变）
+    - 调用方（首次 /api/index/available）在探测完成前**等待就绪**（无感，最多 30 秒）
+    - 探测失败返回 None：回退"仅 L1 可点击"，不缓存、下次调用重试
     """
-    global _sw_daily_available
-    with _sw_daily_available_lock:
+    global _sw_daily_available, _sw_daily_probing
+    with _sw_daily_cond:
         if _sw_daily_available is not None:
             return _sw_daily_available
-        cached = _load_sw_daily_available_cached()
-        if cached is not None:
-            _sw_daily_available = cached
+        if _sw_daily_probing:
+            deadline = time.monotonic() + 30.0
+            while _sw_daily_probing and time.monotonic() < deadline:
+                _sw_daily_cond.wait(timeout=max(0.1, deadline - time.monotonic()))
             return _sw_daily_available
-
-        probed = _probe_sw_daily_available()
-        if probed is None:
-            return None
-        available = (probed & _L2_L3_INDEXES) | set(_L1_INDEXES)
-        _sw_daily_available = available
-        try:
-            _SW_DAILY_AVAILABLE_PATH.write_text(
-                json.dumps(
-                    {"timestamp": date.today().strftime("%Y-%m-%d"), "codes": sorted(available)},
-                    ensure_ascii=False,
-                    indent=1,
-                ),
-                encoding="utf-8",
-            )
-        except Exception as err:  # noqa: BLE001 - 缓存写失败不影响本次使用
-            logger.warning("写入指数可用性缓存失败: %s", err)
-        return available
+        # 探测从未被触发（如直接导入调用）: 同步补探测一次
+        _sw_daily_probing = True
+    available = _compute_sw_daily_available()
+    with _sw_daily_cond:
+        _sw_daily_probing = False
+        _sw_daily_cond.notify_all()
+    with _sw_daily_cond:
+        if available is not None:
+            _sw_daily_available = available
+    return available
 
 
 def get_available_index_codes() -> list[str]:

@@ -13,7 +13,7 @@
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日自由流通市值/总市值 | `ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量；自由流通市值 = `free_share × close`（三者同行取值，等价于 `circ_mv × free_share / float_share`） |
 | `daily_basic`（单只） | 停牌回退查自由流通市值/总市值 | `ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条；自由流通市值三字段须取自同一行 |
-| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 `data/SW2021.json` 求交集，缓存 `data/sw_index_daily_available.json`（每周六 00:00 过期、约合每周刷新） |
+| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 `data/SW2021.json` 求交集，**服务启动时后台探测一次、内存缓存（无文件）**，前端 `/api/index/available` 在探测完成前等待就绪 |
 
 ## 调用约定
 
