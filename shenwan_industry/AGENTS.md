@@ -13,14 +13,8 @@
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
   - `__init__.py`：空
-  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）；`port_picker.py` 负责端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）；单 worker 串行队列、前端轮询进度、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 按官方指数可用性可点击）
-  - `docs/`：模块文档目录（`interface_notes.md`、`known_issues.md`、`roadmap.md`、`sync_progress.md`、申万官方指数算法文本 `Shenwan_Index_Series_Algorithm_Text.md`）
-- 子文档（按需查阅，均在 `docs/` 下）：
-  - `docs/interface_notes.md`：Tushare 接口交互明细与限流实测（**强制核对流程必读**）
-  - `docs/known_issues.md`：已知边界与易错点（30 条）
-  - `docs/roadmap.md`：未来规划（自建行业指数）与 Web 优化
-  - `docs/sync_progress.md`：官方指数算法同步进度记录（独立子文档，见第 8 节）
-  - `docs/Shenwan_Index_Series_Algorithm_Text.md`：**申万官方指数算法纯文字版（只读、禁止修改，见第 8 节）**
+  - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）：单 worker 串行队列、前端轮询进度、任务取消、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 可点击性规则见 `docs/known_issues.md` 第 17 条）；`port_picker.py` 端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）
+  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，32 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
 
 ## 运行环境与数据源
 
