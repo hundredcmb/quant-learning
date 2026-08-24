@@ -102,7 +102,13 @@ def daily_rank_equal_weight(
         l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
 
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
-    tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
+    tree.filter_stock_pool(
+        stock_pool,
+        date,
+        date,
+        cancel_check=cancel_check,
+        restructure_excluded=market_data.get_restructure_excluded(date),
+    )
 
     # 官方价格式(div_kind=="price")的除息日处理: 除息股涨幅改用
     # "今日实际总市值/昨日实际总市值−1"(纯派现等价于 close_t/close_{t-1}−1,
@@ -231,7 +237,13 @@ def daily_rank_float_weight(
         l3_mv_map[node_l3.index_code] = (0, 0)
 
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
-    tree.filter_stock_pool(stock_pool, date, date, cancel_check=cancel_check)
+    tree.filter_stock_pool(
+        stock_pool,
+        date,
+        date,
+        cancel_check=cancel_check,
+        restructure_excluded=market_data.get_restructure_excluded(date),
+    )
 
     # 新策略: 先并发补齐缺失市值(线程池, 见 market_data.resolve_missing_mv), 避免循环内逐股串行点查
     missing_codes = [c for c in stock_pool if pd.isna(ts_code_to_mv.get(c))]

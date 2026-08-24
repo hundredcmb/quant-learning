@@ -241,6 +241,7 @@ class ShenWanIndustryTree:
         anchor_date: datetime,
         end_date: datetime,
         cancel_check: CancelCheck | None = None,
+        restructure_excluded: set[str] | None = None,
     ) -> dict[str, list[str]]:
         """过滤股票池, 返回被剔除股票的类别明细 {类别: [ts_code, ...]}
 
@@ -250,6 +251,8 @@ class ShenWanIndustryTree:
         - 区间模式额外剔除 anchor 覆盖区间在 end 之前已结束的股票 (left_mid_range, 区间末前调出)
         - 剔除 end 日期之前已退市的股票 (delisted, 退市日当天及之前正常参与)
         - 剔除未上市 / 上市未满 6 个交易日的股票 (not_listed, 官方 4.4.3 新股上市第 6 个交易日才纳入)
+        - 剔除当日处于 4.4.14 重整转增剔除窗口的股票 (restructure_window: 官方自除权日退出、
+          转增股本上市日次一交易日重新计入; 窗口集合由 market_data.get_restructure_excluded 提供)
         单日榜调用传 (date, date); 区间榜传 (区间起始日, 区间末日)。
         """
         anchor_str = anchor_date.strftime("%Y%m%d")
@@ -260,6 +263,7 @@ class ShenWanIndustryTree:
             "left_mid_range": [],
             "delisted": [],
             "not_listed": [],
+            "restructure_window": [],
         }
 
         # 剔除缓存中记录的无行业分类的股票
@@ -316,6 +320,13 @@ class ShenWanIndustryTree:
                 if sum(1 for d in days if list_date_s <= d <= anchor_str) < 6:
                     stock_pool.discard(ts_code)
                     excluded["not_listed"].append(ts_code)
+
+        # 剔除当日处于 4.4.14 重整转增剔除窗口的股票(官方自除权日退出、上市日次一交易日重新计入)
+        if restructure_excluded:
+            for ts_code in restructure_excluded:
+                if ts_code in stock_pool:
+                    stock_pool.discard(ts_code)
+                    excluded["restructure_window"].append(ts_code)
 
         return excluded
 

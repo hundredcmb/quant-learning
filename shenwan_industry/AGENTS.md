@@ -14,7 +14,7 @@
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
   - `__init__.py`：空
   - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）：单 worker 串行队列、前端轮询进度、任务取消、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 可点击性规则见 `docs/known_issues.md` 第 17 条）；`port_picker.py` 端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）
-  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，32 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
+  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，34 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
 
 ## 运行环境与数据源
 
@@ -37,6 +37,7 @@
   - 区间模式额外剔除 anchor 日覆盖区间在 end 前已结束的股票（`left_mid_range`：区间末前已调出，满足"区间末仍在"口径）
   - 剔除 `delist_date < end` 的股票（**修复退市股被整体剔除的幸存者偏差**；退市日当天及之前正常参与）
   - 剔除未上市 / 上市未满 6 个交易日的股票（`not_listed`：官方 4.4.3 新股上市**第 6 个交易日**才纳入，注册制新股前 5 日无涨跌幅、波动剧烈；以 `list_date` 起计交易日，近 24 历日上市的新股用 `trade_cal` 精确数、实例内窗口缓存）
+- 剔除当日处于 4.4.14 重整转增窗口的股票（`restructure_window`：**储备功能、默认关闭**，`SW_RESTRUCTURE_ENABLED=1` 启用；4.4.14 实际以官方成分断点为准——官方把"除权日退出/重入日计入"编码为 `index_member_all` 的 out_date/in_date，由上方 `not_member`/`left_mid_range` 自动处理，见 `docs/sync_progress.md` 4.4.14）
 - 排名时股票池 = **当日行情股票 ∪ `all_member_codes`**（有(过)申万归属的全部股票）；归属解析 `get_stock_industry_nodes(ts_code, date)` **按历史区间取当日所属 L1/L2/L3**（有记录但当日不在任一行业则安静跳过，视为正常历史退出；无任何归属记录才记入无行业集合）
 
 ### 3. 行情获取与涨跌幅/自由流通市值口径（`market_data.MarketDataProvider` 方法）

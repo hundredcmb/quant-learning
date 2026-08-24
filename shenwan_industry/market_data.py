@@ -63,6 +63,28 @@ MAX_DAILY_FETCH_WORKERS = 8   # 并发线程数
 MAX_DAILY_FETCH_RATE = 7.5    # 请求开始速率上限(次/秒), 约 450 次/分钟, 留 10% 余量
 DAILY_FETCH_RETRY = 3         # 单日失败重试次数(网络抖动/瞬时 429)
 
+# 4.4.14 重整转增识别阈值: D3 = (pre_close_T/close_{T-1})×(1+每股送转) − (1−每股派现/close_{T-1})
+# 超过该值判定"除权参考价偏离声明标准比率"(非标准除权=转增股部分对价转让不参与除权)。
+# 依据(2026-08-24 全市场扫描 793 条送转实施): 普通送转噪声上界 3.02%(688597 库存股基数口径),
+# 真案例景峰 +36.9%、华闻 +110%, 8% 阈值与噪声带分离充分(见 docs/sync_progress.md 4.4.14)
+RESTRUCTURE_D3_THRESHOLD = float(os.environ.get("SW_RESTRUCTURE_D3_THRESHOLD", "0.08"))
+# 4.4.14 重整转增处理方式(2026-08-24 定稿): **默认以官方 index_member_all 成分断点为准**——
+# 官方已把"除权日退出指数、转增股本上市日次一交易日重新计入"编码为成分区间
+# out_date=除权日 / in_date=重入日(实测景峰 20260311→0312、华闻 20260622→0623 逐日吻合),
+# 项目 date-aware 成分机制(filter_stock_pool 的 not_member/left_mid_range)自动对齐, 无需额外剔除。
+# 下方 D3 非标准除权识别保留为**储备开关**(默认关闭): 官方成分未编码的事件(历史缺口/未来漏标)
+# 时置 SW_RESTRUCTURE_ENABLED=1 可启用兜底剔除与告警; 与官方编码结果一致、零冲突
+RESTRUCTURE_ENABLED = os.environ.get("SW_RESTRUCTURE_ENABLED", "0") == "1"
+
+
+def _to_float(v) -> float:
+    """任意值安全转 float, 缺失/NaN/非有限值 → 0.0(供 dividend 记录字段提取)"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
 
 def _calc_free_mv(
     close,
@@ -105,7 +127,9 @@ class MarketDataProvider:
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
-        self._ex_div_cash_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> 除息日现金分红: {ts_code: 每股派现(元)}
+        self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
+        self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
+        self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
         self._rate_slots: dict[str, list] = {}  # 接口名 -> [锁, 下一请求开始时刻]; 每接口独立 7.5/s 节流
 
@@ -264,24 +288,151 @@ class MarketDataProvider:
         self.get_ts_code_to_free_mv(date)
         return self.ts_code_to_total_mv_cache.get(date) or {}
 
+    def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
+        """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表
+
+        与除息识别共用同一次请求, 送转记录(4.4.14 重整转增识别)零额外接口成本;
+        按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
+        """
+        cached = self._ex_div_records_cache.get(date)
+        if cached is not None:
+            return cached
+        records: list[dict] = []
+        self._acquire_rate_slot("dividend")
+        df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
+        if df is not None and not df.empty:
+            for r in df.itertuples(index=False):
+                records.append(
+                    {
+                        "ts_code": r.ts_code,
+                        "cash_div": _to_float(getattr(r, "cash_div", None)),
+                        "cash_div_tax": _to_float(getattr(r, "cash_div_tax", None)),
+                        "stk_div": _to_float(getattr(r, "stk_div", None)),
+                        "stk_bo_rate": _to_float(getattr(r, "stk_bo_rate", None)),
+                        "stk_co_rate": _to_float(getattr(r, "stk_co_rate", None)),
+                        "div_proc": str(getattr(r, "div_proc", "") or ""),
+                        "div_listdate": str(getattr(r, "div_listdate", "") or ""),
+                    }
+                )
+        self._ex_div_records_cache[date] = records
+        return records
+
     def get_ex_div_cash(self, date: datetime) -> dict[str, float]:
         """date 当日除息(ex_date==date)且每股现金分红>0 的股票: ts_code -> 每股派现(元)
 
         供"官方价格式"市值加权(单日榜, 自由流通/总市值): 除息日把 M_pre 覆盖为昨日实际市值时,
-        需先识别当日除息股。按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
+        需先识别当日除息股。现金分红兼容 cash_div / cash_div_tax 两字段
+        (实测 688597.SH 派现填在 tax 字段, 主字段为 0)
         """
-        cached = self._ex_div_cash_cache.get(date)
-        if cached is not None:
-            return cached
         result: dict[str, float] = {}
-        self._acquire_rate_slot("dividend")
-        df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
-        for row in df.itertuples(index=False):
-            cash = getattr(row, "cash_div", None)
-            if cash is not None and not pd.isna(cash) and float(cash) > 0:
-                result[row.ts_code] = float(cash)
-        self._ex_div_cash_cache[date] = result
+        for rec in self._fetch_ex_div_records(date):
+            cash = rec["cash_div"] or rec["cash_div_tax"] or 0.0
+            if cash > 0:
+                result[rec["ts_code"]] = float(cash)
         return result
+
+    def _resolve_prev_close(self, ts_code: str, date: datetime) -> float | None:
+        """取 ts_code 在 date 之前最近有效交易日的收盘价(T-1 停牌时逐日前推, 极限回到上市日)
+
+        快路径: 命中已有 close 缓存(正常单日榜/链式榜流程中 T-1 常已缓存)零请求;
+        慢路径: 按"近90天 → 全窗回到上市日"两级区间请求, 响应取 < date 的最近有行情行
+        (停牌日无行自动跳过);
+        仍无 → 返回 None(调用方跳过该候选并告警)
+        """
+        date_str = date.strftime("%Y%m%d")
+        prev_days = [
+            d
+            for d in self.get_trading_days(
+                (date - timedelta(days=12)).strftime("%Y%m%d"), date_str
+            )
+            if d < date_str
+        ]
+        if not prev_days:
+            return None
+        for day_str in reversed(prev_days):
+            day_close = self.ts_code_to_close_cache.get(
+                datetime.strptime(day_str, "%Y%m%d"), {}
+            ).get(ts_code)
+            if day_close is not None:
+                return day_close
+        for start_str in (
+            (date - timedelta(days=90)).strftime("%Y%m%d"),
+            _MV_LISTING_FLOOR,
+        ):
+            self._acquire_rate_slot("daily")
+            df = self.pro.daily(ts_code=ts_code, start_date=start_str, end_date=prev_days[-1])
+            if df is None or df.empty:
+                continue
+            before = df[df["trade_date"] < date_str]
+            if before.empty:
+                continue
+            best = before.sort_values("trade_date").iloc[-1]
+            close_v = float(best["close"])
+            if math.isfinite(close_v) and close_v > 0:
+                # 回填缓存(按交易日)供后续复用
+                day_dt = datetime.strptime(str(best["trade_date"]), "%Y%m%d")
+                self.ts_code_to_close_cache.setdefault(day_dt, {})[ts_code] = close_v
+                return close_v
+        return None
+
+    def _ensure_restructure_identified(self, date: datetime) -> None:
+        """识别 date 当日是否有 4.4.14 重整转增(非标准除权), 命中记入窗口表(每个事件日只判定一次)
+
+        判据(见模块级常量注释): D3 = (pre_close_T/close_{T-1})×(1+每股送转) − (1−每股派现/close_{T-1})
+        候选 = 当日 dividend 有送转记录(实施); D3 > 阈值 → 命中 → 窗口 [除权日, 上市日(缺省=除权日)]
+        """
+        key = date.strftime("%Y%m%d")
+        if key in self._restructure_identified:
+            return
+        self._restructure_identified.add(key)
+        for rec in self._fetch_ex_div_records(date):
+            ts_code = rec["ts_code"]
+            stk_total = rec["stk_div"] or (rec["stk_bo_rate"] + rec["stk_co_rate"])
+            if stk_total <= 0 or rec["div_proc"] != "实施" or ts_code in self._restructure_windows:
+                continue
+            # 除权日=上市日=交易日, 应有行情; pre_close 从 pct/close 缓存反推
+            pct = self.ts_code_to_pct_chg_cache.get(date, {}).get(ts_code)
+            close_t = self.ts_code_to_close_cache.get(date, {}).get(ts_code)
+            if pct is None or close_t is None:
+                warnings.warn(
+                    f"4.4.14 识别: {ts_code} {key} 当日无行情(异常, 跳过该候选)", RuntimeWarning
+                )
+                continue
+            pre_close = close_t / (1.0 + pct / 100.0)
+            close_prev = self._resolve_prev_close(ts_code, date)
+            if close_prev is None:
+                warnings.warn(
+                    f"4.4.14 识别: {ts_code} {key} 前推至上市日仍无收盘价(跳过该候选)", RuntimeWarning
+                )
+                continue
+            cash = rec["cash_div"] or rec["cash_div_tax"] or 0.0
+            d3 = (pre_close / close_prev) * (1.0 + stk_total) - (1.0 - cash / close_prev)
+            if d3 > RESTRUCTURE_D3_THRESHOLD:
+                div_listdate = rec["div_listdate"] or key
+                self._restructure_windows[ts_code] = (key, div_listdate)
+                print(
+                    f"⚠️ 识别到重整转增(官方4.4.14): {ts_code} 除权日={key}"
+                    f" 转增股本上市日={div_listdate} D3={d3*100:.2f}%"
+                    f"(阈值{RESTRUCTURE_D3_THRESHOLD*100:.0f}%) → 除权日窗口剔除该股"
+                )
+
+    def get_restructure_excluded(self, date: datetime) -> set[str]:
+        """返回 date 当日处于 4.4.14 重整转增剔除窗口的股票集合
+
+        窗口 = [除权日, 转增股本上市日](含两端); 上市日次一交易日自动放行
+        (重入日 M_pre=pre_close×q_t 与官方 4.4.1 回填数值相等, 无需特殊逻辑)。
+        仅供 filter_stock_pool 的 restructure_window 剔除类别使用。
+        **储备功能、默认关闭**: 4.4.14 实际以官方 index_member_all 成分断点为准(见模块常量注释),
+        仅 SW_RESTRUCTURE_ENABLED=1 时启用识别兜底
+        """
+        if not RESTRUCTURE_ENABLED:
+            return set()
+        self._ensure_restructure_identified(date)
+        key = date.strftime("%Y%m%d")
+        return {
+            ts_code for ts_code, (ex_date, div_listdate) in self._restructure_windows.items()
+            if ex_date <= key <= div_listdate
+        }
 
     def _resolve_mvs_in_window(
         self,
@@ -628,7 +779,7 @@ class MarketDataProvider:
         days = [
             d
             for d in trading_days
-            if self._ex_div_cash_cache.get(datetime.strptime(d, "%Y%m%d")) is None
+            if self._ex_div_records_cache.get(datetime.strptime(d, "%Y%m%d")) is None
         ]
         if not days:
             return
