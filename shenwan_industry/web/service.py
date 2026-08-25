@@ -520,7 +520,7 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, pe_data = run_daily_ranking(
+    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, valuation = run_daily_ranking(
         tree,
         provider,
         rank_date,
@@ -546,8 +546,10 @@ def _run_daily(
             fw_reinvest,
             tw,
             tw_reinvest,
-            pe_free=pe_data["free"],
-            pe_total=pe_data["total"],
+            pe_free=valuation["pe"]["free"],
+            pe_total=valuation["pe"]["total"],
+            pb_free=valuation["pb"]["free"],
+            pb_total=valuation["pb"]["total"],
         ),
     }
     context = {
@@ -645,6 +647,8 @@ def _build_levels(
     tw_reinvest: tuple[list, list, list],
     pe_free: dict[str, dict[str, float | None]] | None = None,
     pe_total: dict[str, dict[str, float | None]] | None = None,
+    pb_free: dict[str, dict[str, float | None]] | None = None,
+    pb_total: dict[str, dict[str, float | None]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -691,11 +695,14 @@ def _build_levels(
                 "equal_constituent_count": ew_item[1],
                 "equal_tr_constituent_count": ewt_item[1],
             }
-            # PE 列仅单日榜携带: 值 None = 行业扣非TTM合计<=0(亏损), 键缺失 = 未计算/失败降级(前端显示"—");
-            # 成功时 pe_free/pe_total 必含 "1"/"2"/"3" 键(非空), 空 dict 视为计算失败(与区间榜同不携带)
+            # 财务指标列仅单日榜携带: 值 None = PE 亏损 / PB 资不抵债, 键缺失 = 未计算/失败降级(前端显示"—");
+            # 成功时对应 dict 必含 "1"/"2"/"3" 键(非空), 空 dict 视为计算失败(与区间榜同不携带)
             if pe_free and pe_total:
                 row["pe_ttm_float"] = pe_free.get(level_name, {}).get(index_code)
                 row["pe_ttm_total"] = pe_total.get(level_name, {}).get(index_code)
+            if pb_free and pb_total:
+                row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
+                row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows

@@ -363,27 +363,33 @@ def daily_rank_float_weight(
     return l1_rank_list, l2_rank_list, l3_rank_list
 
 
-def daily_pe_ttm(
+def daily_valuation_metric(
     tree: ShenWanIndustryTree,
     market_data: MarketDataProvider,
     date: datetime,
+    kind: str,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
-    """单日榜行业 PE-TTM(扣非净利润): 返回 (pe_free, pe_total, stats)
+    """单日榜行业财务指标合成值(PE-TTM / PB, 项目自建口径): 返回 (free_map, total_map, stats)
 
-    - pe_free/pe_total: {"1"|"2"|"3": {index_code: PE 或 None}}; None = 行业扣非 TTM 合计 <= 0(亏损),
-      键缺失 = 无数据; PE 无单位、为合成比值
-    - 公式(单股权重与当日市值加权涨幅同源, 时效性口径见 docs/pe_ttm.md):
-        PE_free  = Σ free_mv / Σ (TTM × free_mv / total_mv)   自由流通市值口径
-        PE_total = Σ total_mv / Σ TTM                          总市值口径
-      (TTM 单位元、市值单位万元, 内部统一折算; 自由流通口径等价于"以自由流通市值为权重的、
-      个股总市值口径 PE 的加权调和平均")
-    - 参与范围: 与当日涨幅榜同一股票池(filter_stock_pool), 数据异常股**剔除**并计入 stats:
-      stats 为财务层统计(periods/stocks_standard/stocks_annualized/stocks_missing)叠加
-      pool_no_ttm(无扣非TTM) / pool_no_mv(无市值) / pool_ratio_invalid(自由流通占比越界)
-    - 市值复用: 与市值加权涨幅同一套当日缓存(含停牌回退值), 保证 PE 权重与指数权重一致
+    kind: "pe"=扣非净利润 TTM(滚动 12 个月, 元) / "pb"=每股净资产×(当日总股本)(万元)。
+    返回 {"1"|"2"|"3": {index_code: 指标值或 None}}:
+      - 值 None = 行业分母合计 <= 0(PE 亏损 / PB 资不抵债), 键缺失 = 无数据
+      - 每股指标为合成比值无单位(pe)或倍率(pb)
+
+    公式(单股权重与当日市值加权涨幅同源, 口径见 docs/financial_indicators.md):
+        PE_free  = Σ free_mv / Σ (股东值 × free_mv / total_mv)   自由流通市值口径
+        PE_total = Σ total_mv / Σ 股东值                          总市值口径
+      其中 PE 的"股东值"= TTM 扣非(元→万元)、PB 的"股东值"= bps × 当日总股本(万股→万元);
+      等价于"以自由流通市值为权重的、个股总市值口径指标的加权调和平均"。
+    - 参与范围: 与当日涨幅榜同一股票池(filter_stock_pool); 数据异常股**剔除**并计入 stats:
+      财务层统计(periods 等)叠加 pool_no_value(无指标数据) / pool_no_mv(无市值) /
+      pool_ratio_invalid(自由流通占比越界>1) / pool_no_share(无总股本, 仅 pb)
+    - 市值/股本复用: 与市值加权涨幅同一套当日缓存(含停牌回退值), 指标权重与指数权重一致
     """
+    if kind not in ("pe", "pb"):
+        raise ValueError(f"不支持的财务指标类型: {kind}")
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
     if not tree.constituent_stock_to_l3_node:
@@ -393,9 +399,14 @@ def daily_pe_ttm(
 
     if timings is not None:
         _t0 = time.perf_counter()
-    ttm_map, stats = market_data.get_ts_code_to_ttm_deducted_profit(date)
+    if kind == "pe":
+        value_map, stats = market_data.get_ts_code_to_ttm_deducted_profit(date)  # TTM 扣非(元)
+    else:
+        bps_map, bps_stats = market_data.get_ts_code_to_bps(date)  # 每股净资产(元)
+        share_map = market_data.get_ts_code_to_total_share(date)  # 当日总股本(万股)
+        stats = dict(bps_stats)
     if timings is not None:
-        timings["pe_fetch"] = time.perf_counter() - _t0
+        timings["fetch"] = time.perf_counter() - _t0
 
     if timings is not None:
         _t0 = time.perf_counter()
@@ -412,7 +423,7 @@ def daily_pe_ttm(
         restructure_excluded=market_data.get_restructure_excluded(date),
     )
 
-    # 聚合容器: 层级键("1"/"2"/"3") -> index_code -> [Σ自由流通市值, Σ自由流通分摊利润, Σ总市值, Σ扣非TTM, 数量]
+    # 聚合容器: 层级键("1"/"2"/"3") -> index_code -> [Σ自由流通市值, Σ自由流通分摊股东值, Σ总市值, Σ股东值, 数量]
     agg: dict[str, dict[str, list[float]]] = {}
     for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
         agg[level_key] = {
@@ -421,8 +432,20 @@ def daily_pe_ttm(
         }
     level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
 
-    pool_no_ttm = 0
+    def _per_stock_value(ts_code: str) -> float | None:
+        """股东值(万元): pe=TTM扣非/1e4; pb=bps × 当日总股本(万股)"""
+        if kind == "pe":
+            v = value_map.get(ts_code)
+            return v / 1e4 if v is not None else None
+        bps = bps_map.get(ts_code)
+        share_wan = share_map.get(ts_code)
+        if bps is None or share_wan is None:
+            return None
+        return bps * share_wan
+
+    pool_no_value = 0
     pool_no_mv = 0
+    pool_no_share = 0
     pool_ratio_invalid = 0
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
@@ -431,9 +454,9 @@ def daily_pe_ttm(
         if not l3_node or not l2_node or not l1_node:
             continue
 
-        ttm = ttm_map.get(ts_code)
-        if ttm is None:
-            pool_no_ttm += 1
+        value_wan = _per_stock_value(ts_code)
+        if value_wan is None:
+            pool_no_value += 1
             continue
         free_mv = free_mv_map.get(ts_code)
         total_mv = total_mv_map.get(ts_code)
@@ -445,42 +468,72 @@ def daily_pe_ttm(
             pool_ratio_invalid += 1
             continue
 
-        profit_wan = ttm / 1e4  # 元 -> 万元, 与市值同单位后再合成
         for l_node in (l3_node, l2_node, l1_node):
             entry = agg[level_key_map[l_node.level]][l_node.index_code]
             entry[0] += free_mv
-            entry[1] += profit_wan * ratio
+            entry[1] += value_wan * ratio
             entry[2] += total_mv
-            entry[3] += profit_wan
+            entry[3] += value_wan
             entry[4] += 1
 
-    def _finalize_pe() -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]]]:
-        pe_free: dict[str, dict[str, float | None]] = {"1": {}, "2": {}, "3": {}}
-        pe_total: dict[str, dict[str, float | None]] = {"1": {}, "2": {}, "3": {}}
+    def _finalize() -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]]]:
+        metric_free: dict[str, dict[str, float | None]] = {"1": {}, "2": {}, "3": {}}
+        metric_total: dict[str, dict[str, float | None]] = {"1": {}, "2": {}, "3": {}}
         for level_key, per_node in agg.items():
-            for code, (sum_free_mv, sum_free_profit, sum_total_mv, sum_profit, count) in per_node.items():
+            for code, (sum_free_mv, sum_free_value, sum_total_mv, sum_value, count) in per_node.items():
                 if count == 0:
                     continue  # 无数据也不记键位, 前端显示 "—"
-                if sum_free_profit > 0:
-                    pe_free[level_key][code] = sum_free_mv / sum_free_profit
+                if sum_free_value > 0:
+                    metric_free[level_key][code] = sum_free_mv / sum_free_value
                 else:
-                    pe_free[level_key][code] = None  # 行业扣非 TTM 合计 <= 0, 亏损口径
-                if sum_profit > 0:
-                    pe_total[level_key][code] = sum_total_mv / sum_profit
+                    metric_free[level_key][code] = None  # 行业股东值合计 <= 0: PE=亏损 / PB=资不抵债
+                if sum_value > 0:
+                    metric_total[level_key][code] = sum_total_mv / sum_value
                 else:
-                    pe_total[level_key][code] = None
-        return pe_free, pe_total
+                    metric_total[level_key][code] = None
+        return metric_free, metric_total
 
-    pe_free, pe_total = _finalize_pe()
+    metric_free, metric_total = _finalize()
     if timings is not None:
-        timings["pe_compute"] = time.perf_counter() - _t0
+        timings["compute"] = time.perf_counter() - _t0
 
-    if pool_no_ttm or pool_no_mv or pool_ratio_invalid:
+    label = "扣非TTM" if kind == "pe" else "净资产"
+    if pool_no_value or pool_no_mv or pool_ratio_invalid or pool_no_share:
+        extra = f"、{pool_no_share} 只(无总股本)" if pool_no_share else ""
         logger.warning(
-            f"{date_str} PE-TTM 剔除 {pool_no_ttm} 只(无扣非TTM)、{pool_no_mv} 只(无市值)、"
-            f"{pool_ratio_invalid} 只(自由流通占比越界>1), 不计入行业 PE"
+            f"{date_str} {label}剔除 {pool_no_value} 只(无{label}数据)、{pool_no_mv} 只(无市值)"
+            f"{extra}、{pool_ratio_invalid} 只(自由流通占比越界>1), 不计入行业{label}合成"
         )
-    return pe_free, pe_total, {**stats, "pool_no_ttm": pool_no_ttm, "pool_no_mv": pool_no_mv, "pool_ratio_invalid": pool_ratio_invalid}
+    pool_stats = {
+        "pool_no_value": pool_no_value,
+        "pool_no_mv": pool_no_mv,
+        "pool_ratio_invalid": pool_ratio_invalid,
+    }
+    if kind == "pb":
+        pool_stats["pool_no_share"] = pool_no_share
+    return metric_free, metric_total, {**stats, **pool_stats}
+
+
+def daily_pe_ttm(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
+    """单日榜行业 PE-TTM(扣非): 见 daily_valuation_metric(kind="pe")"""
+    return daily_valuation_metric(tree, market_data, date, "pe", timings, cancel_check)
+
+
+def daily_pb(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
+    """单日榜行业 PB(每股净资产×当日总股本): 见 daily_valuation_metric(kind="pb")"""
+    return daily_valuation_metric(tree, market_data, date, "pb", timings, cancel_check)
 
 
 def run_daily_ranking(
@@ -501,17 +554,18 @@ def run_daily_ranking(
 ]:
     """单日榜编排: 拉行情/市值 -> 等权 -> 加权 -> PE-TTM, 返回
     (等权·官方价格式, 等权·分红再投资式, 自由流通·官方价格式, 自由流通·分红再投资式,
-    总市值·官方价格式, 总市值·分红再投资式, timings, pe)
+    总市值·官方价格式, 总市值·分红再投资式, timings, valuation)
 
     等权/自由流通市值加权/总市值加权各提供两种口径: "官方价格式"(默认, 除息计入下跌, 与申万官方
     价格指数一致)与"分红再投资/全收益式"(除息中性, 原行为)。
-    pe = {"free": {"1"|"2"|"3": {index_code: PE|None}}, "total": {...}, "stats": {...}},
-    口径见 daily_pe_ttm; 财务接口失败时 PE 降级为空数据(告警不中断, 涨幅榜不受影响)。
+    valuation = {"pe"/"pb": {"free": {"1"|"2"|"3": {index_code: 值|None}}, "total": {...}, "stats": {...}}},
+    口径见 daily_valuation_metric / daily_pe_ttm / daily_pb; 财务接口失败时任一指标降级为空数据
+    (告警不中断, 涨幅榜不受影响)。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
     timings key: daily_fetch / mv_fetch / equal_compute / equal_tr_compute / float_compute /
     float_fallback / float_resolve / float_tr_compute / float_tr_fallback / float_tr_resolve /
     total_compute / total_fallback / total_resolve / total_tr_compute / total_tr_fallback /
-    total_tr_resolve / fina_fetch / pe_compute
+    total_tr_resolve / fina_fetch / pe_compute / pb_compute
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -607,20 +661,28 @@ def run_daily_ranking(
     timings["total_tr_fallback"] = tw_tr_timings.get("mv_fallback", 0.0)
     timings["total_tr_resolve"] = tw_tr_timings.get("mv_resolve", 0.0)
 
-    _notify(94.0, "计算行业PE-TTM(扣非)", "计算PE-TTM")
-    pe_timings: dict[str, float] = {}
-    # PE 是涨幅榜的"顺带"指标: 财务接口失败(权限/积分/网络)时报错降级, 不影响涨幅榜主结果
-    pe_free: dict[str, dict[str, float | None]] = {}
-    pe_total: dict[str, dict[str, float | None]] = {}
-    pe_stats: dict[str, int] = {}
-    try:
-        pe_free, pe_total, pe_stats = daily_pe_ttm(
-            tree, market_data, date, timings=pe_timings, cancel_check=cancel_check
-        )
-    except Exception as err:
-        logger.warning(f"PE-TTM 计算失败, 本次仅涨跌幅: {err!r}")
-    timings["fina_fetch"] = pe_timings.get("pe_fetch", 0.0)
-    timings["pe_compute"] = pe_timings.get("pe_compute", 0.0)
+    def _run_valuation(kind: str, label: str, mode: str, compute_key: str) -> dict[str, Any]:
+        """财务指标阶段(pe/pb): 失败时报错降级, 不影响涨幅榜主结果(口径见 daily_valuation_metric)"""
+        _notify(mode, f"计算行业{label}", "计算财务指标")
+        v_timings: dict[str, float] = {}
+        metric_free: dict[str, dict[str, float | None]] = {}
+        metric_total: dict[str, dict[str, float | None]] = {}
+        metric_stats: dict[str, int] = {}
+        try:
+            fn = daily_pe_ttm if kind == "pe" else daily_pb
+            metric_free, metric_total, metric_stats = fn(
+                tree, market_data, date, timings=v_timings, cancel_check=cancel_check
+            )
+        except Exception as err:
+            logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
+        timings["fina_fetch"] = timings.get("fina_fetch", 0.0) + v_timings.get("fetch", 0.0)
+        timings[compute_key] = v_timings.get("compute", 0.0)
+        return {"free": metric_free, "total": metric_total, "stats": metric_stats}
+
+    valuation = {
+        "pe": _run_valuation("pe", "PE-TTM(扣非)", 94.0, "pe_compute"),
+        "pb": _run_valuation("pb", "PB", 95.0, "pb_compute"),
+    }
 
     return (
         ew,
@@ -630,7 +692,7 @@ def run_daily_ranking(
         tw,
         tw_reinvest,
         timings,
-        {"free": pe_free, "total": pe_total, "stats": pe_stats},
+        valuation,
     )
 
 

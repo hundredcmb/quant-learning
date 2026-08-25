@@ -138,9 +138,12 @@ class MarketDataProvider:
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
+        self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 供 PB 净资产折算)
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
-        self._fina_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润)
+        self._fina_period_cache: dict[str, dict[str, tuple[str, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 每股净资产bps)
+        self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
         self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (ttm, 统计)
+        self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
@@ -247,12 +250,13 @@ class MarketDataProvider:
         batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
         date_str = date.strftime("%Y%m%d")
         ts_code_to_total_mv: dict[str, float] = {}
+        ts_code_to_total_share: dict[str, float] = {}
         while True:
             self._acquire_rate_slot("daily_basic")
             df = self.pro.daily_basic(
                 ts_code='',
                 trade_date=date_str,
-                fields='ts_code,close,total_mv,free_share,float_share',
+                fields='ts_code,close,total_mv,free_share,float_share,total_share',
                 offset=offset,
                 limit=batch_size,
             )
@@ -268,6 +272,9 @@ class MarketDataProvider:
                 total_mv = getattr(row, "total_mv", None)
                 if total_mv is not None and not pd.isna(total_mv):
                     ts_code_to_total_mv[ts_code] = float(total_mv)
+                total_share = getattr(row, "total_share", None)
+                if total_share is not None and not pd.isna(total_share) and float(total_share) > 0:
+                    ts_code_to_total_share[ts_code] = float(total_share)  # 万股, 供 PB(H1财报净资产折算)
 
             offset += len(df)
             if batch_size > len(df):
@@ -276,6 +283,7 @@ class MarketDataProvider:
         if ts_code_to_free_mv:
             self.ts_code_to_free_mv_cache[date] = ts_code_to_free_mv
             self.ts_code_to_total_mv_cache[date] = ts_code_to_total_mv
+            self.ts_code_to_total_share_cache[date] = ts_code_to_total_share
 
         return ts_code_to_free_mv
 
@@ -301,6 +309,14 @@ class MarketDataProvider:
         self.get_ts_code_to_free_mv(date)
         return self.ts_code_to_total_mv_cache.get(date) or {}
 
+    def get_ts_code_to_total_share(self, date: datetime) -> dict[str, float]:
+        """获取A股某日的总股本数据(万股): ts_code -> 总股本(与自由流通/总市值同一次请求拉取)
+
+        供 PB 净资产折算(净资产万元 = bps × 总股本万股); 停牌股由市值回退路径顺带补齐
+        """
+        self.get_ts_code_to_free_mv(date)
+        return self.ts_code_to_total_share_cache.get(date) or {}
+
     @staticmethod
     def _fina_ann_date_floor(period: str) -> str:
         """报告期公告日缺失时的法定披露截止日推定(YYYYMMDD)
@@ -317,44 +333,86 @@ class MarketDataProvider:
             return f"{year}1031"
         return f"{year + 1}0430"
 
-    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float]]:
-        """按报告期拉全市场扣非净利润(元): 返回 {ts_code: (ann_date, profit_dedt)}
+    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float]]:
+        """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, profit_dedt, bps)}
 
-        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt'),
+        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,bps'),
         offset 分页循环(单批 FINA_FETCH_BATCH=5999, 实测 limit 生效、全量 6870~8808 行)。
         **数据质量(实测)**: 同一股票同一报告期会返回**多行**(更新行与 NaN 行, 20250630 有 1598 只重复、
-        416 行 profit_dedt 为 NaN)——去重规则: 丢弃 NaN 行, 其余保留最后一条(最新更新);
+        416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: profit_dedt 与 bps 各有自身
+        的最后非空(实测 601318 20260630 两行 bps 均有效但值不同 56.7800/56.7751, 差 0.009%,
+        不能整行丢弃); ann_date 取最后一条的非空值。
         接口对 fields 中不存在的字段名**静默忽略**(不报错), 因此必须用 getattr 防御取值。
         profit_dedt 为**年初至今累计值**(实测 601318 五期 302.59/735.71/1420.57/1437.73/239.12 亿),
-        不是单季值——TTM 换算见 get_ts_code_to_ttm_deducted_profit
+        不是单季值——TTM 换算见 get_ts_code_to_ttm_deducted_profit;
+        bps 为**每股净资产(元)、报告期末时点值**(实测平安 5 期 51.60→56.78 递增), 供 PB 使用
         """
         cached = self._fina_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, tuple[str, float]] = {}
+        rows: dict[str, tuple[str, float, float]] = {}
         offset = 0
         while True:
             self._acquire_rate_slot("fina_indicator_vip")
             df = self.pro.fina_indicator_vip(
                 period=period,
-                fields="ts_code,ann_date,end_date,profit_dedt",
+                fields="ts_code,ann_date,end_date,profit_dedt,bps",
                 offset=offset,
                 limit=FINA_FETCH_BATCH,
             )
             if df is None or len(df) == 0:
                 break
             for row in df.itertuples(index=False):
-                profit = getattr(row, "profit_dedt", None)
-                if profit is None or pd.isna(profit):
-                    continue  # NaN 行丢弃(更新前的占位行), 有效行保留最后一条
                 ts_code = str(row.ts_code)
                 ann_date = str(getattr(row, "ann_date", None) or "")
-                rows[ts_code] = (ann_date, float(profit))
+                profit = getattr(row, "profit_dedt", None)
+                bps = getattr(row, "bps", None)
+                ann_old, profit_old, bps_old = rows.get(ts_code, ("", None, None))
+                rows[ts_code] = (
+                    ann_date or ann_old,
+                    float(profit) if profit is not None and not pd.isna(profit) else profit_old,
+                    float(bps) if bps is not None and not pd.isna(bps) else bps_old,
+                )
             offset += len(df)
             if len(df) < FINA_FETCH_BATCH:
                 break
         self._fina_period_cache[period] = rows
         return rows
+
+    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float]]]]:
+        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, bps)}})
+
+        窗口 = [D-24个月, D] 内所有季末(最多 8 期), 覆盖 PE-TTM 所需"最新期+去年年报+去年同季";
+        PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
+        """
+        cached = self._fina_per_stock_cache.get(date)
+        if cached is not None:
+            return cached
+        date_str = date.strftime("%Y%m%d")
+        start_cut = f"{date.year - 2}{date.month:02d}{date.day:02d}"
+        periods: list[str] = []
+        for year in (date.year - 2, date.year - 1, date.year):
+            for month_day in ("0331", "0630", "0930", "1231"):
+                period = f"{year}{month_day}"
+                if start_cut <= period <= date_str:
+                    periods.append(period)
+        per_stock: dict[str, dict[str, tuple[str, float, float]]] = {}
+        for period in periods:
+            for ts_code, record in self._fetch_fina_period(period).items():
+                per_stock.setdefault(ts_code, {})[period] = record
+        self._fina_per_stock_cache[date] = (periods, per_stock)
+        return periods, per_stock
+
+    def _fina_latest_period(self, by_period: dict[str, tuple[str, float, float]], date_str: str) -> str | None:
+        """PIT 选取: 每股 ann_date <= D 的最大报告期(ann_date 缺失按法定披露截止日推定)"""
+        latest: str | None = None
+        for period in sorted(by_period):
+            ann_date, _profit, _bps = by_period[period]
+            if not ann_date:
+                ann_date = self._fina_ann_date_floor(period)
+            if ann_date <= date_str:
+                latest = period  # 报告期升序, 取最后一个 = 最新期
+        return latest
 
     def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
         """获取各股票截至 date 的扣非净利润 TTM(元): (ttm_map, stats)
@@ -367,7 +425,7 @@ class MarketDataProvider:
         ann_date 缺失时按法定披露截止日推定(_fina_ann_date_floor), 实测批量接口 ann_date 无缺失。
         报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"。
 
-        TTM 规则(算法口径见 AGENTS.md 第 5.1 节与 docs/pe_ttm.md):
+        TTM 规则(算法口径见 AGENTS.md 第 5.1 节与 docs/financial_indicators.md):
           1) 标准式: TTM = 扣非(最新期) + 扣非(去年年报) − 扣非(去年同季)   —— 利润字段为累计值
           2) 不足四期兜底(标准式算不出来, 如新股): TTM = 扣非(最新期) × 4/k,
              k = 最新报告期覆盖的季度数(Q1→1, 中报→2, 三季报→3, 年报→4)
@@ -378,20 +436,7 @@ class MarketDataProvider:
             return cached
 
         date_str = date.strftime("%Y%m%d")
-        # 报告期窗口: [date-24个月, date] 内的季末, 升序
-        start_cut = f"{date.year - 2}{date.month:02d}{date.day:02d}"
-        periods: list[str] = []
-        for year in (date.year - 2, date.year - 1, date.year):
-            for month_day in ("0331", "0630", "0930", "1231"):
-                period = f"{year}{month_day}"
-                if start_cut <= period <= date_str:
-                    periods.append(period)
-
-        # 每股合并: ts_code -> {报告期: (ann_date, 扣非)}
-        per_stock: dict[str, dict[str, tuple[str, float]]] = {}
-        for period in periods:
-            for ts_code, (ann_date, profit) in self._fetch_fina_period(period).items():
-                per_stock.setdefault(ts_code, {})[period] = (ann_date, profit)
+        periods, per_stock = self._fina_per_stock(date)
 
         ttm_map: dict[str, float] = {}
         stats = {
@@ -401,21 +446,21 @@ class MarketDataProvider:
             "stocks_missing": 0,
         }
         for ts_code, by_period in per_stock.items():
-            latest_period: str | None = None
-            for period in sorted(by_period):
-                ann_date, _profit = by_period[period]
-                if not ann_date:
-                    ann_date = self._fina_ann_date_floor(period)
-                if ann_date <= date_str:
-                    latest_period = period  # 报告期升序, 取最后一个 = 最新期
+            latest_period = self._fina_latest_period(by_period, date_str)
             if latest_period is None:
                 stats["stocks_missing"] += 1
                 continue
             latest_profit = by_period[latest_period][1]
+            if latest_profit is None:
+                stats["stocks_missing"] += 1
+                continue  # 记录存在但该期利润字段全为 NaN(字段级去重保留条目、值为 None)
             prev_year = str(int(latest_period[:4]) - 1)
             prev_annual = by_period.get(f"{prev_year}1231")
             prev_same = by_period.get(f"{prev_year}{latest_period[4:]}")
-            if prev_annual is not None and prev_same is not None:
+            if (
+                prev_annual is not None and prev_annual[1] is not None
+                and prev_same is not None and prev_same[1] is not None
+            ):
                 ttm_map[ts_code] = latest_profit + prev_annual[1] - prev_same[1]
                 stats["stocks_standard"] += 1
             else:
@@ -426,6 +471,42 @@ class MarketDataProvider:
 
         self._ttm_cache[date] = (ttm_map, stats)
         return ttm_map, stats
+
+    def get_ts_code_to_bps(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票截至 date 的每股净资产(元): (bps_map, stats)
+
+        bps_map: ts_code -> 最新报告期 bps(每股净资产, 元); stats: {"periods",
+        "stocks_with_bps", "stocks_missing"}。
+
+        与 PE-TTM 同源同批拉取(fina_indicator_vip 的 bps 字段)、同一 PIT 规则
+        (ann_date <= date 的最大报告期, 见 _fina_latest_period); **bps 是报告期末时点值,
+        不是累计值**——无需 TTM 滚动、无"不足四期年化"兜底(新股仅一期也直接用其最新期)。
+        PB 为时点口径: 行业 PB = Σ总市值 / Σ净资产, 净资产(万元) = bps × 总股本(万股)
+        在 daily_pe_ttm/daily_pb 聚合时按当日股本折算(股本变动窗口为近似, 见 known_issues 第 37 条)
+        """
+        cached = self._bps_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        periods, per_stock = self._fina_per_stock(date)
+
+        bps_map: dict[str, float] = {}
+        stats = {"periods": len(periods), "stocks_with_bps": 0, "stocks_missing": 0}
+        for ts_code, by_period in per_stock.items():
+            latest_period = self._fina_latest_period(by_period, date_str)
+            if latest_period is None:
+                stats["stocks_missing"] += 1
+                continue
+            bps = by_period[latest_period][2]
+            if bps is None:
+                stats["stocks_missing"] += 1
+                continue
+            bps_map[ts_code] = bps
+            stats["stocks_with_bps"] += 1
+
+        self._bps_cache[date] = (bps_map, stats)
+        return bps_map, stats
 
     def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表
@@ -582,23 +663,23 @@ class MarketDataProvider:
         start_str: str,
         cancel_check: CancelCheck | None,
         fast_limits: tuple[int, ...] | None = None,
-    ) -> tuple[float | None, float | None]:
-        """在 [start_str, date] 窗口内取停牌前最近有效自由流通市值与总市值
+    ) -> tuple[float | None, float | None, float | None]:
+        """在 [start_str, date] 窗口内取停牌前最近有效自由流通市值、总市值与总股本
 
         响应按 trade_date 降序(实测验证)。fast_limits 提供"阶梯式"取最近 N 行试命中(极小 payload,
         按 5 -> 100 逐级放大), 任何一级命中**自由流通市值**即返回(以 free 为准, 避免 total 命中却
         漏掉 free——free 缺失行(字段缺失/非正)需向前找正常行, 比例越界行现视为正常、直接采信);
         全部未命中才同一窗口全量扫描。free 是决定性字段。
         自由流通市值要求 close/free_share/float_share 取自同一行(同一交易日)计算,
-        避免混搭不同日期的股本; 总市值可独立取最近有效值
+        避免混搭不同日期的股本; 总市值与总股本(万股, 供 PB 净资产折算)取同一行、可独立取最近有效值
         """
         if cancel_check is not None:
             cancel_check()
 
-        def _scan(rows_limit: int | None) -> tuple[float | None, float | None, bool]:
+        def _scan(rows_limit: int | None) -> tuple[float | None, float | None, float | None, bool]:
             kw: dict[str, object] = {
                 "ts_code": ts_code,
-                "fields": "trade_date,close,total_mv,free_share,float_share",
+                "fields": "trade_date,close,total_mv,free_share,float_share,total_share",
                 "start_date": start_str,
                 "end_date": date.strftime("%Y%m%d"),
             }
@@ -608,6 +689,7 @@ class MarketDataProvider:
             df = self.pro.daily_basic(**kw)
             free: float | None = None
             total: float | None = None
+            total_share: float | None = None
             for row in df.itertuples(index=False):
                 if cancel_check is not None:
                     cancel_check()
@@ -623,27 +705,31 @@ class MarketDataProvider:
                     cand = getattr(row, "total_mv", None)
                     if cand is not None and not pd.isna(cand):
                         total = float(cand)
-                if free is not None and total is not None:
+                if total_share is None:
+                    cand_share = getattr(row, "total_share", None)
+                    if cand_share is not None and not pd.isna(cand_share) and float(cand_share) > 0:
+                        total_share = float(cand_share)  # 万股, 与 total 同行同口径
+                if free is not None and total is not None and total_share is not None:
                     break
-            return free, total, bool(len(df))
+            return free, total, total_share, bool(len(df))
 
         if fast_limits:
             for n in fast_limits:
-                free, total, has_rows = _scan(n)
+                free, total, total_share, has_rows = _scan(n)
                 if not has_rows:
                     # 该窗口本轮无任何行: 放大 limit / 全扫同样为空, 直接结束(缩短深停牌空探测)
-                    return None, None
+                    return None, None, None
                 if free is not None:
-                    return free, total
-        free, total, _ = _scan(None)
-        return free, total
+                    return free, total, total_share
+        free, total, total_share, _ = _scan(None)
+        return free, total, total_share
 
     def _resolve_mvs(
         self,
         ts_code: str,
         date: datetime,
         cancel_check: CancelCheck | None,
-    ) -> tuple[float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None]:
         """旧逻辑(legacy, 保留以对比耗时): 一次请求查 730 天内最近的有效自由流通市值与总市值, 查不到返回 None
 
         最多支持连续停牌约 2 年(730 天); 超长停牌取不到 → None → 仅参与等权榜
@@ -656,19 +742,19 @@ class MarketDataProvider:
         ts_code: str,
         date: datetime,
         cancel_check: CancelCheck | None,
-    ) -> tuple[float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None]:
         """新策略逐股残留: 先近 730 天快路径(limit=5 极小 payload), 拿不到**自由流通市值**再全窗回到上市日
         (几乎不放弃股票; 以 free 为准, 避免 total 命中却跳过上市日导致 free 被放弃)
 
         全窗口 [_MV_LISTING_FLOOR(早于所有 A 股上市日), date] 一次请求、降序取最近有效行;
-        只有整个上市期都没有 daily_basic 数据时才返回 (None, None)(→ 仅参与等权榜并告警)
+        只有整个上市期都没有 daily_basic 数据时才返回 (None, None, None)(→ 仅参与等权榜并告警)
         """
-        free, total = self._resolve_mvs_in_window(
+        free, total, total_share = self._resolve_mvs_in_window(
             ts_code, date, (date - timedelta(days=730)).strftime("%Y%m%d"), cancel_check,
             fast_limits=(1, 100),
         )
         if free is not None:
-            return free, total
+            return free, total, total_share
         return self._resolve_mvs_in_window(
             ts_code, date, _MV_LISTING_FLOOR, cancel_check, fast_limits=(1, 100)
         )
@@ -692,6 +778,7 @@ class MarketDataProvider:
             return
         target_free = self.ts_code_to_free_mv_cache.setdefault(date, {})
         target_total = self.ts_code_to_total_mv_cache.setdefault(date, {})
+        target_total_share = self.ts_code_to_total_share_cache.setdefault(date, {})
         with ThreadPoolExecutor(max_workers=MV_RESOLVE_WORKERS) as executor:
             futures = {
                 executor.submit(self._resolve_mvs_until_listing, c, date, cancel_check): c
@@ -699,11 +786,13 @@ class MarketDataProvider:
             }
             for future in as_completed(futures):
                 c = futures[future]
-                free, total = future.result()
+                free, total, total_share = future.result()
                 if free is not None:
                     target_free[c] = free
                 if total is not None:
                     target_total[c] = total
+                if total_share is not None:
+                    target_total_share[c] = total_share
 
     def resolve_free_mv(
         self,
@@ -719,11 +808,13 @@ class MarketDataProvider:
         if cached is not None:
             return cached
         if self.resolve_mode == "legacy":
-            free, total = self._resolve_mvs(ts_code, date, cancel_check)
+            free, total, total_share = self._resolve_mvs(ts_code, date, cancel_check)
         else:
-            free, total = self._resolve_mvs_until_listing(ts_code, date, cancel_check)
+            free, total, total_share = self._resolve_mvs_until_listing(ts_code, date, cancel_check)
         if total is not None:
             self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
+        if total_share is not None:
+            self.ts_code_to_total_share_cache.setdefault(date, {})[ts_code] = total_share
         if free is not None:
             self.ts_code_to_free_mv_cache.setdefault(date, {})[ts_code] = free
         return free
@@ -739,11 +830,13 @@ class MarketDataProvider:
         if cached is not None:
             return cached
         if self.resolve_mode == "legacy":
-            free, total = self._resolve_mvs(ts_code, date, cancel_check)
+            free, total, total_share = self._resolve_mvs(ts_code, date, cancel_check)
         else:
-            free, total = self._resolve_mvs_until_listing(ts_code, date, cancel_check)
+            free, total, total_share = self._resolve_mvs_until_listing(ts_code, date, cancel_check)
         if total is not None:
             self.ts_code_to_total_mv_cache.setdefault(date, {})[ts_code] = total
+        if total_share is not None:
+            self.ts_code_to_total_share_cache.setdefault(date, {})[ts_code] = total_share
         return total
 
     def get_trading_days(self, start_str: str, end_str: str) -> list[str]:

@@ -11,9 +11,9 @@
 | `index_member_all` | 行业成分股 | `offset, limit=1999` | 循环直到不足一批 | 按 `l3_code` 挂到三级节点 |
 | `trade_cal` | 区间交易日列表 | `exchange='SSE', start_date, end_date, is_open='1', fields='cal_date'` | 一次 | 区间榜取交易日用 |
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
-| `daily_basic`（全市场） | 单日自由流通市值/总市值 | `ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量；自由流通市值 = `free_share × close`（三者同行取值，等价于 `circ_mv × free_share / float_share`） |
-| `daily_basic`（单只） | 停牌回退查自由流通市值/总市值 | `ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条；自由流通市值三字段须取自同一行 |
-| `fina_indicator_vip` | 单日榜 PE-TTM：按报告期全市场拉扣非净利润 | `period, fields='ts_code,ann_date,end_date,profit_dedt', offset, limit=5999`；也支持单只/多只 `ts_code` 查询 | offset/limit 分页循环直到不足一批 | **VIP 接口（需对应积分权限）**；`limit` 参数生效（实测 limit=5999 如实截断、limit≥8000 一次性取回全量）；全量单次返回观察 6870~8808 行（20260331 6870、20250630 8080、20250331 8808）；`profit_dedt`=归属母公司扣非净利润、单位元、**年初至今累计值**（非单季）；`ann_date`=报表公告日（实测无缺失）；**同股票同报告期有重复行（含 NaN 占位行，20250630 约 1600 只）**，实现丢弃 NaN、保留最后一条；fields 对**不存在的字段名静默忽略**（不报错），必须 `getattr` 防御；限流走独立节流器 |
+| `daily_basic`（全市场） | 单日自由流通市值/总市值/总股本 | `ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share,total_share', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量；自由流通市值 = `free_share × close`（三者同行取值，等价于 `circ_mv × free_share / float_share`）；`total_share`（万股）供 PB 净资产折算 |
+| `daily_basic`（单只） | 停牌回退查自由流通市值/总市值/总股本 | `ts_code, fields='trade_date,close,total_mv,free_share,float_share,total_share', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条；自由流通市值三字段须取自同一行；`total_share` 与总市值同行 |
+| `fina_indicator_vip` | 单日榜财务指标：按报告期全市场拉扣非净利润与每股净资产 | `period, fields='ts_code,ann_date,end_date,profit_dedt,bps', offset, limit=5999`；也支持单只/多只 `ts_code` 查询 | offset/limit 分页循环直到不足一批 | **VIP 接口（需对应积分权限）**；`limit` 参数生效（实测 limit=5999 如实截断、limit≥8000 一次性取回全量）；全量单次返回观察 6870~8808 行（20260331 6870、20250630 8080、20250331 8808）；`profit_dedt`=归属母公司扣非净利润、单位元、**年初至今累计值**（非单季）；`bps`=每股净资产、单位元、**报告期末时点值**（非累计）；`ann_date`=报表公告日（实测无缺失）；**同股票同报告期有重复行（含 NaN 行，20250630 约 1600 只重复；实测 601318 两行 bps 均有效但值不同）**，实现为**字段级**各自取最后非空；fields 对**不存在的字段名静默忽略**（不报错），必须 `getattr` 防御；限流走独立节流器 |
 
 ## 调用约定
 

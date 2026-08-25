@@ -385,14 +385,16 @@ function renderMainTable() {
   const sourceRows = state.result.levels[level] || [];
   const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
   const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
-  // PE-TTM 单列随加权方式切换口径: 总市值(含全收益)用总市值口径、自由流通(含全收益)用自由流通口径、等权无定义(undefined -> "—")
-  const peField = { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float", equal: null, equal_tr: null }[state.weight] || null;
+  // 财务指标单列随加权方式切换口径: 总市值(含全收益)用总市值口径、自由流通(含全收益)用自由流通口径、等权无定义(undefined -> "—")
+  const peField = { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float" }[state.weight] || null;
+  const pbField = { total: "pb_total", total_tr: "pb_total", float: "pb_float", float_tr: "pb_float" }[state.weight] || null;
   const rows = sourceRows.map((row, index) => ({
     ...row,
     rank: index + 1,
     pct: row[pctField],
     count: row[countField],
     pe: peField ? row[peField] : undefined,
+    pb: pbField ? row[pbField] : undefined,
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -426,7 +428,8 @@ function renderMainTable() {
       <td>${indexCodeHtml}</td>
       <td>${industryNameHtml}</td>
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
-      <td>${formatPe(row.pe)}</td>
+      <td>${formatMetric(row.pe, "亏损")}</td>
+      <td>${formatMetric(row.pb, "资不抵债")}</td>
       <td>${countHtml}</td>
     `;
     tbody.appendChild(tr);
@@ -945,10 +948,10 @@ function formatPct(value) {
   return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
 }
 
-function formatPe(value) {
-  // 键缺失(undefined) = 无数据/区间榜未计算; null = 行业扣非TTM合计<=0(亏损)
+function formatMetric(value, nullLabel) {
+  // 键缺失(undefined) = 无数据/区间榜未计算; null = 行业股东值合计<=0(PE 亏损 / PB 资不抵债)
   if (value === null) {
-    return "亏损";
+    return nullLabel;
   }
   if (value === undefined || Number.isNaN(Number(value))) {
     return "—";

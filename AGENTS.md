@@ -31,7 +31,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 | `output/` | 图片运行产物目录 |
 | `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/` | 申万行业模块：行业树 + 单日/区间涨幅榜（等权 / 自由流通市值加权 / 总市值加权）+ FastAPI Web 服务与桌面启动器；各文件功能、算法权威描述与强制核对流程见模块内 `AGENTS.md` |
-| `shenwan_industry/docs/` | 模块文档：`interface_notes.md`（Tushare 接口交互明细）、`known_issues.md`（已知边界与易错点）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度）、`Shenwan_Index_Series_Algorithm_Text.md`（申万官方指数算法纯文字版，**只读禁止修改**） |
+| `shenwan_industry/docs/` | 模块文档：`interface_notes.md`（Tushare 接口交互明细）、`known_issues.md`（已知边界与易错点）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度）、`financial_indicators.md`（财务指标算法：PE-TTM/PB）、`Shenwan_Index_Series_Algorithm_Text.md`（申万官方指数算法纯文字版，**只读禁止修改**） |
 | `vnpy_examples/` | vnpy 学习示例目录（配置、数据、图表、指标、回测等），按编号顺序学习 |
 
 ## 代码约定
