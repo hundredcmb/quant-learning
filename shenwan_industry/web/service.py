@@ -535,6 +535,26 @@ def _run_daily(
     total_map = provider.get_ts_code_to_total_mv(rank_date)
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
+    # 个股估值(成分股子表展示, 总市值口径, 与行业总市值口径公式一致): 财务缓存命中零请求
+    # PE = 总市值(万元)/(TTM扣非(元)/1e4); PB = 总市值(万元)/(bps×当日总股本(万股))
+    # 值 None = 亏损(TTM<=0) / 资不抵债(净资产<=0); 键缺失 = 无数据(前端显示"—")
+    ttm_map, _ = provider.get_ts_code_to_ttm_deducted_profit(rank_date)
+    bps_map, _ = provider.get_ts_code_to_bps(rank_date)
+    share_map = provider.get_ts_code_to_total_share(rank_date)
+    stock_pe: dict[str, float | None] = {}
+    stock_pb: dict[str, float | None] = {}
+    for ts_code, ttm in ttm_map.items():
+        total_mv = total_map.get(ts_code)
+        if total_mv is None:
+            continue
+        profit_wan = ttm / 1e4
+        stock_pe[ts_code] = total_mv / profit_wan if profit_wan > 0 else None
+        bps = bps_map.get(ts_code)
+        share = share_map.get(ts_code)
+        if bps is not None and share is not None:
+            equity_wan = bps * share
+            stock_pb[ts_code] = total_mv / equity_wan if equity_wan > 0 else None
+
     result = {
         "mode": "daily",
         "date": date_str,
@@ -561,6 +581,8 @@ def _run_daily(
         "free_mv": free_map,
         "total_mv": total_map,
         "amount": amount_map,
+        "stock_pe": stock_pe,
+        "stock_pb": stock_pb,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -769,17 +791,20 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             if mv is None or (isinstance(mv, float) and math.isnan(mv)):
                 continue
 
-        rows.append(
-            {
-                "ts_code": ts_code,
-                "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
-                "pct_chg": pct_chg,
-                "close": close_map.get(ts_code),
-                "free_mv": free_map.get(ts_code),
-                "total_mv": total_map.get(ts_code),
-                "amount": amount_map.get(ts_code),
-            }
-        )
+        row = {
+            "ts_code": ts_code,
+            "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
+            "pct_chg": pct_chg,
+            "close": close_map.get(ts_code),
+            "free_mv": free_map.get(ts_code),
+            "total_mv": total_map.get(ts_code),
+            "amount": amount_map.get(ts_code),
+        }
+        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); 键缺失 = 无数据, None = 亏损/资不抵债
+        if "stock_pe" in context:
+            row["pe_ttm"] = context["stock_pe"].get(ts_code)
+            row["pb"] = context["stock_pb"].get(ts_code)
+        rows.append(row)
     return rows
 
 

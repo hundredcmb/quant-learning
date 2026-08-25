@@ -534,6 +534,8 @@ function renderSubTable() {
       <td>${formatAmountColumn(row.amount)}</td>
       <td>${formatCircMv(row.total_mv)}</td>
       <td>${formatCircMv(row.free_mv)}</td>
+      <td>${formatMetric(row.pe_ttm, "亏损")}</td>
+      <td>${formatMetric(row.pb, "资不抵债")}</td>
     `;
     tbody.appendChild(tr);
   });
