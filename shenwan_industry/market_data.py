@@ -2,6 +2,8 @@
 申万行业行情数据层 (MarketDataProvider)
 
 - 行情/市值获取: daily / daily_basic, 带按日内存缓存(涨跌幅口径见 shenwan_industry/AGENTS.md 第 3 节)
+- 财务指标: fina_indicator_vip 按报告期全市场批拉扣非净利润(profit_dedt), 供单日榜 PE-TTM
+  (PIT 按时点过滤 ann_date <= 计算日, 累计值口径与 TTM 规则见 get_ts_code_to_ttm_deducted_profit)
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -40,11 +42,20 @@ MV_RESOLVE_WORKERS = int(os.environ.get("SW_MV_RESOLVE_WORKERS", "8"))
 # 逐股残留"全窗回到上市日"的下界: 早于所有 A 股上市日, 等价于查完全部上市期
 _MV_LISTING_FLOOR = "19900101"
 
+# 财务指标(VIP)批拉: 实测按 period 可一次返回全市场(20260331 共 6870 行、20250630 共 8080 行),
+# limit 参数生效且如实截断(limit=5999 -> 5999 行), 分页循环直到不足一批; 每接口限流独立(同 7.5/s 节流)
+FINA_FETCH_BATCH = 5999
+# PE-TTM 报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"全部组合
+FINA_TTM_WINDOW_MONTHS = 24
+
 
 def wrap_api_counter(pro) -> dict[str, int]:
     """包装 tushare pro 常用接口以统计调用次数, 返回按接口名计数的 dict"""
     counter: dict[str, int] = {}
-    for name in ("stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal", "dividend"):
+    for name in (
+        "stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal",
+        "dividend", "fina_indicator_vip",
+    ):
         orig = getattr(pro, name)
 
         def make_wrapper(n: str, o):
@@ -128,6 +139,8 @@ class MarketDataProvider:
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
+        self._fina_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润)
+        self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (ttm, 统计)
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
@@ -287,6 +300,132 @@ class MarketDataProvider:
         """获取A股某日的总市值数据: ts_code -> 总市值(与自由流通市值同一次请求拉取)"""
         self.get_ts_code_to_free_mv(date)
         return self.ts_code_to_total_mv_cache.get(date) or {}
+
+    @staticmethod
+    def _fina_ann_date_floor(period: str) -> str:
+        """报告期公告日缺失时的法定披露截止日推定(YYYYMMDD)
+
+        Q1 -> 当年 04-30; 中报 -> 08-31; 三季报 -> 10-31; 年报 -> 次年 04-30
+        """
+        year = int(period[:4])
+        month_day = period[4:]
+        if month_day == "0331":
+            return f"{year}0430"
+        if month_day == "0630":
+            return f"{year}0831"
+        if month_day == "0930":
+            return f"{year}1031"
+        return f"{year + 1}0430"
+
+    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float]]:
+        """按报告期拉全市场扣非净利润(元): 返回 {ts_code: (ann_date, profit_dedt)}
+
+        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt'),
+        offset 分页循环(单批 FINA_FETCH_BATCH=5999, 实测 limit 生效、全量 6870~8808 行)。
+        **数据质量(实测)**: 同一股票同一报告期会返回**多行**(更新行与 NaN 行, 20250630 有 1598 只重复、
+        416 行 profit_dedt 为 NaN)——去重规则: 丢弃 NaN 行, 其余保留最后一条(最新更新);
+        接口对 fields 中不存在的字段名**静默忽略**(不报错), 因此必须用 getattr 防御取值。
+        profit_dedt 为**年初至今累计值**(实测 601318 五期 302.59/735.71/1420.57/1437.73/239.12 亿),
+        不是单季值——TTM 换算见 get_ts_code_to_ttm_deducted_profit
+        """
+        cached = self._fina_period_cache.get(period)
+        if cached is not None:
+            return cached
+        rows: dict[str, tuple[str, float]] = {}
+        offset = 0
+        while True:
+            self._acquire_rate_slot("fina_indicator_vip")
+            df = self.pro.fina_indicator_vip(
+                period=period,
+                fields="ts_code,ann_date,end_date,profit_dedt",
+                offset=offset,
+                limit=FINA_FETCH_BATCH,
+            )
+            if df is None or len(df) == 0:
+                break
+            for row in df.itertuples(index=False):
+                profit = getattr(row, "profit_dedt", None)
+                if profit is None or pd.isna(profit):
+                    continue  # NaN 行丢弃(更新前的占位行), 有效行保留最后一条
+                ts_code = str(row.ts_code)
+                ann_date = str(getattr(row, "ann_date", None) or "")
+                rows[ts_code] = (ann_date, float(profit))
+            offset += len(df)
+            if len(df) < FINA_FETCH_BATCH:
+                break
+        self._fina_period_cache[period] = rows
+        return rows
+
+    def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票截至 date 的扣非净利润 TTM(元): (ttm_map, stats)
+
+        ttm_map: ts_code -> TTM 扣非净利润(元); stats: {"periods", "stocks_standard",
+        "stocks_annualized", "stocks_missing"} 全市场口径统计。
+
+        时点正确性(PIT): 每股"最新期"取 ann_date <= date 的最大报告期——回看历史日期时只用
+        当时已公开的财报, 消除前视偏差(实测 2025-04-07 当天全市场无一家公布 Q1'25, 全部落在年报);
+        ann_date 缺失时按法定披露截止日推定(_fina_ann_date_floor), 实测批量接口 ann_date 无缺失。
+        报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"。
+
+        TTM 规则(算法口径见 AGENTS.md 第 5.1 节与 docs/pe_ttm.md):
+          1) 标准式: TTM = 扣非(最新期) + 扣非(去年年报) − 扣非(去年同季)   —— 利润字段为累计值
+          2) 不足四期兜底(标准式算不出来, 如新股): TTM = 扣非(最新期) × 4/k,
+             k = 最新报告期覆盖的季度数(Q1→1, 中报→2, 三季报→3, 年报→4)
+        结果按计算日缓存, 报告期数据跨天复用(财务数据仅在财报季变化)
+        """
+        cached = self._ttm_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        # 报告期窗口: [date-24个月, date] 内的季末, 升序
+        start_cut = f"{date.year - 2}{date.month:02d}{date.day:02d}"
+        periods: list[str] = []
+        for year in (date.year - 2, date.year - 1, date.year):
+            for month_day in ("0331", "0630", "0930", "1231"):
+                period = f"{year}{month_day}"
+                if start_cut <= period <= date_str:
+                    periods.append(period)
+
+        # 每股合并: ts_code -> {报告期: (ann_date, 扣非)}
+        per_stock: dict[str, dict[str, tuple[str, float]]] = {}
+        for period in periods:
+            for ts_code, (ann_date, profit) in self._fetch_fina_period(period).items():
+                per_stock.setdefault(ts_code, {})[period] = (ann_date, profit)
+
+        ttm_map: dict[str, float] = {}
+        stats = {
+            "periods": len(periods),
+            "stocks_standard": 0,
+            "stocks_annualized": 0,
+            "stocks_missing": 0,
+        }
+        for ts_code, by_period in per_stock.items():
+            latest_period: str | None = None
+            for period in sorted(by_period):
+                ann_date, _profit = by_period[period]
+                if not ann_date:
+                    ann_date = self._fina_ann_date_floor(period)
+                if ann_date <= date_str:
+                    latest_period = period  # 报告期升序, 取最后一个 = 最新期
+            if latest_period is None:
+                stats["stocks_missing"] += 1
+                continue
+            latest_profit = by_period[latest_period][1]
+            prev_year = str(int(latest_period[:4]) - 1)
+            prev_annual = by_period.get(f"{prev_year}1231")
+            prev_same = by_period.get(f"{prev_year}{latest_period[4:]}")
+            if prev_annual is not None and prev_same is not None:
+                ttm_map[ts_code] = latest_profit + prev_annual[1] - prev_same[1]
+                stats["stocks_standard"] += 1
+            else:
+                month_day = latest_period[4:]
+                k = 4 if month_day == "1231" else (3 if month_day == "0930" else (2 if month_day == "0630" else 1))
+                ttm_map[ts_code] = latest_profit * (4.0 / k)
+                stats["stocks_annualized"] += 1
+
+        self._ttm_cache[date] = (ttm_map, stats)
+        return ttm_map, stats
 
     def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表

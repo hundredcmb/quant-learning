@@ -520,7 +520,7 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings = run_daily_ranking(
+    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, pe_data = run_daily_ranking(
         tree,
         provider,
         rank_date,
@@ -538,7 +538,17 @@ def _run_daily(
     result = {
         "mode": "daily",
         "date": date_str,
-        "levels": _build_levels(tree, ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest),
+        "levels": _build_levels(
+            tree,
+            ew,
+            ew_reinvest,
+            fw,
+            fw_reinvest,
+            tw,
+            tw_reinvest,
+            pe_free=pe_data["free"],
+            pe_total=pe_data["total"],
+        ),
     }
     context = {
         "mode": "daily",
@@ -633,6 +643,8 @@ def _build_levels(
     fw_reinvest: tuple[list, list, list],
     tw: tuple[list, list, list],
     tw_reinvest: tuple[list, list, list],
+    pe_free: dict[str, dict[str, float | None]] | None = None,
+    pe_total: dict[str, dict[str, float | None]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -663,24 +675,28 @@ def _build_levels(
             node = tree.index_code_to_node.get(index_code)
             if node is None:
                 continue
-            rows.append(
-                {
-                    "index_code": index_code,
-                    "industry_name": node.industry_name_long,
-                    "total_weighted_pct": tw_item[0],
-                    "total_tr_weighted_pct": tfr_item[0],
-                    "float_weighted_pct": fw_pct,
-                    "float_tr_weighted_pct": fr_item[0],
-                    "equal_weighted_pct": ew_item[0],
-                    "equal_tr_weighted_pct": ewt_item[0],
-                    "total_constituent_count": tw_item[1],
-                    "total_tr_constituent_count": tfr_item[1],
-                    "float_constituent_count": fw_count,
-                    "float_tr_constituent_count": fr_item[1],
-                    "equal_constituent_count": ew_item[1],
-                    "equal_tr_constituent_count": ewt_item[1],
-                }
-            )
+            row = {
+                "index_code": index_code,
+                "industry_name": node.industry_name_long,
+                "total_weighted_pct": tw_item[0],
+                "total_tr_weighted_pct": tfr_item[0],
+                "float_weighted_pct": fw_pct,
+                "float_tr_weighted_pct": fr_item[0],
+                "equal_weighted_pct": ew_item[0],
+                "equal_tr_weighted_pct": ewt_item[0],
+                "total_constituent_count": tw_item[1],
+                "total_tr_constituent_count": tfr_item[1],
+                "float_constituent_count": fw_count,
+                "float_tr_constituent_count": fr_item[1],
+                "equal_constituent_count": ew_item[1],
+                "equal_tr_constituent_count": ewt_item[1],
+            }
+            # PE 列仅单日榜携带: 值 None = 行业扣非TTM合计<=0(亏损), 键缺失 = 未计算/失败降级(前端显示"—");
+            # 成功时 pe_free/pe_total 必含 "1"/"2"/"3" 键(非空), 空 dict 视为计算失败(与区间榜同不携带)
+            if pe_free and pe_total:
+                row["pe_ttm_float"] = pe_free.get(level_name, {}).get(index_code)
+                row["pe_ttm_total"] = pe_total.get(level_name, {}).get(index_code)
+            rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows
     return levels

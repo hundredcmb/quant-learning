@@ -13,7 +13,7 @@
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日自由流通市值/总市值 | `ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量；自由流通市值 = `free_share × close`（三者同行取值，等价于 `circ_mv × free_share / float_share`） |
 | `daily_basic`（单只） | 停牌回退查自由流通市值/总市值 | `ts_code, fields='trade_date,close,total_mv,free_share,float_share', start_date, end_date` | 不分页 | 响应按 `trade_date` 降序，取 ≤ date 最新一条；自由流通市值三字段须取自同一行 |
-| `sw_daily` | 申万行业指数日 K 线（Web；L1 全覆盖，L2/L3 按可用性） | `ts_code, start_date, end_date`；另支持仅 `trade_date` 一次拉全市场 | 一次（单次上限 4000 行） | 可用性判定：`trade_date` 全量拉取与 `data/SW2021.json` 求交集，**服务启动时后台探测一次、内存缓存（无文件）**，前端 `/api/index/available` 在探测完成前等待就绪 |
+| `fina_indicator_vip` | 单日榜 PE-TTM：按报告期全市场拉扣非净利润 | `period, fields='ts_code,ann_date,end_date,profit_dedt', offset, limit=5999`；也支持单只/多只 `ts_code` 查询 | offset/limit 分页循环直到不足一批 | **VIP 接口（需对应积分权限）**；`limit` 参数生效（实测 limit=5999 如实截断、limit≥8000 一次性取回全量）；全量单次返回观察 6870~8808 行（20260331 6870、20250630 8080、20250331 8808）；`profit_dedt`=归属母公司扣非净利润、单位元、**年初至今累计值**（非单季）；`ann_date`=报表公告日（实测无缺失）；**同股票同报告期有重复行（含 NaN 占位行，20250630 约 1600 只）**，实现丢弃 NaN、保留最后一条；fields 对**不存在的字段名静默忽略**（不报错），必须 `getattr` 防御；限流走独立节流器 |
 
 ## 调用约定
 

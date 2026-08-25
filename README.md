@@ -4,7 +4,7 @@ A 股复盘与投研辅助项目（量化为辅），主要用于辅助每日复
 
 本项目是一套可直接运行的 Python 脚本，分为**互不依赖的两部分**：
 
-- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
+- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业 PE-TTM（扣非净利润，自由流通 / 总市值两种合成口径，计算方法见 `shenwan_industry/docs/pe_ttm.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
 - **vnpy 生态**（`holders/` + `vnpy_examples/`）：十大股东席位关键词分析（国家队、社保、险资等，含 ETF）+ vnpy 入门示例（K 线入库、图表、指标、回测）。**必须依赖 vnpy 客户端（veighna studio）环境**
 
 ---
@@ -40,7 +40,7 @@ python3 -m venv .venv
 
 token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore，不随仓库提交，权限 600），CLI 与 Web 共用这份配置，只需配置一次。
 
-> Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限。
+> Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限；单日榜 PE-TTM 另需 **VIP 接口 `fina_indicator_vip`**（需对应积分；积分不足时 PE 列显示"—"，涨幅榜不受影响，见 `shenwan_industry/docs/pe_ttm.md`）。
 
 ## 3. 启动 Web 服务
 
@@ -50,7 +50,7 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 
 浏览器访问 <http://127.0.0.1:9010/>，支持：
 
-- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级）
+- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级；单日榜含行业 PE-TTM 一列，随加权方式显示对应口径，等权为空）
 - 行业成分股子表
 - 一级行业官方指数 K 线（成交额/成交量切换）
 - 任务进度条与取消
@@ -76,7 +76,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 ## 5. 功能说明
 
-行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜 PE-TTM 用扣非净利润（`fina_indicator_vip` 按报告期批拉、按 `ann_date` 做时点过滤），每股取截至当日已披露的最新 TTM（不足四期按 4/k 年化），行业合成 = ∑市值 / ∑分摊利润，详见 `shenwan_industry/docs/pe_ttm.md`。
 
 ---
 

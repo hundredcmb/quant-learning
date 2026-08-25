@@ -5,8 +5,8 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const WEIGHT_LABELS = { total: "总市值加权", total_tr: "总市值加权(全收益)", float: "自由流通市值加权", float_tr: "自由流通市值加权(全收益)", equal: "等权", equal_tr: "等权(全收益)" };
 
 function updateMainPctHeader() {
-  const label = WEIGHT_LABELS[state.weight] || WEIGHT_LABELS.float;
-  $("#main-pct-header").textContent = `${label}涨幅`;
+  // 加权方式已由上方"加权方式"下拉选择器说明, 列头不再叠加口径, 固定为"涨幅"
+  $("#main-pct-header").textContent = "涨幅";
 }
 
 const state = {
@@ -385,11 +385,14 @@ function renderMainTable() {
   const sourceRows = state.result.levels[level] || [];
   const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
   const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
+  // PE-TTM 单列随加权方式切换口径: 总市值(含全收益)用总市值口径、自由流通(含全收益)用自由流通口径、等权无定义(undefined -> "—")
+  const peField = { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float", equal: null, equal_tr: null }[state.weight] || null;
   const rows = sourceRows.map((row, index) => ({
     ...row,
     rank: index + 1,
     pct: row[pctField],
     count: row[countField],
+    pe: peField ? row[peField] : undefined,
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -423,6 +426,7 @@ function renderMainTable() {
       <td>${indexCodeHtml}</td>
       <td>${industryNameHtml}</td>
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
+      <td>${formatPe(row.pe)}</td>
       <td>${countHtml}</td>
     `;
     tbody.appendChild(tr);
@@ -877,14 +881,18 @@ function sortRows(rows, sortState) {
     if (typeof aValue === "string" && typeof bValue === "string") {
       return aValue.localeCompare(bValue, "zh-CN") * direction;
     }
-    if (aValue == null && bValue == null) {
-      return 0;
+    // null(如 PE 列"亏损")按最大值参与升降序: 降序置顶、升序置底; undefined(无数据)恒置底
+    if (aValue === null || bValue === null) {
+      if (aValue === null && bValue === null) {
+        return 0;
+      }
+      return aValue === null ? direction : -direction;
     }
-    if (aValue == null) {
-      return 1;
-    }
-    if (bValue == null) {
-      return -1;
+    if (aValue === undefined || bValue === undefined) {
+      if (aValue === undefined && bValue === undefined) {
+        return 0;
+      }
+      return aValue === undefined ? 1 : -1;
     }
     return (Number(aValue) - Number(bValue)) * direction;
   });
@@ -935,6 +943,17 @@ function formatPct(value) {
   }
   const number = Number(value);
   return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
+}
+
+function formatPe(value) {
+  // 键缺失(undefined) = 无数据/区间榜未计算; null = 行业扣非TTM合计<=0(亏损)
+  if (value === null) {
+    return "亏损";
+  }
+  if (value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return Number(value).toFixed(2);
 }
 
 function formatPrice(value) {

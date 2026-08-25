@@ -4,17 +4,17 @@
 
 ## 模块职责与文件
 
-- 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 自由流通市值加权 / 总市值加权），当前为控制台输出脚本（与 `holders/` 生成图片不同）
+- 模块内容：申万 2021 三级行业分类树 + 行业涨幅榜（单日榜 / 区间累计榜，等权 / 自由流通市值加权 / 总市值加权）+ **单日榜 PE-TTM 估值列**（扣非净利润，自由流通 / 总市值两种合成口径，见第 5.1 节与 `docs/pe_ttm.md`），当前为控制台输出脚本（与 `holders/` 生成图片不同）
 - 文件：
   - `industry_tree.py`：行业树与成分数据层（`ShenWanIndustryNode` / `ShenWanIndustryTree`：树构建、成分加载、`in_date`/`delist_date` 记录、股票池过滤 `filter_stock_pool`）
-  - `market_data.py`：行情数据层 `MarketDataProvider`（API 调用计数、按日缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取）
-  - `industry_ranking.py`：排行榜算法库（`daily_rank_equal_weight` / `daily_rank_float_weight` / `run_daily_ranking` / `rank_range`）+ 耗时工具 `print_timing`
+  - `market_data.py`：行情数据层 `MarketDataProvider`（API 调用计数、按日缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取；**财务指标 `fina_indicator_vip` 批拉与每股扣非 TTM**，见第 5.1 节）
+  - `industry_ranking.py`：排行榜算法库（`daily_rank_equal_weight` / `daily_rank_float_weight` / `daily_pe_ttm` / `run_daily_ranking` / `rank_range`）+ 耗时工具 `print_timing`
   - `config_store.py`：本地配置存储（Tushare token，存项目根目录 `.quant-learning/settings.json`、已 gitignore 不提交），CLI 与 Web 统一从这里读 token
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
   - `__init__.py`：空
   - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）：单 worker 串行队列、前端轮询进度、任务取消、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 可点击性规则见 `docs/known_issues.md` 第 17 条）；`port_picker.py` 端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）
-  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，35 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
+  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，36 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`pe_ttm.md`（**单日榜 PE-TTM 计算方法权威描述**，见第 5.1 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
 
 ## 运行环境与数据源
 
@@ -68,11 +68,28 @@
 - 停牌股涨幅按 0% 计 → `ΔM=0`，但 `M_pre=M` 仍计入分母（稀释行业涨幅）；数据异常跳过规则与等权一致，回退扫描跳过 NaN 行取最近有效值
 - 其余规则（股票池、节点解析、排序、返回结构）与等权一致
 
+### 5.1 单日榜 PE-TTM 估值列（扣非，TTM，项目自建口径）
+
+**官方算法文本无估值章节，本口径为项目自建**，完整方法见 `docs/pe_ttm.md`（本文件为规则摘要）：
+
+- **产出**：单日榜每只指数（L1/L2/L3）提供两种口径 `pe_ttm_float`/`pe_ttm_total`（接口与 CLI 都返回两列）；**Web 主表单列「PE-TTM」随加权方式切换口径**（总市值/自由流通 → 对应口径，等权 → 显示"—"）；无 `div_kind` 维度（PE 与除息日涨跌幅口径无关）；区间榜**不算**（时点值，区间累计无意义）
+- **数据**：`fina_indicator_vip` 按报告期全市场批拉（字段 `profit_dedt`=归属母公司扣非净利润，**年初至今累计值**，单位元；`ann_date`=公告日）；limit 参数生效，offset/limit=5999 分页循环（全量单次可到 8808 行，见 interface_notes）；**同股票同报告期有重复行（含 NaN 行）**，丢弃 NaN、保留最后一条；fields 指定不存在的字段名**静默忽略**，须 `getattr` 防御；每接口独立节流（7.5/s）
+- **报告期窗口**：计算日 D 前 24 个月内所有季末（最多 8 期），按 period 内存缓存；TTM 结果按计算日缓存
+- **PIT（消除前视偏差）**：每股最新期 = `ann_date ≤ D` 的最大报告期（`ann_date` 缺失按法定披露截止日推定：Q1→4/30、中报→8/31、三季报→10/31、年报→次年 4/30）；实测 2025-04-07 当天无一家公布 Q1'25，全部股票 TTM 落在 2024 年报或更早
+- **每股 TTM**：标准式 `TTM = 扣非(最新期) + 扣非(去年年报) − 扣非(去年同季)`（累计值口径关键，禁止多期累计值直接求和）；**不足四期兜底**（去年年报/去年同季缺失，如新股）：`TTM = 扣非(最新期) × 4/k`，k=最新报告期覆盖季度数（Q1→1、中报→2、三季报→3、年报→4）；亏损股负值按 4/k 外推保留参与
+- **合成（`daily_pe_ttm`，复用当日涨幅榜同一份市值缓存，含停牌回退值，权重与指数一致）**：
+  - `PE_free = Σ free_mv / Σ (TTM×ratio)`，`ratio = free_mv/total_mv`（同日同行情口径下 ≡ free_share/total_share）；等价于"以自由流通市值为权重的个股总市值口径 PE 加权调和平均"
+  - `PE_total = Σ total_mv / Σ TTM`；TTM 与市值统一折算万元后合成
+  - 逐股贡献只算一次，L3→L2→L1 三级累加
+- **防御**：亏损股（TTM<0）不剔除、合成法天然扣减；仅剔除无扣非TTM / 无市值 / 自由流通占比越界（`ratio>1`，Tushare 黑盒口径防御）三类并按原因告警；行业扣非TTM 合计 ≤ 0 → PE=None（显示"亏损"），无数据键缺失（显示"—"）；**Web PE 列排序时亏损(null)按最大值参与**（降序置顶/升序置底，无数据恒置底）
+- **降级**：财务接口失败（权限/积分/网络）→ PE 列全部"—"，涨幅榜不受影响（警告不中断）
+- **统计**（CLI/日志）：报告期数、标准式/年化/无财报股票数，覆盖数可与此对照
+
 ### 6. 输出与示例
 
-- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印六列涨幅（总市值加权·官方价格/总市值·分红再投资/自由流通市值加权·官方价格/自由流通·分红再投资/等权·官方价格/等权·分红再投资）、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
-- 运行结束输出**耗时分析**（组小计、各阶段耗时/占比、总耗时与 API 调用次数）：耗时统计 `print_timing`，API 次数由 `MarketDataProvider.snapshot_api_calls()` 提供（构造时即包装计数，含建树阶段）；大阶段按"接口拉取 vs 本地计算/回退"拆分
-- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权（官方价格式）→ 等权（分红再投资式）→ 自由流通（官方价格式）→ 自由流通（分红再投资式）→ 总市值（官方价格式）→ 总市值（分红再投资式），避免两套编排漂移），**返回 7 元组 `(等权·官方价格式, 等权·分红再投资式, 自由流通·官方价格式, 自由流通·分红再投资式, 总市值·官方价格式, 总市值·分红再投资式, timings)`**；timings key：`daily_fetch`/`mv_fetch`/`equal_compute`/`equal_tr_compute`/`float_compute`/`float_fallback`/`float_tr_compute`/`total_compute`/`total_fallback`/`total_tr_compute`/`total_tr_fallback`；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
+- 入口脚本从 `config_store.get_token()` 取 token → 构建树/加载成分 → 计算 → 按 L3/L2/L1 打印六列涨幅（总市值加权·官方价格/总市值·分红再投资/自由流通市值加权·官方价格/自由流通·分红再投资/等权·官方价格/等权·分红再投资）+ **两列 PE-TTM（自由流通 / 总市值）**、全称、成分股数量与名称；对每只行业指数用 `-100` 作"等权缺失"哨兵校验，命中即报错（单日示例日期硬编码 `2025-04-07`；区间在 `range_ranking.py` 内 `RANGE_START`/`RANGE_END` 配置）
+- 运行结束输出**耗时分析**（组小计、各阶段耗时/占比、总耗时与 API 调用次数）：耗时统计 `print_timing`，API 次数由 `MarketDataProvider.snapshot_api_calls()` 提供（构造时即包装计数，含建树阶段）；大阶段按"接口拉取 vs 本地计算/回退"拆分；另打印 `PE-TTM(扣非)统计`（报告期数、标准式/年化/无财报股票数）
+- 单日榜入口（CLI 与 Web `service._run_daily`）统一走 `run_daily_ranking`（拉行情/市值 → 等权（官方价格式）→ 等权（分红再投资式）→ 自由流通（官方价格式）→ 自由流通（分红再投资式）→ 总市值（官方价格式）→ 总市值（分红再投资式）→ PE-TTM，避免两套编排漂移），**返回 8 元组 `(等权·官方价格式, 等权·分红再投资式, 自由流通·官方价格式, 自由流通·分红再投资式, 总市值·官方价格式, 总市值·分红再投资式, timings, pe)`**；pe = `{"free": {"1"|"2"|"3": {index_code: PE|None}}, "total": {...}, "stats": {...}}`（None=亏损、键缺失=无数据），Web 前端仅单日榜显示 PE 列（区间榜行不带 pe 字段，显示"—"）；timings key：`daily_fetch`/`mv_fetch`/`equal_compute`/`equal_tr_compute`/`float_compute`/`float_fallback`/`float_tr_compute`/`total_compute`/`total_fallback`/`total_tr_compute`/`total_tr_fallback`/**`fina_fetch`**/**`pe_compute`**；进度回调 `(0~100, 说明, 阶段名)`（阶段名供 Web 前端展示）
 - 模块暂无图片产物，仅控制台输出
 
 ### 7. 区间累计涨幅榜 `rank_range(tree, market_data, start_date, end_date, timings=None, progress_callback=None, detail=None)`
@@ -103,6 +120,6 @@
 ## 强制核对流程（任务完成通知前必做）
 
 1. 报告"完成"前，重新通读本文件「核心算法约定」、`docs/interface_notes.md`「接口交互明细」与 `docs/Shenwan_Index_Series_Algorithm_Text.md`（官方算法，只读）
-2. 逐条对照交付与描述一致，核对点至少包括：涨跌幅是否仍由 `close/pre_close` 重算（尤其复权/除权除息）；等权平均公式与加权公式（`ΔM=M*p/(p+100)`、`M_pre=M/(1+p/100)`）；**市值类加权口径与官方算法文本的对照（第 8 节）**；停牌按 0% 计入与 730 天回退；股票池过滤规则；区间榜参与口径 / 连乘基准 / 起始日权重锚定（第 7 节）；Tushare 接口、参数、分页、token 获取（`docs/interface_notes.md`）
+2. 逐条对照交付与描述一致，核对点至少包括：涨跌幅是否仍由 `close/pre_close` 重算（尤其复权/除权除息）；等权平均公式与加权公式（`ΔM=M*p/(p+100)`、`M_pre=M/(1+p/100)`）；**市值类加权口径与官方算法文本的对照（第 8 节）**；停牌按 0% 计入与 730 天回退；股票池过滤规则；区间榜参与口径 / 连乘基准 / 起始日权重锚定（第 7 节）；**PE-TTM（第 5.1 节）**：`profit_dedt` 为累计值、标准 TTM 公式与 4/k 年化兜底、PIT `ann_date ≤ D`、`ratio = free_mv/total_mv` 同日同源、越界与亏损展示；Tushare 接口、参数、分页、token 获取（`docs/interface_notes.md`）
 3. 发现不一致（无论本次引入还是历史遗留）**必须在最终回复中明确列出**，不得静默通过；涉及算法变更同步更新本文件并说明变更点
 4. 本文件与代码冲突时以代码为准，但必须把冲突点报告给用户
