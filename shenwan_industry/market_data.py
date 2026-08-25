@@ -42,9 +42,13 @@ MV_RESOLVE_WORKERS = int(os.environ.get("SW_MV_RESOLVE_WORKERS", "8"))
 # 逐股残留"全窗回到上市日"的下界: 早于所有 A 股上市日, 等价于查完全部上市期
 _MV_LISTING_FLOOR = "19900101"
 
-# 财务指标(VIP)批拉: 实测按 period 可一次返回全市场(20260331 共 6870 行、20250630 共 8080 行),
-# limit 参数生效且如实截断(limit=5999 -> 5999 行), 分页循环直到不足一批; 每接口限流独立(同 7.5/s 节流)
-FINA_FETCH_BATCH = 5999
+# 财务指标(VIP)批拉: 实测按 period 全量单期 6870~8808 行; limit 参数生效且上限远高于 daily(实测
+# limit=9999/20000 均整批返回无截断、单次 8000+ 行正常), 取 9999 使每期一页(8 期 8 次请求),
+# 仍保留分页循环兜底(未来单期超 9999 行时自动翻页); 每接口限流独立(同 7.5/s 节流)
+FINA_FETCH_BATCH = 9999
+# 财务指标批拉的并发线程数: 各期请求经同一节流器按 7.5/s 错开开始时刻、网络往返并行重叠,
+# 8 期总时长 ≈ 限速 8×0.133s + 单次往返(实测 ~1.4s, 串行 ~3.5s); 请求速率上限仍由节流器统一控制
+FINA_FETCH_WORKERS = 8
 # PE-TTM 报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"全部组合
 FINA_TTM_WINDOW_MONTHS = 24
 
@@ -337,7 +341,7 @@ class MarketDataProvider:
         """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, profit_dedt, bps)}
 
         接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,bps'),
-        offset 分页循环(单批 FINA_FETCH_BATCH=5999, 实测 limit 生效、全量 6870~8808 行)。
+        offset 分页循环(单批 FINA_FETCH_BATCH=9999, 实测整批可回全量 6870~8808 行)。
         **数据质量(实测)**: 同一股票同一报告期会返回**多行**(更新行与 NaN 行, 20250630 有 1598 只重复、
         416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: profit_dedt 与 bps 各有自身
         的最后非空(实测 601318 20260630 两行 bps 均有效但值不同 56.7800/56.7751, 差 0.009%,
@@ -397,11 +401,24 @@ class MarketDataProvider:
                 if start_cut <= period <= date_str:
                     periods.append(period)
         per_stock: dict[str, dict[str, tuple[str, float, float]]] = {}
-        for period in periods:
-            for ts_code, record in self._fetch_fina_period(period).items():
-                per_stock.setdefault(ts_code, {})[period] = record
+        # 各期并发拉取: 请求开始时刻由节流器统一错开(7.5/s), 网络往返并行重叠(同 fetch_daily_batch 模式);
+        # executor.map 结果按输入顺序产出(zip 回期号), 遇错即抛(与串行时一致, 由调用方降级处理), 不静默吞掉
+        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods, executor.map(self._fetch_fina_period, periods)):
+                for ts_code, record in period_rows.items():
+                    per_stock.setdefault(ts_code, {})[period] = record
         self._fina_per_stock_cache[date] = (periods, per_stock)
         return periods, per_stock
+
+    def prefetch_fina_indicators(self, date: datetime) -> None:
+        """后台预热财务指标批拉: 触发 _fina_per_stock(8 期并发拉取并写入按日缓存)
+
+        供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算**并行**运行
+        (fina 接口限流独立于 daily_basic 等、线程只写财务缓存、与市值/股本缓存互不相交);
+        重复调用命中缓存立即返回; 调用方应在 PE/PB 阶段 join 该线程, 异常由 join 处抛出、
+        走既有"指标降级告警"路径
+        """
+        self._fina_per_stock(date)
 
     def _fina_latest_period(self, by_period: dict[str, tuple[str, float, float]], date_str: str) -> str | None:
         """PIT 选取: 每股 ann_date <= D 的最大报告期(ann_date 缺失按法定披露截止日推定)"""

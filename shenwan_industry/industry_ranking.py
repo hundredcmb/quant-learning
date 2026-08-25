@@ -587,6 +587,19 @@ def run_daily_ranking(
     market_data.get_ts_code_to_free_mv(date)  # 同一次请求同时缓存自由流通市值/总市值
     timings["mv_fetch"] = time.perf_counter() - t0
 
+    # 财务指标后台预热: 与后续六条涨幅序列计算**并行**(fina 接口限流独立、仅写财务缓存,
+    # 见 MarketDataProvider.prefetch_fina_indicators)——把 ~1.4s 的 8 期拉取藏进计算阶段,
+    # PE/PB 阶段 join 命中预热缓存; 线程失败在 join 处抛出、走既有"指标降级告警"路径
+    fina_wall: dict[str, float] = {}
+
+    def _warm_fina() -> None:
+        _w0 = time.perf_counter()
+        market_data.prefetch_fina_indicators(date)
+        fina_wall["secs"] = time.perf_counter() - _w0
+
+    fina_thread = threading.Thread(target=_warm_fina, daemon=True)
+    fina_thread.start()
+
     _notify(68.0, "计算等权涨幅(官方价格式)", "计算排行榜")
     t0 = time.perf_counter()
     ew = daily_rank_equal_weight(tree, market_data, date, cancel_check, div_kind="price")
@@ -669,13 +682,15 @@ def run_daily_ranking(
         metric_total: dict[str, dict[str, float | None]] = {}
         metric_stats: dict[str, int] = {}
         try:
+            fina_thread.join()  # 等待后台预热; 预热失败时 pe/pb 一致降级、不重复拉取
+            if "fina_fetch" not in timings and "secs" in fina_wall:
+                timings["fina_fetch"] = fina_wall["secs"]  # 真实拉取耗时(已与计算阶段并行, 墙体时间归零)
             fn = daily_pe_ttm if kind == "pe" else daily_pb
             metric_free, metric_total, metric_stats = fn(
                 tree, market_data, date, timings=v_timings, cancel_check=cancel_check
             )
         except Exception as err:
             logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
-        timings["fina_fetch"] = timings.get("fina_fetch", 0.0) + v_timings.get("fetch", 0.0)
         timings[compute_key] = v_timings.get("compute", 0.0)
         return {"free": metric_free, "total": metric_total, "stats": metric_stats}
 
