@@ -14,7 +14,7 @@
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
   - `__init__.py`：空
   - `web/`：本地 FastAPI Web 服务（`server.py` / `jobs.py` / `service.py` / `schemas.py` / `port_picker.py` + `static/`）与桌面启动器 `desktop.pyw`（WebView 直启，无中间过渡页）：单 worker 串行队列、前端轮询进度、任务取消、成分股子表、行业指数 K 线（`sw_daily` + 本地 ECharts；L1 全覆盖，L2/L3 可点击性规则见 `docs/known_issues.md` 第 17 条）；`port_picker.py` 端口自动顺延（首选端口被占/落系统保留段时 +1 逐个实测，server.py 与 desktop.pyw 共用，方案 B）
-  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，34 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
+  - `docs/`：模块文档目录——`interface_notes.md`（Tushare 接口交互明细，**强制核对流程必读**）、`known_issues.md`（已知边界与易错点，35 条）、`roadmap.md`（未来规划）、`sync_progress.md`（官方算法同步进度，独立子文档，见第 8 节）、`Shenwan_Index_Series_Algorithm_Text.md`（**申万官方指数算法纯文字版，只读禁止修改，见第 8 节**）
 
 ## 运行环境与数据源
 
@@ -31,11 +31,11 @@
 ### 2. 成分股加载与过滤
 
 - `build_constituent_stocks_by_tushare(filter_unlisted=True)`：`pro.stock_basic` 一次拉取**上市(L)+退市(D)+暂停(P)** 三态股票（D 的 `delist_date` 记入 `ts_code_to_delist_date`）；**每次构建实时拉两次** `index_member_all`——默认（is_new=Y，当前成分）与 `is_new='N'`（历史退出，out_date 非空），合并为每股历史归属区间 `ts_code_membership`（`{ts_code: [(l3_code, in_date, out_date|None), ...]}`，按 in_date 升序；**不落盘、不缓存**）；当前成分(Y) 同时维护当前快照（`constituent_stock_to_l3_node` / 节点成分集合 / `ts_code_to_in_date`），历史退出(N) 只入 `ts_code_membership` / `all_member_codes`；不在 `stock_basic` 的股票跳过，Y 的 `l3_code` 找不到节点 → `ValueError`，N 的 l3 找不到节点则跳过并告警
-- `filter_stock_pool(stock_pool, anchor_date, end_date, cancel_check=None)`：锚点/末日参数化（单日榜传 `(date,date)`，区间榜传 `(起始日,末日)`），返回剔除类别明细 `{类别: [ts_code]}`（`no_industry` / `not_member` / `left_mid_range` / `delisted` / `not_listed`）供区间榜汇总告警
+- `filter_stock_pool(stock_pool, anchor_date, end_date, cancel_check=None, restructure_excluded=None)`：锚点/末日参数化（单日榜传 `(date,date)`，区间榜传 `(起始日,末日)`），返回剔除类别明细 `{类别: [ts_code]}`（`no_industry` / `not_member` / `left_mid_range` / `delisted` / `not_listed` / `restructure_window`）供区间榜汇总告警
   - 剔除 `no_industry_stocks`（本实例累计解析失败、无行业归属的股票）
   - 剔除 anchor 日**无覆盖归属区间**的成分（`not_member`：含未来纳入 `in_date>anchor` 与历史已退出 `out_date<=anchor`，由 `ts_code_membership` 判定，**消除"未来纳入"前视偏差并剔除历史退出残留**）
   - 区间模式额外剔除 anchor 日覆盖区间在 end 前已结束的股票（`left_mid_range`：区间末前已调出，满足"区间末仍在"口径）
-  - 剔除 `delist_date < end` 的股票（**修复退市股被整体剔除的幸存者偏差**；退市日当天及之前正常参与）
+  - 剔除 `delist_date < end` 的股票（**兜底**：官方成分 `out_date`（退市整理期首日，有整理期时）已由上方 `not_member` 先行处理；`delisted` 修复退市股被整体剔除的幸存者偏差，退市日当天及之前正常参与，见 `docs/sync_progress.md` 4.4.3）
   - 剔除未上市 / 上市未满 6 个交易日的股票（`not_listed`：官方 4.4.3 新股上市**第 6 个交易日**才纳入，注册制新股前 5 日无涨跌幅、波动剧烈；以 `list_date` 起计交易日，近 24 历日上市的新股用 `trade_cal` 精确数、实例内窗口缓存）
 - 剔除当日处于 4.4.14 重整转增窗口的股票（`restructure_window`：**储备功能、默认关闭**，`SW_RESTRUCTURE_ENABLED=1` 启用；4.4.14 实际以官方成分断点为准——官方把"除权日退出/重入日计入"编码为 `index_member_all` 的 out_date/in_date，由上方 `not_member`/`left_mid_range` 自动处理，见 `docs/sync_progress.md` 4.4.14）
 - 排名时股票池 = **当日行情股票 ∪ `all_member_codes`**（有(过)申万归属的全部股票）；归属解析 `get_stock_industry_nodes(ts_code, date)` **按历史区间取当日所属 L1/L2/L3**（有记录但当日不在任一行业则安静跳过，视为正常历史退出；无任何归属记录才记入无行业集合）

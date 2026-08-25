@@ -326,6 +326,8 @@ class MarketDataProvider:
         """
         result: dict[str, float] = {}
         for rec in self._fetch_ex_div_records(date):
+            if rec["div_proc"] != "实施":
+                continue  # 只认实施记录(dividend(ex_date=) 天然已过滤, 此处显式防御)
             cash = rec["cash_div"] or rec["cash_div_tax"] or 0.0
             if cash > 0:
                 result[rec["ts_code"]] = float(cash)
