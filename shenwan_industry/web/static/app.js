@@ -414,41 +414,33 @@ function renderMainTable() {
     const industryNameHtml = hasKline
       ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.industry_name)}</a>`
       : escapeHtml(row.industry_name);
+    // 成分股数量 >0 时数字可点击，点击查看成分股（入口同原"查看成分股"按钮）
+    const countHtml = Number(row.count) > 0
+      ? `<a class="index-link" data-index-code="${escapeHtml(row.index_code)}" data-industry-name="${escapeHtml(row.industry_name)}">${row.count}</a>`
+      : String(row.count);
     tr.innerHTML = `
       <td>${row.rank}</td>
       <td>${indexCodeHtml}</td>
       <td>${industryNameHtml}</td>
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
-      <td>${row.count}</td>
-      <td>
-        <button
-          class="link-btn"
-          data-index-code="${escapeHtml(row.index_code)}"
-          data-industry-name="${escapeHtml(row.industry_name)}"
-        >查看成分股</button>
-      </td>
+      <td>${countHtml}</td>
     `;
     tbody.appendChild(tr);
   });
   fitIndustryNameColumn(rows);
 }
 
-// 行业名称列宽策略: 二级/三级按"当前级最长名称"测量设宽(表格撑满, 剩余空间由其他列吸收);
-// **一级恢复最初的自动布局**(名称短, 列宽随容器动态、吃剩余空间, 不做固定测量)
+// 行业名称列宽策略: 一级/二级/三级统一按"三级最长行业名称"测量设宽, 各级列宽一致不随层级跳变
+// (三级名称最长, 以此为基准; 表格撑满, 剩余空间由其他列吸收)
 function fitIndustryNameColumn(rows) {
   const th = $("#main-name-header");
   if (!th) {
     return;
   }
-  if (state.level === 1) {
-    th.style.width = "";
-    return;
-  }
-  if (!rows.length) {
-    return;
-  }
+  // 当前为三级直接用本次行, 一/二级从结果数据取三级行作基准
+  const level3Rows = state.level === 3 ? rows : (state.result.levels["3"] || []);
   let longest = "";
-  for (const row of rows) {
+  for (const row of level3Rows) {
     const name = String(row.industry_name || "");
     if (name.length > longest.length) {
       longest = name;

@@ -350,7 +350,7 @@ th.sortable:hover {
 }
 
 /* 主表名称列宽由 JS 在每次渲染时按"当前级最长行业名称"测量设置(renderMainTable),
-   表格仍撑满容器, 剩余空间由排名/代码/数量/成分股列吸收; 加权涨幅列固定(见下) */
+   表格仍撑满容器, 剩余空间由排名/代码/数量列吸收; 加权涨幅列固定(见下) */
 #main-table th#main-name-header {
   min-width: 96px;
 }
@@ -377,14 +377,6 @@ tbody tr:hover {
 
 .zero {
   color: var(--muted);
-}
-
-.link-btn {
-  padding: 6px 10px;
-  background: #eef4ff;
-  color: var(--primary);
-  border: 1px solid #c7dcff;
-  font-size: 13px;
 }
 
 .index-link {
