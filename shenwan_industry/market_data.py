@@ -2,8 +2,11 @@
 申万行业行情数据层 (MarketDataProvider)
 
 - 行情/市值获取: daily / daily_basic, 带按日内存缓存(涨跌幅口径见 shenwan_industry/AGENTS.md 第 3 节)
-- 财务指标: fina_indicator_vip 按报告期全市场批拉扣非净利润(profit_dedt), 供单日榜 PE-TTM
-  (PIT 按时点过滤 ann_date <= 计算日, 累计值口径与 TTM 规则见 get_ts_code_to_ttm_deducted_profit)
+- 财务指标: fina_indicator_vip 按报告期全市场批拉, 一次同取扣非净利润(profit_dedt)、非经常性损益
+  (extra_item)与每股净资产(bps); **归母净利润 = profit_dedt + extra_item 行内合成**(恒等式经全市场
+  实测验证, 见 _fetch_fina_period), 供单日榜 PE-TTM: 当前用归母口径 get_ts_code_to_ttm_attr_profit,
+  扣非口径 get_ts_code_to_ttm_deducted_profit 保留备用——两法 PIT 同为 ann_date <= 计算日,
+  累计值口径与 TTM 规则一致
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -144,9 +147,10 @@ class MarketDataProvider:
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
         self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 供 PB 净资产折算)
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
-        self._fina_period_cache: dict[str, dict[str, tuple[str, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 每股净资产bps)
+        self._fina_period_cache: dict[str, dict[str, tuple[str, float, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 归母净利润, 每股净资产bps)
         self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
-        self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (ttm, 统计)
+        self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM扣非, 统计)——扣非口径(保留备用)
+        self._ttm_attr_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM归母, 统计)——PE-TTM 当前口径
         self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
@@ -337,30 +341,35 @@ class MarketDataProvider:
             return f"{year}1031"
         return f"{year + 1}0430"
 
-    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float]]:
-        """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, profit_dedt, bps)}
+    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float, float]]:
+        """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, 扣非净利润, 归母净利润, bps)}
 
-        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,bps'),
+        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,extra_item,bps'),
         offset 分页循环(单批 FINA_FETCH_BATCH=9999, 实测整批可回全量 6870~8808 行)。
+        **归母净利润为行内合成**: 利润表归母口径的绝对额不在本接口(n_income_attr_p 实测静默忽略),
+        由恒等式 `归母 = profit_dedt + extra_item`(扣非 + 非经常性损益, 后者自带正负号)得出;
+        全市场实测(20250630): 可对齐 6243 只、99.8% 相对误差 <0.1%(P95≈2e-16 浮点精度级)、
+        有扣非时 extra_item 缺失率 0%。**只在同一行内两字段齐备时合成**, 否则该行归母=None,
+        不跨行拼接(dedt/extra 各自最后非空来自不同行时宁缺)。
         **数据质量(实测)**: 同一股票同一报告期会返回**多行**(更新行与 NaN 行, 20250630 有 1598 只重复、
-        416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: profit_dedt 与 bps 各有自身
+        416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: 扣非/归母/bps 各有自身
         的最后非空(实测 601318 20260630 两行 bps 均有效但值不同 56.7800/56.7751, 差 0.009%,
         不能整行丢弃); ann_date 取最后一条的非空值。
         接口对 fields 中不存在的字段名**静默忽略**(不报错), 因此必须用 getattr 防御取值。
-        profit_dedt 为**年初至今累计值**(实测 601318 五期 302.59/735.71/1420.57/1437.73/239.12 亿),
-        不是单季值——TTM 换算见 get_ts_code_to_ttm_deducted_profit;
+        利润字段均为**年初至今累计值**(实测 601318 五期 302.59/735.71/1420.57/1437.73/239.12 亿),
+        不是单季值——TTM 换算见 get_ts_code_to_ttm_attr_profit(归母)/get_ts_code_to_ttm_deducted_profit(扣非);
         bps 为**每股净资产(元)、报告期末时点值**(实测平安 5 期 51.60→56.78 递增), 供 PB 使用
         """
         cached = self._fina_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, tuple[str, float, float]] = {}
+        rows: dict[str, tuple[str, float, float, float]] = {}
         offset = 0
         while True:
             self._acquire_rate_slot("fina_indicator_vip")
             df = self.pro.fina_indicator_vip(
                 period=period,
-                fields="ts_code,ann_date,end_date,profit_dedt,bps",
+                fields="ts_code,ann_date,end_date,profit_dedt,extra_item,bps",
                 offset=offset,
                 limit=FINA_FETCH_BATCH,
             )
@@ -369,12 +378,19 @@ class MarketDataProvider:
             for row in df.itertuples(index=False):
                 ts_code = str(row.ts_code)
                 ann_date = str(getattr(row, "ann_date", None) or "")
-                profit = getattr(row, "profit_dedt", None)
+                deduct = getattr(row, "profit_dedt", None)
+                extra = getattr(row, "extra_item", None)
                 bps = getattr(row, "bps", None)
-                ann_old, profit_old, bps_old = rows.get(ts_code, ("", None, None))
+                # 行内合成归母: 两字段同一行齐备才算出(恒等式见 docstring), 缺一即 None 不猜
+                if deduct is not None and not pd.isna(deduct) and extra is not None and not pd.isna(extra):
+                    attr_profit = float(deduct) + float(extra)
+                else:
+                    attr_profit = None
+                ann_old, deduct_old, attr_old, bps_old = rows.get(ts_code, ("", None, None, None))
                 rows[ts_code] = (
                     ann_date or ann_old,
-                    float(profit) if profit is not None and not pd.isna(profit) else profit_old,
+                    float(deduct) if deduct is not None and not pd.isna(deduct) else deduct_old,
+                    attr_profit if attr_profit is not None else attr_old,
                     float(bps) if bps is not None and not pd.isna(bps) else bps_old,
                 )
             offset += len(df)
@@ -383,8 +399,8 @@ class MarketDataProvider:
         self._fina_period_cache[period] = rows
         return rows
 
-    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float]]]]:
-        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, bps)}})
+    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float]]]]:
+        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps)}})
 
         窗口 = [D-24个月, D] 内所有季末(最多 8 期), 覆盖 PE-TTM 所需"最新期+去年年报+去年同季";
         PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
@@ -420,44 +436,45 @@ class MarketDataProvider:
         """
         self._fina_per_stock(date)
 
-    def _fina_latest_period(self, by_period: dict[str, tuple[str, float, float]], date_str: str) -> str | None:
+    def _fina_latest_period(self, by_period: dict[str, tuple], date_str: str) -> str | None:
         """PIT 选取: 每股 ann_date <= D 的最大报告期(ann_date 缺失按法定披露截止日推定)"""
         latest: str | None = None
         for period in sorted(by_period):
-            ann_date, _profit, _bps = by_period[period]
+            ann_date = by_period[period][0]
             if not ann_date:
                 ann_date = self._fina_ann_date_floor(period)
             if ann_date <= date_str:
                 latest = period  # 报告期升序, 取最后一个 = 最新期
         return latest
 
-    def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
-        """获取各股票截至 date 的扣非净利润 TTM(元): (ttm_map, stats)
+    def _compute_ttm(
+        self,
+        per_stock: dict[str, dict[str, tuple]],
+        value_idx: int,
+        date_str: str,
+        periods_count: int,
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        """TTM 公共算法(扣非/归母两口径共用): 由每股各期数据滚动最近 12 个月净利润
 
-        ttm_map: ts_code -> TTM 扣非净利润(元); stats: {"periods", "stocks_standard",
-        "stocks_annualized", "stocks_missing"} 全市场口径统计。
-
-        时点正确性(PIT): 每股"最新期"取 ann_date <= date 的最大报告期——回看历史日期时只用
-        当时已公开的财报, 消除前视偏差(实测 2025-04-07 当天全市场无一家公布 Q1'25, 全部落在年报);
-        ann_date 缺失时按法定披露截止日推定(_fina_ann_date_floor), 实测批量接口 ann_date 无缺失。
-        报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"。
+        value_idx 为每股各期元组的利润字段下标(1=扣非 / 2=归母行内合成), 只换字段不换规则。
+        时点正确性(PIT): 每股"最新期"取 ann_date <= date_str 的最大报告期——回看历史日期时只用
+        当时已公开的财报, 消除前视偏差(实测 2025-04-07 当天全市场无一家公布 Q1'25, 全部落年报);
+        ann_date 缺失按法定披露截止日推定(_fina_ann_date_floor), 实测批量接口 ann_date 无缺失。
+        该最新期的利润字段为 None 时按无财报处理(stocks_missing), 不回看更早期(与原单口径行为一致)。
 
         TTM 规则(算法口径见 AGENTS.md 第 5.1 节与 docs/financial_indicators.md):
-          1) 标准式: TTM = 扣非(最新期) + 扣非(去年年报) − 扣非(去年同季)   —— 利润字段为累计值
-          2) 不足四期兜底(标准式算不出来, 如新股): TTM = 扣非(最新期) × 4/k,
-             k = 最新报告期覆盖的季度数(Q1→1, 中报→2, 三季报→3, 年报→4)
-        结果按计算日缓存, 报告期数据跨天复用(财务数据仅在财报季变化)
+          1) 标准式: TTM = 利润(最新期) + 利润(去年年报) − 利润(去年同季)
+             ——利润字段为年初至今累计值, 禁止对多期累计值直接求和(会放大 2~3 倍);
+             最新期为年报时自动退化为年报值
+          2) 不足四期兜底(去年年报/去年同季缺失, 如新股): TTM = 利润(最新期) × 4/k,
+             k = 最新报告期覆盖的季度数(Q1→1, 中报→2, 三季报→3, 年报→4);
+             系数按"报告期覆盖季度数"而非"历史期数"(年中起报的股票按 k 缩放更准);
+             亏损股负值照此外推保留参与
+        stats: {"periods", "stocks_standard", "stocks_annualized", "stocks_missing"} 全市场口径统计
         """
-        cached = self._ttm_cache.get(date)
-        if cached is not None:
-            return cached
-
-        date_str = date.strftime("%Y%m%d")
-        periods, per_stock = self._fina_per_stock(date)
-
         ttm_map: dict[str, float] = {}
         stats = {
-            "periods": len(periods),
+            "periods": periods_count,
             "stocks_standard": 0,
             "stocks_annualized": 0,
             "stocks_missing": 0,
@@ -467,7 +484,7 @@ class MarketDataProvider:
             if latest_period is None:
                 stats["stocks_missing"] += 1
                 continue
-            latest_profit = by_period[latest_period][1]
+            latest_profit = by_period[latest_period][value_idx]
             if latest_profit is None:
                 stats["stocks_missing"] += 1
                 continue  # 记录存在但该期利润字段全为 NaN(字段级去重保留条目、值为 None)
@@ -475,19 +492,53 @@ class MarketDataProvider:
             prev_annual = by_period.get(f"{prev_year}1231")
             prev_same = by_period.get(f"{prev_year}{latest_period[4:]}")
             if (
-                prev_annual is not None and prev_annual[1] is not None
-                and prev_same is not None and prev_same[1] is not None
+                prev_annual is not None and prev_annual[value_idx] is not None
+                and prev_same is not None and prev_same[value_idx] is not None
             ):
-                ttm_map[ts_code] = latest_profit + prev_annual[1] - prev_same[1]
+                ttm_map[ts_code] = latest_profit + prev_annual[value_idx] - prev_same[value_idx]
                 stats["stocks_standard"] += 1
             else:
                 month_day = latest_period[4:]
                 k = 4 if month_day == "1231" else (3 if month_day == "0930" else (2 if month_day == "0630" else 1))
                 ttm_map[ts_code] = latest_profit * (4.0 / k)
                 stats["stocks_annualized"] += 1
-
-        self._ttm_cache[date] = (ttm_map, stats)
         return ttm_map, stats
+
+    def get_ts_code_to_ttm_attr_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票截至 date 的**归母净利润** TTM(元)——PE-TTM 当前口径: (ttm_map, stats)
+
+        归母净利润为行内合成值(profit_dedt + extra_item, 恒等式与实测覆盖率见 _fetch_fina_period),
+        单位元、年初至今累计值。PIT 规则与报告期窗口([date-24个月, date] 季末)见 _compute_ttm;
+        TTM 标准式与不足四期兜底同样见 _compute_ttm(value_idx=2)。
+        结果按计算日缓存(_ttm_attr_cache, 与扣非口径分开), 报告期数据跨天复用。
+        聚合公式见 industry_ranking.daily_valuation_metric(kind="pe") 与 docs/financial_indicators.md 第 3 节
+        """
+        cached = self._ttm_attr_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        periods, per_stock = self._fina_per_stock(date)
+        result = self._compute_ttm(per_stock, 2, date_str, len(periods))
+        self._ttm_attr_cache[date] = result
+        return result
+
+    def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票截至 date 的**扣非净利润** TTM(元)——保留备用口径, 当前榜单 PE 用归母(见上方法)
+
+        数据为 fina_indicator_vip 原生 profit_dedt 字段(归属母公司扣非净利润、累计值、单位元),
+        其余(PIT/窗口/TTM 规则/统计结构)与归母口径完全一致, 见 _compute_ttm(value_idx=1);
+        结果按计算日缓存(_ttm_cache)
+        """
+        cached = self._ttm_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        periods, per_stock = self._fina_per_stock(date)
+        result = self._compute_ttm(per_stock, 1, date_str, len(periods))
+        self._ttm_cache[date] = result
+        return result
 
     def get_ts_code_to_bps(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
         """获取各股票截至 date 的每股净资产(元): (bps_map, stats)
@@ -515,7 +566,7 @@ class MarketDataProvider:
             if latest_period is None:
                 stats["stocks_missing"] += 1
                 continue
-            bps = by_period[latest_period][2]
+            bps = by_period[latest_period][3]
             if bps is None:
                 stats["stocks_missing"] += 1
                 continue

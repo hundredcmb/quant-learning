@@ -370,10 +370,14 @@ def daily_valuation_metric(
     kind: str,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
+    profit_kind: str = "attr",
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
     """单日榜行业财务指标合成值(PE-TTM / PB, 项目自建口径): 返回 (free_map, total_map, stats)
 
-    kind: "pe"=扣非净利润 TTM(滚动 12 个月, 元) / "pb"=每股净资产×(当日总股本)(万元)。
+    kind: "pe"=净利润 TTM(滚动 12 个月, 元) / "pb"=每股净资产×(当日总股本)(万元)。
+    profit_kind(仅 kind="pe" 生效): "attr"=归母净利润(profit_dedt+extra_item 行内合成,
+          get_ts_code_to_ttm_attr_profit, 当前默认) / "deduct"=扣非净利润(get_ts_code_to_ttm_deducted_profit)。
+          两口径同一批报告期数据、同规则换字段, 共享市值/股本缓存, 二次调用零新增请求。
     返回 {"1"|"2"|"3": {index_code: 指标值或 None}}:
       - 值 None = 行业分母合计 <= 0(PE 亏损 / PB 资不抵债), 键缺失 = 无数据
       - 每股指标为合成比值无单位(pe)或倍率(pb)
@@ -381,7 +385,7 @@ def daily_valuation_metric(
     公式(单股权重与当日市值加权涨幅同源, 口径见 docs/financial_indicators.md):
         PE_free  = Σ free_mv / Σ (股东值 × free_mv / total_mv)   自由流通市值口径
         PE_total = Σ total_mv / Σ 股东值                          总市值口径
-      其中 PE 的"股东值"= TTM 扣非(元→万元)、PB 的"股东值"= bps × 当日总股本(万股→万元);
+      其中 PE 的"股东值"= TTM 归母(元→万元)、PB 的"股东值"= bps × 当日总股本(万股→万元);
       等价于"以自由流通市值为权重的、个股总市值口径指标的加权调和平均"。
     - 参与范围: 与当日涨幅榜同一股票池(filter_stock_pool); 数据异常股**剔除**并计入 stats:
       财务层统计(periods 等)叠加 pool_no_value(无指标数据) / pool_no_mv(无市值) /
@@ -390,6 +394,8 @@ def daily_valuation_metric(
     """
     if kind not in ("pe", "pb"):
         raise ValueError(f"不支持的财务指标类型: {kind}")
+    if kind == "pe" and profit_kind not in ("attr", "deduct"):
+        raise ValueError(f"不支持的净利润口径: {profit_kind}")
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
     if not tree.constituent_stock_to_l3_node:
@@ -400,7 +406,10 @@ def daily_valuation_metric(
     if timings is not None:
         _t0 = time.perf_counter()
     if kind == "pe":
-        value_map, stats = market_data.get_ts_code_to_ttm_deducted_profit(date)  # TTM 扣非(元)
+        if profit_kind == "deduct":
+            value_map, stats = market_data.get_ts_code_to_ttm_deducted_profit(date)  # TTM 扣非(元)
+        else:
+            value_map, stats = market_data.get_ts_code_to_ttm_attr_profit(date)  # TTM 归母(元)
     else:
         bps_map, bps_stats = market_data.get_ts_code_to_bps(date)  # 每股净资产(元)
         share_map = market_data.get_ts_code_to_total_share(date)  # 当日总股本(万股)
@@ -433,7 +442,7 @@ def daily_valuation_metric(
     level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
 
     def _per_stock_value(ts_code: str) -> float | None:
-        """股东值(万元): pe=TTM扣非/1e4; pb=bps × 当日总股本(万股)"""
+        """股东值(万元): pe=TTM归母/1e4; pb=bps × 当日总股本(万股)"""
         if kind == "pe":
             v = value_map.get(ts_code)
             return v / 1e4 if v is not None else None
@@ -497,7 +506,7 @@ def daily_valuation_metric(
     if timings is not None:
         timings["compute"] = time.perf_counter() - _t0
 
-    label = "扣非TTM" if kind == "pe" else "净资产"
+    label = ("扣非TTM" if profit_kind == "deduct" else "归母TTM") if kind == "pe" else "净资产"
     if pool_no_value or pool_no_mv or pool_ratio_invalid or pool_no_share:
         extra = f"、{pool_no_share} 只(无总股本)" if pool_no_share else ""
         logger.warning(
@@ -520,9 +529,10 @@ def daily_pe_ttm(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
+    profit_kind: str = "attr",
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
-    """单日榜行业 PE-TTM(扣非): 见 daily_valuation_metric(kind="pe")"""
-    return daily_valuation_metric(tree, market_data, date, "pe", timings, cancel_check)
+    """单日榜行业 PE-TTM: profit_kind="attr"=归母(默认, 当前榜单口径)/"deduct"=扣非, 见 daily_valuation_metric"""
+    return daily_valuation_metric(tree, market_data, date, "pe", timings, cancel_check, profit_kind)
 
 
 def daily_pb(
@@ -558,14 +568,16 @@ def run_daily_ranking(
 
     等权/自由流通市值加权/总市值加权各提供两种口径: "官方价格式"(默认, 除息计入下跌, 与申万官方
     价格指数一致)与"分红再投资/全收益式"(除息中性, 原行为)。
-    valuation = {"pe"/"pb": {"free": {"1"|"2"|"3": {index_code: 值|None}}, "total": {...}, "stats": {...}}},
+    valuation = {"pe"/"pe_deducted"/"pb": {"free": {"1"|"2"|"3": {index_code: 值|None}}, "total": {...},
+    "stats": {...}}}——PE 的归母("pe")与扣非("pe_deducted")两口径**一次全部算出**(共享同一批财务数据,
+    扣非仅本地重算零新增请求), 供 Web"净利润口径"下拉切换显示;
     口径见 daily_valuation_metric / daily_pe_ttm / daily_pb; 财务接口失败时任一指标降级为空数据
     (告警不中断, 涨幅榜不受影响)。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
     timings key: daily_fetch / mv_fetch / equal_compute / equal_tr_compute / float_compute /
     float_fallback / float_resolve / float_tr_compute / float_tr_fallback / float_tr_resolve /
     total_compute / total_fallback / total_resolve / total_tr_compute / total_tr_fallback /
-    total_tr_resolve / fina_fetch / pe_compute / pb_compute
+    total_tr_resolve / fina_fetch / pe_compute / pe_deduct_compute / pb_compute
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -674,7 +686,7 @@ def run_daily_ranking(
     timings["total_tr_fallback"] = tw_tr_timings.get("mv_fallback", 0.0)
     timings["total_tr_resolve"] = tw_tr_timings.get("mv_resolve", 0.0)
 
-    def _run_valuation(kind: str, label: str, mode: str, compute_key: str) -> dict[str, Any]:
+    def _run_valuation(kind: str, label: str, mode: str, compute_key: str, profit_kind: str = "attr") -> dict[str, Any]:
         """财务指标阶段(pe/pb): 失败时报错降级, 不影响涨幅榜主结果(口径见 daily_valuation_metric)"""
         _notify(mode, f"计算行业{label}", "计算财务指标")
         v_timings: dict[str, float] = {}
@@ -685,17 +697,25 @@ def run_daily_ranking(
             fina_thread.join()  # 等待后台预热; 预热失败时 pe/pb 一致降级、不重复拉取
             if "fina_fetch" not in timings and "secs" in fina_wall:
                 timings["fina_fetch"] = fina_wall["secs"]  # 真实拉取耗时(已与计算阶段并行, 墙体时间归零)
-            fn = daily_pe_ttm if kind == "pe" else daily_pb
-            metric_free, metric_total, metric_stats = fn(
-                tree, market_data, date, timings=v_timings, cancel_check=cancel_check
-            )
+            if kind == "pe":
+                metric_free, metric_total, metric_stats = daily_pe_ttm(
+                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check,
+                    profit_kind=profit_kind,
+                )
+            else:
+                metric_free, metric_total, metric_stats = daily_pb(
+                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check
+                )
         except Exception as err:
             logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
         timings[compute_key] = v_timings.get("compute", 0.0)
         return {"free": metric_free, "total": metric_total, "stats": metric_stats}
 
+    # PE 两口径(归母/扣非)一次全部算出: 共享同一批报告期财务数据与市值/股本缓存,
+    # 扣非口径仅本地重算(拉取零新增请求), Web 端"净利润口径"下拉切换显示、无需重跑任务
     valuation = {
-        "pe": _run_valuation("pe", "PE-TTM(扣非)", 94.0, "pe_compute"),
+        "pe": _run_valuation("pe", "PE-TTM(归母)", 94.0, "pe_compute"),
+        "pe_deducted": _run_valuation("pe", "PE-TTM(扣非)", 94.5, "pe_deduct_compute", profit_kind="deduct"),
         "pb": _run_valuation("pb", "PB", 95.0, "pb_compute"),
     }
 

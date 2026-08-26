@@ -83,7 +83,7 @@ if __name__ == "__main__":
 
     if pe_stats:
         print(
-            f"\nPE-TTM(扣非)统计: 报告期 {pe_stats.get('periods', 0)} 期, "
+            f"\nPE-TTM(归母)统计: 报告期 {pe_stats.get('periods', 0)} 期, "
             f"标准式 {pe_stats.get('stocks_standard', 0)} 只, "
             f"不足四期年化 {pe_stats.get('stocks_annualized', 0)} 只, "
             f"无财报 {pe_stats.get('stocks_missing', 0)} 只"

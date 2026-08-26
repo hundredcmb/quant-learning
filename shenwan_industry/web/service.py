@@ -536,12 +536,15 @@ def _run_daily(
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
     # 个股估值(成分股子表展示, 总市值口径, 与行业总市值口径公式一致): 财务缓存命中零请求
-    # PE = 总市值(万元)/(TTM扣非(元)/1e4); PB = 总市值(万元)/(bps×当日总股本(万股))
-    # 值 None = 亏损(TTM<=0) / 资不抵债(净资产<=0); 键缺失 = 无数据(前端显示"—")
-    ttm_map, _ = provider.get_ts_code_to_ttm_deducted_profit(rank_date)
+    # PE = 总市值(万元)/(TTM(元)/1e4); PB = 总市值(万元)/(bps×当日总股本(万股))
+    # PE 双口径(归母/扣非)一次算出供前端"净利润口径"切换; 值 None = 亏损(TTM<=0) / 资不抵债(净资产<=0);
+    # 键缺失 = 无数据(前端显示"—")
+    ttm_map, _ = provider.get_ts_code_to_ttm_attr_profit(rank_date)
+    ttm_deduct_map, _ = provider.get_ts_code_to_ttm_deducted_profit(rank_date)
     bps_map, _ = provider.get_ts_code_to_bps(rank_date)
     share_map = provider.get_ts_code_to_total_share(rank_date)
     stock_pe: dict[str, float | None] = {}
+    stock_pe_deducted: dict[str, float | None] = {}
     stock_pb: dict[str, float | None] = {}
     for ts_code, ttm in ttm_map.items():
         total_mv = total_map.get(ts_code)
@@ -549,6 +552,10 @@ def _run_daily(
             continue
         profit_wan = ttm / 1e4
         stock_pe[ts_code] = total_mv / profit_wan if profit_wan > 0 else None
+        deducted = ttm_deduct_map.get(ts_code)
+        if deducted is not None:
+            deducted_wan = deducted / 1e4
+            stock_pe_deducted[ts_code] = total_mv / deducted_wan if deducted_wan > 0 else None
         bps = bps_map.get(ts_code)
         share = share_map.get(ts_code)
         if bps is not None and share is not None:
@@ -568,6 +575,8 @@ def _run_daily(
             tw_reinvest,
             pe_free=valuation["pe"]["free"],
             pe_total=valuation["pe"]["total"],
+            pe_deducted_free=valuation["pe_deducted"]["free"],
+            pe_deducted_total=valuation["pe_deducted"]["total"],
             pb_free=valuation["pb"]["free"],
             pb_total=valuation["pb"]["total"],
         ),
@@ -582,6 +591,7 @@ def _run_daily(
         "total_mv": total_map,
         "amount": amount_map,
         "stock_pe": stock_pe,
+        "stock_pe_deducted": stock_pe_deducted,
         "stock_pb": stock_pb,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
@@ -669,6 +679,8 @@ def _build_levels(
     tw_reinvest: tuple[list, list, list],
     pe_free: dict[str, dict[str, float | None]] | None = None,
     pe_total: dict[str, dict[str, float | None]] | None = None,
+    pe_deducted_free: dict[str, dict[str, float | None]] | None = None,
+    pe_deducted_total: dict[str, dict[str, float | None]] | None = None,
     pb_free: dict[str, dict[str, float | None]] | None = None,
     pb_total: dict[str, dict[str, float | None]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
@@ -718,10 +730,14 @@ def _build_levels(
                 "equal_tr_constituent_count": ewt_item[1],
             }
             # 财务指标列仅单日榜携带: 值 None = PE 亏损 / PB 资不抵债, 键缺失 = 未计算/失败降级(前端显示"—");
+            # PE 携带归母(pe_ttm_*)与扣非(pe_ttm_deducted_*)两套字段, 前端"净利润口径"下拉切换显示;
             # 成功时对应 dict 必含 "1"/"2"/"3" 键(非空), 空 dict 视为计算失败(与区间榜同不携带)
             if pe_free and pe_total:
                 row["pe_ttm_float"] = pe_free.get(level_name, {}).get(index_code)
                 row["pe_ttm_total"] = pe_total.get(level_name, {}).get(index_code)
+            if pe_deducted_free and pe_deducted_total:
+                row["pe_ttm_deducted_float"] = pe_deducted_free.get(level_name, {}).get(index_code)
+                row["pe_ttm_deducted_total"] = pe_deducted_total.get(level_name, {}).get(index_code)
             if pb_free and pb_total:
                 row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
                 row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
@@ -800,9 +816,11 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             "total_mv": total_map.get(ts_code),
             "amount": amount_map.get(ts_code),
         }
-        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); 键缺失 = 无数据, None = 亏损/资不抵债
+        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); PE 归母(pe_ttm)/扣非(pe_ttm_deducted)
+        # 两口径同带, 前端"净利润口径"切换; 键缺失 = 无数据, None = 亏损/资不抵债
         if "stock_pe" in context:
             row["pe_ttm"] = context["stock_pe"].get(ts_code)
+            row["pe_ttm_deducted"] = context["stock_pe_deducted"].get(ts_code)
             row["pb"] = context["stock_pb"].get(ts_code)
         rows.append(row)
     return rows

@@ -13,6 +13,7 @@ const state = {
   mode: "daily",
   weight: "float_tr",
   level: 1,
+  profitBasis: "attr", // 净利润口径: attr=归母(默认) / deduct=扣非, 后端一次算两口径、此处仅切换显示(列头固定"PE-TTM")
   jobId: null,
   pollTimer: null,
   result: null,
@@ -197,6 +198,17 @@ function bindEvents() {
     }
   });
 
+  $("#profit-basis").addEventListener("change", (event) => {
+    state.profitBasis = event.target.value;
+    if (state.result) {
+      renderMainTable();
+    }
+    // 成分股弹窗打开时同步切换个股 PE 口径
+    if (!$("#sub-panel").classList.contains("hidden")) {
+      renderSubTable();
+    }
+  });
+
   $("#query-btn").addEventListener("click", submit);
   $("#cancel-btn").addEventListener("click", cancelTask);
   $("#config-btn").addEventListener("click", openConfigPanel);
@@ -232,6 +244,8 @@ function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
   $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
+  // 净利润口径仅单日榜有估值列, 区间榜隐藏该下拉
+  $("#profit-basis-field").classList.toggle("hidden", !isDaily);
 }
 
 function submit() {
@@ -385,8 +399,13 @@ function renderMainTable() {
   const sourceRows = state.result.levels[level] || [];
   const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
   const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
-  // 财务指标单列随加权方式切换口径: 总市值(含全收益)用总市值口径、自由流通(含全收益)用自由流通口径、等权无定义(undefined -> "—")
-  const peField = { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float" }[state.weight] || null;
+  // 财务指标单列随加权方式切换市值口径(free/total)、随"净利润口径"下拉切换利润口径
+  // (pe_ttm_*=归母 / pe_ttm_deducted_*=扣非, 后端两套字段一次全部返回): 等权无定义(undefined -> "—")
+  const peFields = {
+    attr: { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float" },
+    deduct: { total: "pe_ttm_deducted_total", total_tr: "pe_ttm_deducted_total", float: "pe_ttm_deducted_float", float_tr: "pe_ttm_deducted_float" },
+  };
+  const peField = (peFields[state.profitBasis] || peFields.attr)[state.weight] || null;
   const pbField = { total: "pb_total", total_tr: "pb_total", float: "pb_float", float_tr: "pb_float" }[state.weight] || null;
   const rows = sourceRows.map((row, index) => ({
     ...row,
@@ -534,7 +553,7 @@ function renderSubTable() {
       <td>${formatAmountColumn(row.amount)}</td>
       <td>${formatCircMv(row.total_mv)}</td>
       <td>${formatCircMv(row.free_mv)}</td>
-      <td>${formatMetric(row.pe_ttm, "亏损")}</td>
+      <td>${formatMetric(state.profitBasis === "deduct" ? row.pe_ttm_deducted : row.pe_ttm, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
     `;
     tbody.appendChild(tr);
