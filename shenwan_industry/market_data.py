@@ -14,6 +14,9 @@
 - 业绩快报(express_vip)第三池: 归母净利润的**提前可用源**——报告期值若快报已发布(ann_date 更早)
   则在年报披露前以快报值参与 PE-TTM(PIT 合并规则见 _merge_attr_with_express: 审定值优先、
   快报兑现、快报失败退回纯财报), 三池并行预热; 扣非口径与 PB 无快报、不受影响
+- 净利润TTM同比: get_ts_code_to_ttm_growth_pair 给出(当期, 基期=D-1年)归母 TTM 对,
+  基期走同一机制(窗口自动扩至 [D-36月, D-12月], 预热串行补拉); 数值/四类显示判定在
+  industry_ranking.classify_profit_growth
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -167,6 +170,7 @@ class MarketDataProvider:
         self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
         self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM扣非, 统计)——扣非口径(保留备用)
         self._ttm_attr_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM归母, 统计)——PE-TTM 当前口径
+        self._growth_pair_cache: dict[tuple[datetime, str], tuple[dict[str, tuple[float, float]], dict[str, int]]] = {}  # (计算日, 口径) -> (TTM增长对, 统计)——净利润TTM同比列
         self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)——旧 PB 口径(保留对照)
         self._bs_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 归母普通股股东权益元)
         self._bs_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期归母普通股股东权益)
@@ -619,15 +623,18 @@ class MarketDataProvider:
         self._express_per_stock_cache[date] = (periods, per_stock)
         return periods, per_stock
 
-    def prefetch_fina_indicators(self, date: datetime) -> None:
+    def prefetch_fina_indicators(self, date: datetime, growth_base_date: datetime | None = None) -> None:
         """后台预热财务数据批拉: fina_indicator_vip(利润/bps) / balancesheet_vip(归母净资产) /
-        express_vip(业绩快报) 三池**并行**
+        express_vip(业绩快报) 三池**并行**; growth_base_date 再预热 TTM 增长的基期(fina/express 池)
 
         三接口节流互相独立(Tushare 限额独立)、各自 8 期并发, 总墙时 ≈ 单池时长(不串行叠加,
         实测三池并行与原单池同量级); 供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算
         **并行**运行(线程只写各自财务缓存、与市值缓存互不相交); 重复调用命中缓存立即返回;
         调用方应在 PE/PB 阶段 join 该线程。fina 池异常照旧向上抛(PE/PB 走既有"惰性重拉再失败
-        才降级"路径); bs/express 池异常仅告警不影响其他池(线程隔离), PB/归母阶段惰性重拉
+        才降级"路径); bs/express 池异常仅告警不影响其他池(线程隔离), PB/归母阶段惰性重拉。
+        growth_base_date(=D-1年)的基期预热在主日期 fina 之后**串行**执行: 共享报告期命中
+        period 级缓存、仅多拉更早 4 期(+8 次请求), 避免双线程并发双拉同一期; 基期只影响
+        净利润TTM同比列, 预热失败该列自行降级
         """
         extra_threads = [
             threading.Thread(target=self._safe_prefetch_bs, args=(date,), daemon=True),
@@ -637,6 +644,9 @@ class MarketDataProvider:
             thread.start()
         try:
             self._fina_per_stock(date)
+            if growth_base_date is not None:
+                self._fina_per_stock(growth_base_date)
+                self._express_per_stock(growth_base_date)
         finally:
             for thread in extra_threads:
                 thread.join()
@@ -807,6 +817,75 @@ class MarketDataProvider:
         result[1]["stocks_express"] = stocks_express
         self._ttm_attr_cache[date] = result
         return result
+
+    @staticmethod
+    def growth_base_date(date: datetime) -> datetime:
+        """TTM 增长的基期 = 同日历日去年(2/29 回退 2/28, 公告日按日比较差一天无影响)"""
+        try:
+            return date.replace(year=date.year - 1)
+        except ValueError:
+            return date.replace(year=date.year - 1, day=28)
+
+    def get_ts_code_to_ttm_growth_pair(
+        self, date: datetime, profit_kind: str = "attr"
+    ) -> tuple[dict[str, tuple[float, float]], dict[str, int]]:
+        """获取各股票 TTM 增长对: (pairs, stats)——供单日榜"净利润TTM同比"列
+
+        profit_kind: "attr"=归母(当前默认, 含 express 快报双源合并) / "deduct"=扣非
+        (get_ts_code_to_ttm_deducted_profit, 无快报源——年报季时效落后归母一档)。
+        两口径共用同一批已拉报告期数据, 扣非仅本地重算零新增请求; 类别(扭亏/转亏/持续亏损)
+        按各自口径独立判定(归母扭亏而扣非仍亏真实存在——非经常性收益保壳情形)。
+        pairs: ts_code -> (当期 TTM, 基期 TTM)(元)——**两期 TTM 均有才入**(both-or-neither:
+        缺基期的新股不进行业 Σ 分子也不进分母, 避免只进分子抬高增速)。基期 = growth_base_date(D-1年),
+        走**同一套** TTM 机制(含所选口径的全部规则, 报告期窗口自动落到 [D-36月, D-12月],
+        预热由 prefetch_fina_indicators(growth_base_date=...) 串行补拉)。
+        注意基期为"当前快照回看"(含此后发布的更正, 与既有 PE 历史回看口径一致, 见 known_issues 第 39 条)。
+        stats: {"stocks_pair"(参与), "stocks_turnaround"(扭亏: 基期≤0 当期>0),
+        "stocks_turnloss"(转亏: 基期>0 当期≤0), "stocks_continued_loss"(持续亏损: 两期均≤0),
+        "stocks_no_base"(当期有 TTM 而基期无)} 全市场口径。
+        个股/行业的数值与四类显示("扭亏"/"转亏"/"持续亏损")由 industry_ranking.classify_profit_growth 统一判定。
+        结果按 (计算日, 口径) 缓存(_growth_pair_cache)
+        """
+        if profit_kind not in ("attr", "deduct"):
+            raise ValueError(f"不支持的净利润口径: {profit_kind}")
+        cached = self._growth_pair_cache.get((date, profit_kind))
+        if cached is not None:
+            return cached
+
+        base = self.growth_base_date(date)
+        if profit_kind == "deduct":
+            now_map, _ = self.get_ts_code_to_ttm_deducted_profit(date)
+            last_map, _ = self.get_ts_code_to_ttm_deducted_profit(base)
+        else:
+            now_map, _ = self.get_ts_code_to_ttm_attr_profit(date)
+            last_map, _ = self.get_ts_code_to_ttm_attr_profit(base)
+
+        pairs: dict[str, tuple[float, float]] = {}
+        stats = {
+            "stocks_pair": 0,
+            "stocks_turnaround": 0,
+            "stocks_turnloss": 0,
+            "stocks_continued_loss": 0,
+            "stocks_no_base": 0,
+        }
+        for ts_code, now_value in now_map.items():
+            last_value = last_map.get(ts_code)
+            if last_value is None:
+                stats["stocks_no_base"] += 1
+                continue
+            pairs[ts_code] = (now_value, last_value)
+            stats["stocks_pair"] += 1
+            if now_value > 0 and last_value > 0:
+                continue  # 数值型, 无类别
+            if now_value > 0:
+                stats["stocks_turnaround"] += 1
+            elif last_value > 0:
+                stats["stocks_turnloss"] += 1
+            else:
+                stats["stocks_continued_loss"] += 1
+
+        self._growth_pair_cache[(date, profit_kind)] = (pairs, stats)
+        return pairs, stats
 
     def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
         """获取各股票截至 date 的**扣非净利润** TTM(元)——保留备用口径, 当前榜单 PE 用归母(见上方法)

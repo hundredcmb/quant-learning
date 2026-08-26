@@ -21,6 +21,7 @@ from ..industry_ranking import (
     run_daily_ranking,
     rank_range,
     rank_range_chain,
+    classify_profit_growth,
 )
 from ..industry_tree import ShenWanIndustryTree
 from ..market_data import MarketDataProvider
@@ -564,6 +565,19 @@ def _run_daily(
             equity_wan = equity / 1e4
             stock_pb[ts_code] = total_mv / equity_wan if equity_wan > 0 else None
 
+    # 个股净利润TTM同比(与行业同一分类规则)双口径: 两期 TTM 对命中缓存零请求,
+    # 扣非与归母共用已拉报告期数据(前端随"净利润口径"下拉切换)
+    pair_map, _ = provider.get_ts_code_to_ttm_growth_pair(rank_date)
+    pair_map_deducted, _ = provider.get_ts_code_to_ttm_growth_pair(rank_date, profit_kind="deduct")
+    stock_growth: dict[str, float | str] = {
+        ts_code: classify_profit_growth(now_value, last_value)
+        for ts_code, (now_value, last_value) in pair_map.items()
+    }
+    stock_growth_deducted: dict[str, float | str] = {
+        ts_code: classify_profit_growth(now_value, last_value)
+        for ts_code, (now_value, last_value) in pair_map_deducted.items()
+    }
+
     result = {
         "mode": "daily",
         "date": date_str,
@@ -581,6 +595,8 @@ def _run_daily(
             pe_deducted_total=valuation["pe_deducted"]["total"],
             pb_free=valuation["pb"]["free"],
             pb_total=valuation["pb"]["total"],
+            growth_value=valuation["growth"]["value"],
+            growth_deducted_value=valuation["growth_deducted"]["value"],
         ),
     }
     context = {
@@ -595,6 +611,8 @@ def _run_daily(
         "stock_pe": stock_pe,
         "stock_pe_deducted": stock_pe_deducted,
         "stock_pb": stock_pb,
+        "stock_growth": stock_growth,
+        "stock_growth_deducted": stock_growth_deducted,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -685,6 +703,8 @@ def _build_levels(
     pe_deducted_total: dict[str, dict[str, float | None]] | None = None,
     pb_free: dict[str, dict[str, float | None]] | None = None,
     pb_total: dict[str, dict[str, float | None]] | None = None,
+    growth_value: dict[str, dict[str, float | str]] | None = None,
+    growth_deducted_value: dict[str, dict[str, float | str]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -743,6 +763,13 @@ def _build_levels(
             if pb_free and pb_total:
                 row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
                 row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
+            # 净利润TTM同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"持续亏损",
+            # 归母(profit_growth)/扣非(profit_growth_deducted)双字段, 前端随"净利润口径"下拉切换;
+            # 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            if growth_value:
+                row["profit_growth"] = growth_value.get(level_name, {}).get(index_code)
+            if growth_deducted_value:
+                row["profit_growth_deducted"] = growth_deducted_value.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows
@@ -824,6 +851,8 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             row["pe_ttm"] = context["stock_pe"].get(ts_code)
             row["pe_ttm_deducted"] = context["stock_pe_deducted"].get(ts_code)
             row["pb"] = context["stock_pb"].get(ts_code)
+            row["profit_growth"] = context["stock_growth"].get(ts_code)
+            row["profit_growth_deducted"] = context["stock_growth_deducted"].get(ts_code)
         rows.append(row)
     return rows
 

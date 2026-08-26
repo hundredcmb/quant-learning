@@ -4,7 +4,7 @@ A 股复盘与投研辅助项目（量化为辅），主要用于辅助每日复
 
 本项目是一套可直接运行的 Python 脚本，分为**互不依赖的两部分**：
 
-- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业财务指标（**PE-TTM** 归母净利润（Web 可切换扣非口径）、**PB** 归母普通股股东权益，各自由流通 / 总市值两种合成口径，计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
+- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业财务指标（**PE-TTM** 归母净利润（Web 可切换扣非口径）、**PB** 归母普通股股东权益，各自由流通 / 总市值两种合成口径、**净利润TTM同比**（Web 可切换扣非口径；扭亏/转亏/持续亏损类别化），计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
 - **vnpy 生态**（`holders/` + `vnpy_examples/`）：十大股东席位关键词分析（国家队、社保、险资等，含 ETF）+ vnpy 入门示例（K 线入库、图表、指标、回测）。**必须依赖 vnpy 客户端（veighna studio）环境**
 
 ---

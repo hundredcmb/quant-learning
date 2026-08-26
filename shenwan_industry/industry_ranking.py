@@ -537,6 +537,108 @@ def daily_pb(
     return daily_valuation_metric(tree, market_data, date, "pb", timings, cancel_check)
 
 
+def classify_profit_growth(now_value: float, last_value: float) -> float | str:
+    """TTM 同比分类(个股与行业 Σ 同一规则): 返回 数值%(如 23.45) 或 类别文本
+
+    排序位(低→高): "持续亏损"(两期均≤0) < "转亏"(基期>0 当期≤0) < 数值[−100%,∞) < "扭亏"(基期≤0 当期>0);
+    数值 = (now/last − 1)×100; now=0 按当期≤0 处理(浮点 TTM 恰为 0 实际遇不到, 规则写死)。
+    无数据(缺基期等)不入本函数、由键缺失表示(显示"—"、排序恒置底)
+    """
+    if now_value > 0 and last_value > 0:
+        return (now_value / last_value - 1.0) * 100.0
+    if now_value > 0:
+        return "扭亏"
+    if last_value > 0:
+        return "转亏"
+    return "持续亏损"
+
+
+def daily_profit_growth(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+    profit_kind: str = "attr",
+) -> tuple[dict[str, dict[str, float | str]], dict[str, int]]:
+    """单日榜行业净利润TTM同比(与 PE 分子同源): 返回 (levels, stats)
+
+    profit_kind: "attr"=归母(当前默认, 含快报双源合并) / "deduct"=扣非(无快报源, 年报季时效
+    落后归母一档; 与归母共用已拉报告期数据零新增请求); 类别按各自口径独立判定(归母扭亏而
+    扣非仍亏真实存在), 见 get_ts_code_to_ttm_growth_pair
+
+    levels: {"1"|"2"|"3": {index_code: 数值% | "扭亏" | "转亏" | "持续亏损"}}, 键缺失 = 无数据(显示"—")。
+    公式: 行业增长 = Σ TTM(D) / Σ TTM(D-1年) − 1(与 PE 的 Σ市值/Σ股东值 同构, 亏损股不剔除、
+    负值参与合计); 参与股票 = 两期 TTM 均有的成分股(both-or-neither, 缺基期的新股不进分子分母,
+    见 get_ts_code_to_ttm_growth_pair); 类别由 Σ 的符号按 classify_profit_growth 判定(行业整体
+    Σ两期≤0 → "持续亏损"、Σ 去年>0 Σ 今年≤0 → "转亏"、Σ 去年≤0 Σ 今年>0 → "扭亏")。
+    **无市值维度**: 纯基本面比值, 不依赖加权方式(等权模式也显示), 单列无 free/total 口径。
+    stats: 数据层五键(stocks_pair/turnaround/turnloss/continued_loss/no_base, 全市场口径) 叠加
+    pool_no_value(池内无增长对的股票数)
+    """
+    if not tree.root.children:
+        raise RuntimeError("请先构建行业树结构")
+    if not tree.constituent_stock_to_l3_node:
+        raise RuntimeError("请先加载行业成分股")
+
+    date_str = date.strftime("%Y%m%d")
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    pair_map, stats = market_data.get_ts_code_to_ttm_growth_pair(date, profit_kind=profit_kind)
+    if timings is not None:
+        timings["fetch"] = time.perf_counter() - _t0
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    pct_map = market_data.get_ts_code_to_pct_chg(date)
+    stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
+    tree.filter_stock_pool(
+        stock_pool,
+        date,
+        date,
+        cancel_check=cancel_check,
+        restructure_excluded=market_data.get_restructure_excluded(date),
+    )
+
+    # 聚合容器: 层级键 -> index_code -> [Σ当期TTM, Σ基期TTM, 数量]
+    agg: dict[str, dict[str, list[float]]] = {}
+    for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
+        agg[level_key] = {node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]}
+    level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
+
+    pool_no_value = 0
+    for idx, ts_code in enumerate(stock_pool):
+        if cancel_check is not None and idx % 500 == 0:
+            cancel_check()
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
+        if not l3_node or not l2_node or not l1_node:
+            continue
+        pair = pair_map.get(ts_code)
+        if pair is None:
+            pool_no_value += 1
+            continue
+        now_value, last_value = pair
+        for l_node in (l3_node, l2_node, l1_node):
+            entry = agg[level_key_map[l_node.level]][l_node.index_code]
+            entry[0] += now_value
+            entry[1] += last_value
+            entry[2] += 1
+
+    levels: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
+    for level_key, per_node in agg.items():
+        for code, (sum_now, sum_last, count) in per_node.items():
+            if count == 0:
+                continue  # 无参与股票不记键位, 前端显示 "—"
+            levels[level_key][code] = classify_profit_growth(sum_now, sum_last)
+    if timings is not None:
+        timings["compute"] = time.perf_counter() - _t0
+
+    if pool_no_value:
+        logger.warning(f"{date_str} 净利润TTM同比剔除 {pool_no_value} 只(无两期TTM数据, 多为缺基期的新股), 不计入行业合成")
+    return levels, {**stats, "pool_no_value": pool_no_value}
+
+
 def run_daily_ranking(
     tree: ShenWanIndustryTree,
     market_data: MarketDataProvider,
@@ -559,17 +661,20 @@ def run_daily_ranking(
 
     等权/自由流通市值加权/总市值加权各提供两种口径: "官方价格式"(默认, 除息计入下跌, 与申万官方
     价格指数一致)与"分红再投资/全收益式"(除息中性, 原行为)。
-    valuation = {"pe"/"pe_deducted"/"pb": {"free": {"1"|"2"|"3": {index_code: 值|None}}, "total": {...},
-    "stats": {...}}}——PE 的归母("pe")与扣非("pe_deducted")两口径**一次全部算出**(共享同一批财务数据,
-    扣非仅本地重算零新增请求), 供 Web"净利润口径"下拉切换显示;
-    口径见 daily_valuation_metric / daily_pe_ttm / daily_pb; 财务接口失败时任一指标降级为空数据
-    (告警不中断, 涨幅榜不受影响)。
+    valuation: "pe"/"pe_deducted"/"pb" 为 {"free": {"1"|"2"|"3": {index_code: 值|None}}, "total": {...},
+    "stats": {...}}——PE 的归母("pe")与扣非("pe_deducted")两口径**一次全部算出**(共享同一批财务数据,
+    扣非仅本地重算零新增请求), 供 Web"净利润口径"下拉切换显示; **"growth"/"growth_deducted" 为 {"value":
+    {"1"|"2"|"3": {index_code: 数值%|"扭亏"|"转亏"|"持续亏损"}}, "stats": {...}}**(净利润TTM同比
+    归母/扣非两口径一次算出, 无市值维度、等权模式也显示、随 Web"净利润口径"下拉切换,
+    键缺失=无数据/降级);
+    口径见 daily_valuation_metric / daily_pe_ttm / daily_pb / daily_profit_growth; 财务接口失败时
+    任一指标降级为空数据(告警不中断, 涨幅榜不受影响)。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
     timings key: daily_fetch / mv_fetch / equal_compute / equal_tr_compute / float_compute /
     float_fallback / float_resolve / float_tr_compute / float_tr_fallback / float_tr_resolve /
     total_compute / total_fallback / total_resolve / total_tr_compute / total_tr_fallback /
-    total_tr_resolve / fina_fetch(fina+balancesheet+express 三池并行总墙时) / pe_compute /
-    pe_deduct_compute / pb_compute
+    total_tr_resolve / fina_fetch(fina+balancesheet+express 三池并行总墙时, 含增长基期串行补拉) /
+    pe_compute / pe_deduct_compute / pb_compute / growth_compute / growth_deduct_compute
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -578,6 +683,23 @@ def run_daily_ranking(
     def _notify(percent: float, message: str, phase: str | None = None) -> None:
         if progress_callback is not None:
             progress_callback(max(0.0, min(100.0, percent)), message, phase)
+
+    # 财务数据后台预热: 在编排**最开始**启动(只依赖 provider、不依赖行情/市值), 与行情/市值拉取
+    # 及后续六条涨幅序列计算**全程并行**——fina_indicator_vip(利润/bps)、balancesheet_vip(归母
+    # 净资产) 与 express_vip(业绩快报) 三池同时并发(接口限流互相独立, 见
+    # MarketDataProvider.prefetch_fina_indicators), 并串行补拉 TTM 增长基期([D-36月, D-12月],
+    # 旧报告期行数触顶 9999 自动翻页, 实测含基期共 ~16 次 fina 请求、限速地板 ~2.1s、预热总墙时
+    # ~3.1s——早启动才能整体藏进 行情+市值+涨幅计算 ~3.3s 的窗口内); PE/PB/增长阶段 join 命中
+    # 预热缓存; 线程失败在 join 处抛出、走既有"指标降级告警"路径
+    fina_wall: dict[str, float] = {}
+
+    def _warm_fina() -> None:
+        _w0 = time.perf_counter()
+        market_data.prefetch_fina_indicators(date, growth_base_date=market_data.growth_base_date(date))
+        fina_wall["secs"] = time.perf_counter() - _w0
+
+    fina_thread = threading.Thread(target=_warm_fina, daemon=True)
+    fina_thread.start()
 
     _notify(8.0, "拉取日线行情", "拉取日线行情")
     t0 = time.perf_counter()
@@ -590,21 +712,6 @@ def run_daily_ranking(
     t0 = time.perf_counter()
     market_data.get_ts_code_to_free_mv(date)  # 同一次请求同时缓存自由流通市值/总市值
     timings["mv_fetch"] = time.perf_counter() - t0
-
-    # 财务数据后台预热: 与后续六条涨幅序列计算**并行**——fina_indicator_vip(利润/bps)、
-    # balancesheet_vip(归母净资产) 与 express_vip(业绩快报) 三池**同时并发**(接口限流互相
-    # 独立, 见 MarketDataProvider.prefetch_fina_indicators), 把 ~1.4s 量级的拉取藏进计算阶段
-    # (总墙时 ≈ 单池, 不串行叠加), PE/PB 阶段 join 命中预热缓存; 线程失败在 join 处抛出、
-    # 走既有"指标降级告警"路径
-    fina_wall: dict[str, float] = {}
-
-    def _warm_fina() -> None:
-        _w0 = time.perf_counter()
-        market_data.prefetch_fina_indicators(date)
-        fina_wall["secs"] = time.perf_counter() - _w0
-
-    fina_thread = threading.Thread(target=_warm_fina, daemon=True)
-    fina_thread.start()
 
     _notify(68.0, "计算等权涨幅(官方价格式)", "计算排行榜")
     t0 = time.perf_counter()
@@ -712,6 +819,38 @@ def run_daily_ranking(
         "pe_deducted": _run_valuation("pe", "PE-TTM(扣非)", 94.5, "pe_deduct_compute", profit_kind="deduct"),
         "pb": _run_valuation("pb", "PB", 95.0, "pb_compute"),
     }
+
+    # 净利润TTM同比(无市值维度)两口径一次算出(归母当前默认 / 扣非随 Web"净利润口径"
+    # 下拉切换): 与归母共用已拉报告期数据, 扣非仅本地重算零新增请求(扣非无快报源, 快报窗口内
+    # 时效落后归母一档; 类别两口径独立判定); 失败时报错降级为空 levels(前端显示"—")
+    _notify(95.5, "计算行业净利润TTM同比", "计算财务指标")
+    growth_levels: dict[str, dict[str, float | str]] = {}
+    growth_stats: dict[str, int] = {}
+    growth_deducted_levels: dict[str, dict[str, float | str]] = {}
+    growth_deducted_stats: dict[str, int] = {}
+    for profit_kind, growth_key, compute_key in (
+        ("attr", "growth", "growth_compute"),
+        ("deduct", "growth_deducted", "growth_deduct_compute"),
+    ):
+        g_timings: dict[str, float] = {}
+        try:
+            fina_thread.join()
+            if "fina_fetch" not in timings and "secs" in fina_wall:
+                timings["fina_fetch"] = fina_wall["secs"]
+            levels_one, stats_one = daily_profit_growth(
+                tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
+                profit_kind=profit_kind,
+            )
+        except Exception as err:
+            logger.warning(f"净利润TTM同比({profit_kind}) 计算失败, 本次无该列: {err!r}")
+            levels_one, stats_one = {}, {}
+        timings[compute_key] = g_timings.get("compute", 0.0)
+        if profit_kind == "attr":
+            growth_levels, growth_stats = levels_one, stats_one
+        else:
+            growth_deducted_levels, growth_deducted_stats = levels_one, stats_one
+    valuation["growth"] = {"value": growth_levels, "stats": growth_stats}
+    valuation["growth_deducted"] = {"value": growth_deducted_levels, "stats": growth_deducted_stats}
 
     return (
         ew,

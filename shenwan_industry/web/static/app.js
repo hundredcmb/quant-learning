@@ -414,6 +414,7 @@ function renderMainTable() {
     count: row[countField],
     pe: peField ? row[peField] : undefined,
     pb: pbField ? row[pbField] : undefined,
+    growth: state.profitBasis === "deduct" ? row.profit_growth_deducted : row.profit_growth, // 净利润TTM同比随"净利润口径"下拉切换
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -449,6 +450,7 @@ function renderMainTable() {
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
       <td>${formatMetric(row.pe, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
+      <td class="${growthClass(row.growth)}">${formatGrowth(row.growth)}</td>
       <td>${countHtml}</td>
     `;
     tbody.appendChild(tr);
@@ -535,9 +537,10 @@ function openSubPanel(indexCode, industryName) {
 }
 
 function renderSubTable() {
-  // PE 列随"净利润口径"下拉取值并合成为排序字段 pe(与主表同法), 保证排序与显示同口径
+  // PE/净利润TTM同比列随"净利润口径"下拉取值并合成为排序字段(与主表同法), 保证排序与显示同口径
   const peKey = state.profitBasis === "deduct" ? "pe_ttm_deducted" : "pe_ttm";
-  const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey] }));
+  const growthKey = state.profitBasis === "deduct" ? "profit_growth_deducted" : "profit_growth";
+  const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey], growth: row[growthKey] }));
   sortRows(rows, state.subSort);
   updateSortArrows("#sub-table", state.subSort);
 
@@ -557,6 +560,7 @@ function renderSubTable() {
       <td>${formatCircMv(row.free_mv)}</td>
       <td>${formatMetric(row.pe, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
+      <td class="${growthClass(row.growth)}">${formatGrowth(row.growth)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -902,8 +906,13 @@ function sortRows(rows, sortState) {
   const key = sortState.key;
   const direction = sortState.dir === "asc" ? 1 : -1;
   rows.sort((a, b) => {
-    const aValue = a[key];
-    const bValue = b[key];
+    let aValue = a[key];
+    let bValue = b[key];
+    if (key === "growth" || key === "profit_growth") {
+      // 净利润TTM同比列: 四级序(持续亏损<转亏<数值<扭亏), 类别文本映射为哨兵数值后参与比较
+      aValue = growthSortValue(aValue);
+      bValue = growthSortValue(bValue);
+    }
     if (typeof aValue === "string" && typeof bValue === "string") {
       return aValue.localeCompare(bValue, "zh-CN") * direction;
     }
@@ -982,6 +991,37 @@ function formatMetric(value, nullLabel) {
   return Number(value).toFixed(2);
 }
 
+function formatGrowth(value) {
+  // 净利润TTM同比: 数值%(带符号两位小数, 格式同"涨幅") | 类别文本 | "—"(键缺失=无数据/降级)
+  if (value === "持续亏损" || value === "转亏" || value === "扭亏") {
+    return value;
+  }
+  if (value == null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const number = Number(value);
+  return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
+}
+
+function growthSortValue(value) {
+  // 四级排序位(低→高): 持续亏损 < 转亏 < 数值[−100,∞) < 扭亏; 哨兵取远离数值域的量级,
+  // 数值恒 >= −100(%); 无数据恒置底——null(子表后端对无数据股票下发 null)与 undefined
+  // 一并归一为 undefined, 走 sortRows 既有恒置底分支(否则 null 会落入"按最大值"分支, 降序置顶)
+  if (value == null) {
+    return undefined;
+  }
+  if (value === "持续亏损") {
+    return -2e12;
+  }
+  if (value === "转亏") {
+    return -1e12;
+  }
+  if (value === "扭亏") {
+    return 1e12;
+  }
+  return value;
+}
+
 function formatPrice(value) {
   if (value == null || Number.isNaN(Number(value))) {
     return "—";
@@ -1052,6 +1092,11 @@ function pctClass(value) {
     return "down";
   }
   return "zero";
+}
+// 净利润TTM同比着色: 仅数值走红涨绿跌(同涨幅列), 类别文本("扭亏"/"转亏"/"持续亏损")与
+// 无数据不着色——字符串经 pctClass 数值化为 NaN 自然落入 zero 中性类
+function growthClass(value) {
+  return pctClass(value);
 }
 
 function formatDateText(value) {
