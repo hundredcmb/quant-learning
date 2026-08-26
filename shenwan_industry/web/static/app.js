@@ -535,7 +535,9 @@ function openSubPanel(indexCode, industryName) {
 }
 
 function renderSubTable() {
-  const rows = state.subRows.map((row) => ({ ...row }));
+  // PE 列随"净利润口径"下拉取值并合成为排序字段 pe(与主表同法), 保证排序与显示同口径
+  const peKey = state.profitBasis === "deduct" ? "pe_ttm_deducted" : "pe_ttm";
+  const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey] }));
   sortRows(rows, state.subSort);
   updateSortArrows("#sub-table", state.subSort);
 
@@ -553,7 +555,7 @@ function renderSubTable() {
       <td>${formatAmountColumn(row.amount)}</td>
       <td>${formatCircMv(row.total_mv)}</td>
       <td>${formatCircMv(row.free_mv)}</td>
-      <td>${formatMetric(state.profitBasis === "deduct" ? row.pe_ttm_deducted : row.pe_ttm, "亏损")}</td>
+      <td>${formatMetric(row.pe, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
     `;
     tbody.appendChild(tr);

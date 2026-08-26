@@ -66,8 +66,9 @@ if __name__ == "__main__":
             ("数据准备", [("行业树+成分加载", prep_secs)]),
             ("行情数据", [("行情获取 daily", timings["daily_fetch"])]),
             ("市值数据", [("市值获取 daily_basic", timings["mv_fetch"])]),
-            ("财务指标", [("PE-TTM/PB 数据获取 fina_indicator_vip", timings.get("fina_fetch", 0.0)),
-                          ("PE-TTM 聚合计算", timings.get("pe_compute", 0.0)),
+            ("财务指标", [("PE-TTM/PB 数据获取 fina_indicator_vip+balancesheet_vip(两池并行)", timings.get("fina_fetch", 0.0)),
+                          ("PE-TTM(归母)聚合计算", timings.get("pe_compute", 0.0)),
+                          ("PE-TTM(扣非)聚合计算", timings.get("pe_deduct_compute", 0.0)),
                           ("PB 聚合计算", timings.get("pb_compute", 0.0))]),
             ("排行计算", [
                 ("等权计算(两种口径)", timings["equal_compute"] + timings.get("equal_tr_compute", 0.0)),
@@ -91,7 +92,7 @@ if __name__ == "__main__":
     if pb_stats:
         print(
             f"PB 统计: 报告期 {pb_stats.get('periods', 0)} 期, "
-            f"有净资产 {pb_stats.get('stocks_with_bps', 0)} 只, "
+            f"有净资产 {pb_stats.get('stocks_with_equity', 0)} 只, "
             f"无净资产 {pb_stats.get('stocks_missing', 0)} 只"
         )
 

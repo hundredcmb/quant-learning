@@ -536,30 +536,32 @@ def _run_daily(
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
     # 个股估值(成分股子表展示, 总市值口径, 与行业总市值口径公式一致): 财务缓存命中零请求
-    # PE = 总市值(万元)/(TTM(元)/1e4); PB = 总市值(万元)/(bps×当日总股本(万股))
-    # PE 双口径(归母/扣非)一次算出供前端"净利润口径"切换; 值 None = 亏损(TTM<=0) / 资不抵债(净资产<=0);
-    # 键缺失 = 无数据(前端显示"—")
+    # PE = 总市值(万元)/(TTM(元)/1e4); PB = 总市值(万元)/(归母普通股股东权益(元)/1e4)——
+    # 分母为 balancesheet_vip 权威绝对额(归母权益−其他权益工具[已含优先股], 不经"每股×股本"折算)
+    # PE 双口径(归母/扣非)一次算出供前端"净利润口径"切换; 值 None = 亏损(TTM<=0) / 资不抵债
+    # (净资产<=0); 键缺失 = 无数据(前端显示"—")。循环按两 TTM 键并集驱动, 两口径覆盖互不
+    # 连坐(归母合成失败仅缺归母列, 不影响该股扣非/PB 行)
     ttm_map, _ = provider.get_ts_code_to_ttm_attr_profit(rank_date)
     ttm_deduct_map, _ = provider.get_ts_code_to_ttm_deducted_profit(rank_date)
-    bps_map, _ = provider.get_ts_code_to_bps(rank_date)
-    share_map = provider.get_ts_code_to_total_share(rank_date)
+    equity_map, _ = provider.get_ts_code_to_equity(rank_date)
     stock_pe: dict[str, float | None] = {}
     stock_pe_deducted: dict[str, float | None] = {}
     stock_pb: dict[str, float | None] = {}
-    for ts_code, ttm in ttm_map.items():
+    for ts_code in ttm_map.keys() | ttm_deduct_map.keys():
         total_mv = total_map.get(ts_code)
         if total_mv is None:
             continue
-        profit_wan = ttm / 1e4
-        stock_pe[ts_code] = total_mv / profit_wan if profit_wan > 0 else None
+        ttm = ttm_map.get(ts_code)
+        if ttm is not None:
+            profit_wan = ttm / 1e4
+            stock_pe[ts_code] = total_mv / profit_wan if profit_wan > 0 else None
         deducted = ttm_deduct_map.get(ts_code)
         if deducted is not None:
             deducted_wan = deducted / 1e4
             stock_pe_deducted[ts_code] = total_mv / deducted_wan if deducted_wan > 0 else None
-        bps = bps_map.get(ts_code)
-        share = share_map.get(ts_code)
-        if bps is not None and share is not None:
-            equity_wan = bps * share
+        equity = equity_map.get(ts_code)
+        if equity is not None:
+            equity_wan = equity / 1e4
             stock_pb[ts_code] = total_mv / equity_wan if equity_wan > 0 else None
 
     result = {

@@ -7,6 +7,10 @@
   实测验证, 见 _fetch_fina_period), 供单日榜 PE-TTM: 当前用归母口径 get_ts_code_to_ttm_attr_profit,
   扣非口径 get_ts_code_to_ttm_deducted_profit 保留备用——两法 PIT 同为 ann_date <= 计算日,
   累计值口径与 TTM 规则一致
+- 归母普通股股东权益: balancesheet_vip 按报告期批拉(归母权益−其他权益工具[已含优先股] 行内合成,
+  **权威绝对额**、与 bps 分子同口径, 见 _fetch_bs_period), 供单日榜 PB 分母(get_ts_code_to_equity);
+  与 fina 池**并行预热**(prefetch_fina_indicators 双池并发、接口限流独立); 旧 bps×当日股本
+  口径保留对照(get_ts_code_to_bps)
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -17,6 +21,7 @@
 """
 
 import bisect
+import logging
 import math
 import os
 import threading
@@ -27,6 +32,8 @@ from datetime import datetime, timedelta
 from typing import Callable
 
 import pandas as pd
+
+logger = logging.getLogger("shenwan_industry.market_data")
 
 # 进度回调: (0~100 的百分比, 阶段说明)
 ProgressCallback = Callable[[float, str], None]
@@ -52,6 +59,9 @@ FINA_FETCH_BATCH = 9999
 # 财务指标批拉的并发线程数: 各期请求经同一节流器按 7.5/s 错开开始时刻、网络往返并行重叠,
 # 8 期总时长 ≈ 限速 8×0.133s + 单次往返(实测 ~1.4s, 串行 ~3.5s); 请求速率上限仍由节流器统一控制
 FINA_FETCH_WORKERS = 8
+# 资产负债表(VIP)批拉单批行数: 实测 balancesheet_vip 按 period 整批单期 6927 行(20250630)、
+# limit=9999 单页回全量无截断; 每期一页, 保留分页循环兜底; 与 fina 池并发时各自独立节流(7.5/s)
+BS_FETCH_BATCH = 9999
 # PE-TTM 报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"全部组合
 FINA_TTM_WINDOW_MONTHS = 24
 
@@ -61,7 +71,7 @@ def wrap_api_counter(pro) -> dict[str, int]:
     counter: dict[str, int] = {}
     for name in (
         "stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal",
-        "dividend", "fina_indicator_vip",
+        "dividend", "fina_indicator_vip", "balancesheet_vip",
     ):
         orig = getattr(pro, name)
 
@@ -145,13 +155,16 @@ class MarketDataProvider:
         self.ts_code_to_amount_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股成交额数据(千元)
         self.ts_code_to_free_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股自由流通市值数据
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
-        self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 供 PB 净资产折算)
+        self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 随 daily_basic 同请求缓存; PB 已改用 balancesheet_vip 权威净资产, 股本不再参与 PB)
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
         self._fina_period_cache: dict[str, dict[str, tuple[str, float, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 归母净利润, 每股净资产bps)
         self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
         self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM扣非, 统计)——扣非口径(保留备用)
         self._ttm_attr_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM归母, 统计)——PE-TTM 当前口径
-        self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)
+        self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)——旧 PB 口径(保留对照)
+        self._bs_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 归母普通股股东权益元)
+        self._bs_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期归母普通股股东权益)
+        self._equity_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (归母普通股股东权益, 统计)——PB 当前口径
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
@@ -399,15 +412,83 @@ class MarketDataProvider:
         self._fina_period_cache[period] = rows
         return rows
 
-    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float]]]]:
-        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps)}})
+    def _fetch_bs_period(self, period: str) -> dict[str, tuple[str, float]]:
+        """按报告期拉全市场资产负债表: 返回 {ts_code: (ann_date, 归母普通股股东权益元)}
 
-        窗口 = [D-24个月, D] 内所有季末(最多 8 期), 覆盖 PE-TTM 所需"最新期+去年年报+去年同季";
-        PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
+        接口: balancesheet_vip(period, fields='ts_code,ann_date,end_date,report_type,
+        total_hldr_eqy_exc_min_int,oth_eqt_tools'), offset 分页循环
+        (单批 BS_FETCH_BATCH=9999, 实测 20250630 整批 6927 行、单页回全量)。
+        **PB 分母 = 归属于母公司普通股股东的权益(绝对额元, 报告期末时点值)**:
+            普通股东权益 = total_hldr_eqy_exc_min_int(归母权益) − oth_eqt_tools(其他权益工具,
+            主要为永续债/优先股)
+        **oth_eqt_tools 为"其他权益工具合计"、已含优先股**(接口另有 oth_eqt_tools_p_shr
+        "其中:优先股"为其子项, 不可重复扣减)。实测与 fina 的 bps 分子**严格同口径**
+        (20250407 对账: 招商银行 12260−1804=10456亿 == bps×当日股本 10456亿 分毫不差;
+        宁波银行 2332−248=2084亿 ≈ bps×股本 2082亿(0.1% 为可转债转股股本漂移); 华能国际/
+        东方航空/大唐发电/深圳能源等永续债大户 (归母−oth)/bps 隐含股本与当日总股本吻合
+        到 0.001%, 如华能 1374.1−801.7=572.4亿 == bps×当日总股本 572.4亿)——与 Tushare
+        daily_basic.pb 及数据商惯例一致(普通股总市值对应普通股股东权益, 优先股/永续债
+        持有人不分享); oth 缺失(NaN)按 0 处理, 首批缺列时告警(fields 静默忽略防御,
+        此时退化为含其他权益工具口径)。
+        **绝对额不经"每股×股本"折算**: 报告期后送转/增发/回购的股本变动、CDR 股本口径
+        错配(实测九号公司 689009.SH: bps 分母与 daily_basic 总股本差 10×, 旧口径 PB 低估
+        10 倍)、次新 bps 分母漂移均不再引入近似(旧 bps 口径的偏差见 known_issues 第 37 条)。
+        report_type 实测不传时服务端默认只返回 '1'(合并报表, 20250630 全 6927 行均为 '1'),
+        代码仍逐行过滤非 '1' 防御(调整/母公司报表类型混入时宁跳过该行)。
+        **数据质量(实测, 与 fina 同模式)**: 同股票同报告期返回多行(20250630 有 611 只双行,
+        update_flag 0/1、值相同), 去重为**字段级**各自取最后非空(合成后的普通股东权益值);
+        普通股东权益为**行内合成**(归母/oth 同行齐备才算, oth 单缺按 0——0 是合法值且实测
+        oth 缺失即真无永续债/优先股); ann_date 实测零缺失; fields 静默忽略须 getattr 防御;
+        偶见畸形代码(实测 833243!1.BJ)不匹配任何股票池, 无害。PB 用法(PIT/无滚动)见
+        get_ts_code_to_equity
         """
-        cached = self._fina_per_stock_cache.get(date)
+        cached = self._bs_period_cache.get(period)
         if cached is not None:
             return cached
+        rows: dict[str, tuple[str, float]] = {}
+        offset = 0
+        while True:
+            self._acquire_rate_slot("balancesheet_vip")
+            df = self.pro.balancesheet_vip(
+                period=period,
+                fields="ts_code,ann_date,end_date,report_type,total_hldr_eqy_exc_min_int,oth_eqt_tools",
+                offset=offset,
+                limit=BS_FETCH_BATCH,
+            )
+            if df is None or len(df) == 0:
+                break
+            if offset == 0 and "oth_eqt_tools" not in df.columns:
+                logger.warning("balancesheet_vip 未返回 oth_eqt_tools 字段(fields 被静默忽略?), PB 净资产将退化为含其他权益工具口径")
+            for row in df.itertuples(index=False):
+                report_type = str(getattr(row, "report_type", None) or "")
+                if report_type and report_type != "1":
+                    continue  # 只取合并报表(实测不传时服务端已默认 '1', 此为防御)
+                ts_code = str(row.ts_code)
+                ann_date = str(getattr(row, "ann_date", None) or "")
+                eq_raw = getattr(row, "total_hldr_eqy_exc_min_int", None)
+                if eq_raw is not None and not pd.isna(eq_raw):
+                    oth = getattr(row, "oth_eqt_tools", None)
+                    oth_v = float(oth) if oth is not None and not pd.isna(oth) else 0.0
+                    equity = float(eq_raw) - oth_v
+                else:
+                    equity = None
+                ann_old, equity_old = rows.get(ts_code, ("", None))
+                rows[ts_code] = (
+                    ann_date or ann_old,
+                    equity if equity is not None else equity_old,
+                )
+            offset += len(df)
+            if len(df) < BS_FETCH_BATCH:
+                break
+        self._bs_period_cache[period] = rows
+        return rows
+
+    @staticmethod
+    def _fina_period_window(date: datetime) -> list[str]:
+        """财务报告期窗口: [D-24个月, D] 内所有季末(升序, 最多 8 期), fina/balancesheet 两池共用
+
+        覆盖 PE-TTM 所需"最新期+去年年报+去年同季"; PB 只需最新期, 同窗口复用
+        """
         date_str = date.strftime("%Y%m%d")
         start_cut = f"{date.year - 2}{date.month:02d}{date.day:02d}"
         periods: list[str] = []
@@ -416,6 +497,18 @@ class MarketDataProvider:
                 period = f"{year}{month_day}"
                 if start_cut <= period <= date_str:
                     periods.append(period)
+        return periods
+
+    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float]]]]:
+        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps)}})
+
+        窗口 = _fina_period_window([D-24个月, D] 季末, 最多 8 期), 覆盖 PE-TTM 所需"最新期+去年年报+去年同季";
+        PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
+        """
+        cached = self._fina_per_stock_cache.get(date)
+        if cached is not None:
+            return cached
+        periods = self._fina_period_window(date)
         per_stock: dict[str, dict[str, tuple[str, float, float]]] = {}
         # 各期并发拉取: 请求开始时刻由节流器统一错开(7.5/s), 网络往返并行重叠(同 fetch_daily_batch 模式);
         # executor.map 结果按输入顺序产出(zip 回期号), 遇错即抛(与串行时一致, 由调用方降级处理), 不静默吞掉
@@ -426,15 +519,47 @@ class MarketDataProvider:
         self._fina_per_stock_cache[date] = (periods, per_stock)
         return periods, per_stock
 
-    def prefetch_fina_indicators(self, date: datetime) -> None:
-        """后台预热财务指标批拉: 触发 _fina_per_stock(8 期并发拉取并写入按日缓存)
+    def _bs_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float]]]]:
+        """拉取计算日 D 的资产负债表窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 归母普通股股东权益元)}})
 
-        供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算**并行**运行
-        (fina 接口限流独立于 daily_basic 等、线程只写财务缓存、与市值/股本缓存互不相交);
-        重复调用命中缓存立即返回; 调用方应在 PE/PB 阶段 join 该线程, 异常由 join 处抛出、
-        走既有"指标降级告警"路径
+        窗口与 _fina_per_stock 共用(_fina_period_window); PB 只需最新期, 同窗口复用。
+        各期并发拉取(同 fina 模式: FINA_FETCH_WORKERS 线程、balancesheet_vip 独立节流, 两池可同时
+        跑); 按计算日缓存, 报告期数据按 period 缓存跨天复用; executor.map 遇错即抛(由调用方降级)
         """
-        self._fina_per_stock(date)
+        cached = self._bs_per_stock_cache.get(date)
+        if cached is not None:
+            return cached
+        periods = self._fina_period_window(date)
+        per_stock: dict[str, dict[str, tuple[str, float]]] = {}
+        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods, executor.map(self._fetch_bs_period, periods)):
+                for ts_code, record in period_rows.items():
+                    per_stock.setdefault(ts_code, {})[period] = record
+        self._bs_per_stock_cache[date] = (periods, per_stock)
+        return periods, per_stock
+
+    def prefetch_fina_indicators(self, date: datetime) -> None:
+        """后台预热财务数据批拉: fina_indicator_vip(利润/bps) 与 balancesheet_vip(归母净资产)两池**并行**
+
+        两接口节流互相独立(Tushare 限额独立)、各自 8 期并发, 总墙时 ≈ 单池时长(不串行叠加);
+        供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算**并行**运行(线程只写各自财务
+        缓存、与市值/股本缓存互不相交); 重复调用命中缓存立即返回; 调用方应在 PE/PB 阶段 join
+        该线程。fina 池异常照旧向上抛(PE/PB 走既有"惰性重拉再失败才降级"路径); bs 池异常仅
+        告警不影响 fina 池(反之亦然), PB 阶段惰性重拉
+        """
+        bs_thread = threading.Thread(target=self._safe_prefetch_bs, args=(date,), daemon=True)
+        bs_thread.start()
+        try:
+            self._fina_per_stock(date)
+        finally:
+            bs_thread.join()
+
+    def _safe_prefetch_bs(self, date: datetime) -> None:
+        """bs 池预热包装: 异常吞掉仅告警, 不波及并行运行的 fina 池(两池线程隔离)"""
+        try:
+            self._bs_per_stock(date)
+        except Exception as err:
+            logger.warning(f"balancesheet_vip 预热失败(PB 阶段将惰性重拉): {err!r}")
 
     def _fina_latest_period(self, by_period: dict[str, tuple], date_str: str) -> str | None:
         """PIT 选取: 每股 ann_date <= D 的最大报告期(ann_date 缺失按法定披露截止日推定)"""
@@ -541,16 +666,16 @@ class MarketDataProvider:
         return result
 
     def get_ts_code_to_bps(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
-        """获取各股票截至 date 的每股净资产(元): (bps_map, stats)
+        """获取各股票截至 date 的每股净资产(元): (bps_map, stats)——**旧 PB 口径, 保留对照**
 
         bps_map: ts_code -> 最新报告期 bps(每股净资产, 元); stats: {"periods",
         "stocks_with_bps", "stocks_missing"}。
-
+        **当前 PB 分母已改用 balancesheet_vip 权威归母净资产绝对额(get_ts_code_to_equity)**,
+        本方法及其"bps × 当日总股本"折算保留作对照口径(该折算在报告期后送转/增发/回购时
+        引入近似, 见 known_issues 第 37 条); 数据仍随 fina 批拉同请求返回、调用零新增请求。
         与 PE-TTM 同源同批拉取(fina_indicator_vip 的 bps 字段)、同一 PIT 规则
         (ann_date <= date 的最大报告期, 见 _fina_latest_period); **bps 是报告期末时点值,
-        不是累计值**——无需 TTM 滚动、无"不足四期年化"兜底(新股仅一期也直接用其最新期)。
-        PB 为时点口径: 行业 PB = Σ总市值 / Σ净资产, 净资产(万元) = bps × 总股本(万股)
-        在 daily_pe_ttm/daily_pb 聚合时按当日股本折算(股本变动窗口为近似, 见 known_issues 第 37 条)
+        不是累计值**——无需 TTM 滚动、无"不足四期年化"兜底(新股仅一期也直接用其最新期)
         """
         cached = self._bps_cache.get(date)
         if cached is not None:
@@ -575,6 +700,45 @@ class MarketDataProvider:
 
         self._bps_cache[date] = (bps_map, stats)
         return bps_map, stats
+
+    def get_ts_code_to_equity(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票截至 date 的归母普通股股东权益(元): (equity_map, stats)——**PB 当前口径**
+
+        权威来源: balancesheet_vip(归母权益−其他权益工具−优先股 行内合成, **绝对额元、
+        报告期末时点值**, 见 _fetch_bs_period)——与 fina 的 bps 分子同口径(实测华能国际等
+        永续债大户对账吻合到 0.001%)、与 Tushare daily_basic.pb 及数据商惯例一致; 不经
+        "每股×股本"折算, 报告期后送转/增发/回购的股本变动与 CDR 股本口径错配(九号公司
+        旧口径 PB 低估 10 倍)不再引入近似(旧口径偏差见 known_issues 第 37 条;
+        get_ts_code_to_bps 保留对照)。
+        PIT 与 PE-TTM 同规则: 每股最新期 = ann_date <= date 的最大报告期(ann_date 缺失按
+        法定披露截止日推定, 实测零缺失); 净资产为时点值, 无滚动、无年化兜底(新股仅一期
+        也直接用其最新期)。结果按计算日缓存, 报告期数据按 period 缓存跨天复用。
+        stats: {"periods", "stocks_with_equity", "stocks_missing"}; 聚合公式见
+        industry_ranking.daily_valuation_metric(kind="pb") 与 docs/financial_indicators.md
+        """
+        cached = self._equity_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        periods, per_stock = self._bs_per_stock(date)
+
+        equity_map: dict[str, float] = {}
+        stats = {"periods": len(periods), "stocks_with_equity": 0, "stocks_missing": 0}
+        for ts_code, by_period in per_stock.items():
+            latest_period = self._fina_latest_period(by_period, date_str)
+            if latest_period is None:
+                stats["stocks_missing"] += 1
+                continue
+            equity = by_period[latest_period][1]
+            if equity is None:
+                stats["stocks_missing"] += 1
+                continue
+            equity_map[ts_code] = equity
+            stats["stocks_with_equity"] += 1
+
+        self._equity_cache[date] = (equity_map, stats)
+        return equity_map, stats
 
     def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表
