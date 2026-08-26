@@ -568,7 +568,7 @@ def run_daily_ranking(
     timings key: daily_fetch / mv_fetch / equal_compute / equal_tr_compute / float_compute /
     float_fallback / float_resolve / float_tr_compute / float_tr_fallback / float_tr_resolve /
     total_compute / total_fallback / total_resolve / total_tr_compute / total_tr_fallback /
-    total_tr_resolve / fina_fetch(fina+balancesheet 两池并行总墙时) / pe_compute /
+    total_tr_resolve / fina_fetch(fina+balancesheet+express 三池并行总墙时) / pe_compute /
     pe_deduct_compute / pb_compute
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
@@ -591,9 +591,9 @@ def run_daily_ranking(
     market_data.get_ts_code_to_free_mv(date)  # 同一次请求同时缓存自由流通市值/总市值
     timings["mv_fetch"] = time.perf_counter() - t0
 
-    # 财务数据后台预热: 与后续六条涨幅序列计算**并行**——fina_indicator_vip(利润/bps) 与
-    # balancesheet_vip(归母净资产) 两池**同时并发**(接口限流互相独立, 见
-    # MarketDataProvider.prefetch_fina_indicators), 把两池 ~1.4s 量级的拉取藏进计算阶段
+    # 财务数据后台预热: 与后续六条涨幅序列计算**并行**——fina_indicator_vip(利润/bps)、
+    # balancesheet_vip(归母净资产) 与 express_vip(业绩快报) 三池**同时并发**(接口限流互相
+    # 独立, 见 MarketDataProvider.prefetch_fina_indicators), 把 ~1.4s 量级的拉取藏进计算阶段
     # (总墙时 ≈ 单池, 不串行叠加), PE/PB 阶段 join 命中预热缓存; 线程失败在 join 处抛出、
     # 走既有"指标降级告警"路径
     fina_wall: dict[str, float] = {}

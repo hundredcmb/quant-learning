@@ -66,7 +66,7 @@ if __name__ == "__main__":
             ("数据准备", [("行业树+成分加载", prep_secs)]),
             ("行情数据", [("行情获取 daily", timings["daily_fetch"])]),
             ("市值数据", [("市值获取 daily_basic", timings["mv_fetch"])]),
-            ("财务指标", [("PE-TTM/PB 数据获取 fina_indicator_vip+balancesheet_vip(两池并行)", timings.get("fina_fetch", 0.0)),
+            ("财务指标", [("PE-TTM/PB 数据获取 fina_indicator_vip+balancesheet_vip+express_vip(三池并行)", timings.get("fina_fetch", 0.0)),
                           ("PE-TTM(归母)聚合计算", timings.get("pe_compute", 0.0)),
                           ("PE-TTM(扣非)聚合计算", timings.get("pe_deduct_compute", 0.0)),
                           ("PB 聚合计算", timings.get("pb_compute", 0.0))]),
@@ -87,7 +87,8 @@ if __name__ == "__main__":
             f"\nPE-TTM(归母)统计: 报告期 {pe_stats.get('periods', 0)} 期, "
             f"标准式 {pe_stats.get('stocks_standard', 0)} 只, "
             f"不足四期年化 {pe_stats.get('stocks_annualized', 0)} 只, "
-            f"无财报 {pe_stats.get('stocks_missing', 0)} 只"
+            f"无财报 {pe_stats.get('stocks_missing', 0)} 只, "
+            f"快报参与 {pe_stats.get('stocks_express', 0)} 只"
         )
     if pb_stats:
         print(

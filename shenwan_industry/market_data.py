@@ -11,6 +11,9 @@
   **权威绝对额**、与 bps 分子同口径, 见 _fetch_bs_period), 供单日榜 PB 分母(get_ts_code_to_equity);
   与 fina 池**并行预热**(prefetch_fina_indicators 双池并发、接口限流独立); 旧 bps×当日股本
   口径保留对照(get_ts_code_to_bps)
+- 业绩快报(express_vip)第三池: 归母净利润的**提前可用源**——报告期值若快报已发布(ann_date 更早)
+  则在年报披露前以快报值参与 PE-TTM(PIT 合并规则见 _merge_attr_with_express: 审定值优先、
+  快报兑现、快报失败退回纯财报), 三池并行预热; 扣非口径与 PB 无快报、不受影响
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -62,6 +65,9 @@ FINA_FETCH_WORKERS = 8
 # 资产负债表(VIP)批拉单批行数: 实测 balancesheet_vip 按 period 整批单期 6927 行(20250630)、
 # limit=9999 单页回全量无截断; 每期一页, 保留分页循环兜底; 与 fina 池并发时各自独立节流(7.5/s)
 BS_FETCH_BATCH = 9999
+# 业绩快报(VIP)批拉单批行数: 实测 express_vip 按 period 单期 1409 行(20241231, 覆盖约 21% 的
+# 公司)、limit=9999 单页回全量; 每期一页, 保留分页循环兜底; 与 fina/bs 池并发时独立节流(7.5/s)
+EXPRESS_FETCH_BATCH = 9999
 # PE-TTM 报告期窗口: [date-24个月, date] 内所有季末(最多 8 期), 覆盖"最新期+去年年报+去年同季"全部组合
 FINA_TTM_WINDOW_MONTHS = 24
 
@@ -71,7 +77,7 @@ def wrap_api_counter(pro) -> dict[str, int]:
     counter: dict[str, int] = {}
     for name in (
         "stock_basic", "index_member_all", "daily", "daily_basic", "trade_cal",
-        "dividend", "fina_indicator_vip", "balancesheet_vip",
+        "dividend", "fina_indicator_vip", "balancesheet_vip", "express_vip",
     ):
         orig = getattr(pro, name)
 
@@ -165,6 +171,8 @@ class MarketDataProvider:
         self._bs_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 归母普通股股东权益元)
         self._bs_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期归母普通股股东权益)
         self._equity_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (归母普通股股东权益, 统计)——PB 当前口径
+        self._express_period_cache: dict[str, dict[str, list[tuple[str, float]]]] = {}  # 报告期 -> ts_code -> [(ann_date, 快报归母净利润元), ...]升序版本
+        self._express_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期快报版本)
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
@@ -483,6 +491,60 @@ class MarketDataProvider:
         self._bs_period_cache[period] = rows
         return rows
 
+    def _fetch_express_period(self, period: str) -> dict[str, list[tuple[str, float]]]:
+        """按报告期拉全市场业绩快报: 返回 {ts_code: [(ann_date, 快报归母净利润元), ...]}(ann_date 升序版本列表)
+
+        接口: express_vip(period, fields='ts_code,ann_date,end_date,n_income'), offset 分页循环
+        (单批 EXPRESS_FETCH_BATCH=9999, 实测 20241231 整批 1409 行、单页回全量)。
+        **n_income 即归母净利润**(交易所快报模板口径; 实测对账 20241231: 招行快报 1483.91 亿与
+        利润表归母分毫不差、与含少数 1495.59 亿不符; 全市场 1160 只与归母/含少数的偏差符号无系统性
+        偏正——排除含少数口径), 单位元、年初至今累计值, **未经审计的初步数**(is_audit 实测 0 占
+        1392/1402): 与年报审定值中位偏差 ~0.7%、43% 差 >1%、约 10% 差 >10%(减值/公允价值等审计
+        时才定), 年报披露后由 PIT 合并规则自动切回审定值(见 _merge_attr_with_express)。
+        **覆盖是部分的**(快报非强制披露): 实测 20241231 期 1403 只(占有财报股票约 21%)、
+        20240630 期仅 100 只——集中在年报期, 非年报季本池基本沉默。
+        **修正多行**: 同股票同报告期可有多行、ann_date 不同(实测 20241231 有 6 只真修正, 如
+        601231 先发空值行后补全)——保留**多版本列表**按 ann_date ≤ D 选最新(fina 的同日双行
+        去重模式不够用); n_income 为 NaN 的行直接丢弃(该版本无数值, 视为当时未提供)。
+        n_income 列整体缺失(fields 被静默忽略)时告警并返回空(归母 TTM 退回纯财报口径)。
+        用法与 PIT 合并见 get_ts_code_to_ttm_attr_profit / _merge_attr_with_express
+        """
+        cached = self._express_period_cache.get(period)
+        if cached is not None:
+            return cached
+        rows: dict[str, list[tuple[str, float]]] = {}
+        offset = 0
+        while True:
+            self._acquire_rate_slot("express_vip")
+            df = self.pro.express_vip(
+                period=period,
+                fields="ts_code,ann_date,end_date,n_income",
+                offset=offset,
+                limit=EXPRESS_FETCH_BATCH,
+            )
+            if df is None or len(df) == 0:
+                break
+            if offset == 0 and "n_income" not in df.columns:
+                logger.warning("express_vip 未返回 n_income 字段(fields 被静默忽略?), 归母 TTM 将退回纯财报口径")
+                break
+            for row in df.itertuples(index=False):
+                ts_code = str(row.ts_code)
+                ann_date = str(getattr(row, "ann_date", None) or "")
+                value = getattr(row, "n_income", None)
+                if not ann_date or value is None or pd.isna(value):
+                    continue  # 无公告日/无数值版本丢弃
+                entry = (ann_date, float(value))
+                versions = rows.setdefault(ts_code, [])
+                if entry not in versions:
+                    versions.append(entry)
+            offset += len(df)
+            if len(df) < EXPRESS_FETCH_BATCH:
+                break
+        for versions in rows.values():
+            versions.sort()
+        self._express_period_cache[period] = rows
+        return rows
+
     @staticmethod
     def _fina_period_window(date: datetime) -> list[str]:
         """财务报告期窗口: [D-24个月, D] 内所有季末(升序, 最多 8 期), fina/balancesheet 两池共用
@@ -538,28 +600,60 @@ class MarketDataProvider:
         self._bs_per_stock_cache[date] = (periods, per_stock)
         return periods, per_stock
 
-    def prefetch_fina_indicators(self, date: datetime) -> None:
-        """后台预热财务数据批拉: fina_indicator_vip(利润/bps) 与 balancesheet_vip(归母净资产)两池**并行**
+    def _express_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, list[tuple[str, float]]]]]:
+        """拉取计算日 D 的业绩快报窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: 版本列表}})
 
-        两接口节流互相独立(Tushare 限额独立)、各自 8 期并发, 总墙时 ≈ 单池时长(不串行叠加);
-        供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算**并行**运行(线程只写各自财务
-        缓存、与市值/股本缓存互不相交); 重复调用命中缓存立即返回; 调用方应在 PE/PB 阶段 join
-        该线程。fina 池异常照旧向上抛(PE/PB 走既有"惰性重拉再失败才降级"路径); bs 池异常仅
-        告警不影响 fina 池(反之亦然), PB 阶段惰性重拉
+        窗口与 _fina_per_stock 共用(_fina_period_window); 各期并发拉取(FINA_FETCH_WORKERS 线程、
+        express_vip 独立节流, 三池可同时跑); 按计算日缓存, 报告期数据按 period 缓存跨天复用;
+        executor.map 遇错即抛(由调用方降级——归母 getter 捕获后退回纯财报口径)
         """
-        bs_thread = threading.Thread(target=self._safe_prefetch_bs, args=(date,), daemon=True)
-        bs_thread.start()
+        cached = self._express_per_stock_cache.get(date)
+        if cached is not None:
+            return cached
+        periods = self._fina_period_window(date)
+        per_stock: dict[str, dict[str, list[tuple[str, float]]]] = {}
+        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods, executor.map(self._fetch_express_period, periods)):
+                for ts_code, versions in period_rows.items():
+                    per_stock.setdefault(ts_code, {})[period] = versions
+        self._express_per_stock_cache[date] = (periods, per_stock)
+        return periods, per_stock
+
+    def prefetch_fina_indicators(self, date: datetime) -> None:
+        """后台预热财务数据批拉: fina_indicator_vip(利润/bps) / balancesheet_vip(归母净资产) /
+        express_vip(业绩快报) 三池**并行**
+
+        三接口节流互相独立(Tushare 限额独立)、各自 8 期并发, 总墙时 ≈ 单池时长(不串行叠加,
+        实测三池并行与原单池同量级); 供 run_daily_ranking 在市值/行情就绪后与六条涨幅序列计算
+        **并行**运行(线程只写各自财务缓存、与市值缓存互不相交); 重复调用命中缓存立即返回;
+        调用方应在 PE/PB 阶段 join 该线程。fina 池异常照旧向上抛(PE/PB 走既有"惰性重拉再失败
+        才降级"路径); bs/express 池异常仅告警不影响其他池(线程隔离), PB/归母阶段惰性重拉
+        """
+        extra_threads = [
+            threading.Thread(target=self._safe_prefetch_bs, args=(date,), daemon=True),
+            threading.Thread(target=self._safe_prefetch_express, args=(date,), daemon=True),
+        ]
+        for thread in extra_threads:
+            thread.start()
         try:
             self._fina_per_stock(date)
         finally:
-            bs_thread.join()
+            for thread in extra_threads:
+                thread.join()
 
     def _safe_prefetch_bs(self, date: datetime) -> None:
-        """bs 池预热包装: 异常吞掉仅告警, 不波及并行运行的 fina 池(两池线程隔离)"""
+        """bs 池预热包装: 异常吞掉仅告警, 不波及并行运行的其他池(线程隔离)"""
         try:
             self._bs_per_stock(date)
         except Exception as err:
             logger.warning(f"balancesheet_vip 预热失败(PB 阶段将惰性重拉): {err!r}")
+
+    def _safe_prefetch_express(self, date: datetime) -> None:
+        """express 池预热包装: 异常吞掉仅告警, 不波及并行运行的其他池(线程隔离)"""
+        try:
+            self._express_per_stock(date)
+        except Exception as err:
+            logger.warning(f"express_vip 预热失败(归母 TTM 阶段将退回纯财报口径): {err!r}")
 
     def _fina_latest_period(self, by_period: dict[str, tuple], date_str: str) -> str | None:
         """PIT 选取: 每股 ann_date <= D 的最大报告期(ann_date 缺失按法定披露截止日推定)"""
@@ -581,7 +675,8 @@ class MarketDataProvider:
     ) -> tuple[dict[str, float], dict[str, int]]:
         """TTM 公共算法(扣非/归母两口径共用): 由每股各期数据滚动最近 12 个月净利润
 
-        value_idx 为每股各期元组的利润字段下标(1=扣非 / 2=归母行内合成), 只换字段不换规则。
+        value_idx 为每股各期记录中利润字段的下标, 只换字段不换规则——扣非为 fina 4 元组的 1、
+        归母为 fina 4 元组的 2(纯财报)或快报合并视图 2 元组的 1(见 _merge_attr_with_express)。
         时点正确性(PIT): 每股"最新期"取 ann_date <= date_str 的最大报告期——回看历史日期时只用
         当时已公开的财报, 消除前视偏差(实测 2025-04-07 当天全市场无一家公布 Q1'25, 全部落年报);
         ann_date 缺失按法定披露截止日推定(_fina_ann_date_floor), 实测批量接口 ann_date 无缺失。
@@ -629,13 +724,71 @@ class MarketDataProvider:
                 stats["stocks_annualized"] += 1
         return ttm_map, stats
 
+    def _merge_attr_with_express(
+        self,
+        fina_per_stock: dict[str, dict[str, tuple[str, float, float, float]]],
+        express_per_stock: dict[str, dict[str, list[tuple[str, float]]]],
+        date_str: str,
+    ) -> tuple[dict[str, dict[str, tuple[str, float | None]]], int]:
+        """归母净利润双源 PIT 合并: fina 财报(审定值) × express 业绩快报(提前可用), 供归母 TTM
+
+        每股每报告期解析为 (合并可用日, 截至 D 的归母值):
+        - 合并可用日 = min(财报可用日, 快报首版日)——"最新期"按此选取, 快报能把年报期提前到
+          披露日之前(实测 2025-04-07: 快报已出 1323 只中 1054 只年报未披露, 这些股票的最新期
+          从 Q3 提前到年报)
+        - 值优先级: **审定值优先**——fina 已可用(ann_date ≤ D)且归母非空用 fina; 否则用快报
+          ann_date ≤ D 的最新版本(修正多版本取最新); 再否则 None(fina 可用但归母为 None 的
+          组合也回退快报值, 宁可用快报不判无财报)
+        - 快报值为未审计初步数(与审定值中位差 ~0.7%、43% 差 >1%), 年报披露后自然切回审定值;
+          TTM 三期(最新期/去年年报/去年同季)各自独立按此解析
+        返回 (merged, 快报实际参与股票数)——后者为任一期取到快报值的股票数(观测统计用)
+        """
+
+        def _express_at_d(versions: list[tuple[str, float]] | None) -> tuple[str, float | None, float | None]:
+            """解析快报: 返回 (首版日, ≤D 最新版本值, ≤D 最新版本日)"""
+            if not versions:
+                return "", None, None
+            first_ann = versions[0][0]
+            for ann, value in reversed(versions):
+                if ann <= date_str:
+                    return first_ann, value, ann
+            return first_ann, None, None
+
+        merged: dict[str, dict[str, tuple[str, float | None]]] = {}
+        express_used: set[str] = set()
+        for ts_code in set(fina_per_stock) | set(express_per_stock):
+            f_by = fina_per_stock.get(ts_code) or {}
+            e_by = express_per_stock.get(ts_code) or {}
+            rows: dict[str, tuple[str, float | None]] = {}
+            for period in set(f_by) | set(e_by):
+                f_rec = f_by.get(period)
+                f_attr = f_rec[2] if f_rec is not None else None
+                fina_date = (f_rec[0] or self._fina_ann_date_floor(period)) if f_rec is not None else ""
+                first_ann, e_value, _e_ann = _express_at_d(e_by.get(period))
+                cand = [d for d in (fina_date, first_ann) if d]
+                eff_ann = min(cand) if cand else self._fina_ann_date_floor(period)
+                if fina_date and fina_date <= date_str and f_attr is not None:
+                    attr: float | None = f_attr
+                elif e_value is not None:
+                    attr = e_value
+                    express_used.add(ts_code)
+                else:
+                    attr = f_attr if (fina_date and fina_date <= date_str) else None
+                rows[period] = (eff_ann, attr)
+            merged[ts_code] = rows
+        return merged, len(express_used)
+
     def get_ts_code_to_ttm_attr_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
         """获取各股票截至 date 的**归母净利润** TTM(元)——PE-TTM 当前口径: (ttm_map, stats)
 
         归母净利润为行内合成值(profit_dedt + extra_item, 恒等式与实测覆盖率见 _fetch_fina_period),
-        单位元、年初至今累计值。PIT 规则与报告期窗口([date-24个月, date] 季末)见 _compute_ttm;
-        TTM 标准式与不足四期兜底同样见 _compute_ttm(value_idx=2)。
+        单位元、年初至今累计值; **业绩快报(express_vip)提前可用源**: 报告期值经
+        _merge_attr_with_express 双源 PIT 合并——快报已发布(ann_date 更早)则年报披露前以快报
+        归母值参与(审定值优先、快报兑现、快报拉取失败退回纯财报口径仅告警)。
+        PIT 规则与报告期窗口([date-24个月, date] 季末)见 _compute_ttm; TTM 标准式与不足四期
+        兜底同样见 _compute_ttm(合并视图 2 元组 value_idx=1)。
         结果按计算日缓存(_ttm_attr_cache, 与扣非口径分开), 报告期数据跨天复用。
+        stats 在 _compute_ttm 四键之外加 "stocks_express"(任一期取到快报值的股票数)。
         聚合公式见 industry_ranking.daily_valuation_metric(kind="pe") 与 docs/financial_indicators.md 第 3 节
         """
         cached = self._ttm_attr_cache.get(date)
@@ -644,7 +797,14 @@ class MarketDataProvider:
 
         date_str = date.strftime("%Y%m%d")
         periods, per_stock = self._fina_per_stock(date)
-        result = self._compute_ttm(per_stock, 2, date_str, len(periods))
+        try:
+            _, express_per_stock = self._express_per_stock(date)
+        except Exception as err:
+            logger.warning(f"express_vip 拉取失败, 归母 TTM 本次退回纯财报口径: {err!r}")
+            express_per_stock = {}
+        merged, stocks_express = self._merge_attr_with_express(per_stock, express_per_stock, date_str)
+        result = self._compute_ttm(merged, 1, date_str, len(periods))
+        result[1]["stocks_express"] = stocks_express
         self._ttm_attr_cache[date] = result
         return result
 
