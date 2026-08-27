@@ -28,8 +28,8 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 | `config.py` | 仅提供全局 `logger` |
 | `config_store.py` | 仓库级公共配置存储：Tushare token 存 `.quant-learning/settings.json`（已 gitignore），申万与 holders 共享同一份；`resolve_token` 按「`--token` 参数 > 已保存配置」解析，均无时返回空串由调用方报错 |
 | `rate_limiter.py` | 仓库级公共件：`InterfaceRateLimiter` 按接口独立串行平摊发射、跨接口并行互不等待（与申万模块同策略），触发官方频限后该接口速率减半自愈；`probe_credit_tier` 用门槛接口真实调用把账号定性为 <2000 / 2000~5000 / ≥5000 三档并联动限流速率；均进程内生效 |
-| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 三个脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两只单次运行同时输出「席位明细 + 按股票合并席位」两套表格与图片；均支持 `--token`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
-| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 三个脚本（对标股票 stock，change/return 两只同样内置按代码合并视图）/ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
+| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 三个分析脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两只单次运行同时输出「席位明细 + 按股票合并席位」两套表格与图片；均支持 `--token`）+ `cache_stats.py`（只读缓存覆盖统计）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
+| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 三个分析脚本（对标股票 stock，change/return 两只同样内置按代码合并视图）+ `cache_stats.py`（只读缓存覆盖统计）/ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
 | `output/` | 图片运行产物目录 |
 | `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/` | 申万行业模块：行业树 + 单日/区间涨幅榜（等权 / 自由流通市值加权 / 总市值加权）+ FastAPI Web 服务与桌面启动器；各文件功能、算法权威描述与强制核对流程见模块内 `AGENTS.md` |

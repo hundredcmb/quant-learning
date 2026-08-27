@@ -106,6 +106,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 .venv/bin/python holders/stock/top10_holders_value.py
 .venv/bin/python holders/stock/top10_holders_change.py
 .venv/bin/python holders/stock/top10_return_between_dates.py
+.venv/bin/python holders/stock/cache_stats.py          # 缓存体检：各报告期覆盖统计（不联网，--json 可导出）
 ```
 
 ### ETF（holders/etf/）
@@ -117,6 +118,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 .venv/bin/python holders/etf/etf_top10_holders_value.py
 .venv/bin/python holders/etf/etf_top10_holders_change.py
 .venv/bin/python holders/etf/etf_top10_return_between_dates.py
+.venv/bin/python holders/etf/cache_stats.py            # 缓存体检：持有人报告期覆盖 + 基础信息录入情况（不联网）
 ```
 
 运行前可在各脚本顶部「核心配置」区修改样本池指数、报告期、交易日和关键词；公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）分别集中在 `holders/stock/tushare_client.py` 与 `holders/etf/etf_client.py`。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存放于 `holders/` 下并随仓库提交，请勿删除（全量重新拉取受限流影响很慢）。
