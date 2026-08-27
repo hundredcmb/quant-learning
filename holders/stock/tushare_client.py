@@ -124,11 +124,40 @@ rate_limit_lock = threading.Lock()
 write_cache_lock = threading.Lock()
 
 
+# ===================== 积分权限探测 =====================
+# 探测用的固定老股老期：招商银行 2023 中报，历史数据必然存在，仅用于验证接口权限
+_CREDIT_PROBE_STOCK = ("600036.SH", "20230630")
+
+
+def _ensure_credit_2000() -> None:
+    """真实调用一次 top10_holders，探测账号积分 >= 2000（该接口的积分门槛）。
+
+    让积分不足在启动阶段就明确报错，而不是全市场扫描跑到一半才失败；
+    探测请求走正常限流，成功时静默返回。
+    """
+    rate_limit_control()
+    try:
+        pro.top10_holders(
+            ts_code=_CREDIT_PROBE_STOCK[0],
+            period=_CREDIT_PROBE_STOCK[1],
+            fields="ts_code",
+        )
+    except Exception as e:
+        msg = str(e)
+        if any(k in msg for k in ("积分", "权限", "抱歉")):
+            print(f"❌ 当前 Tushare token 积分不足 2000，无权调用 top10_holders 接口（Tushare 返回：{msg}）")
+            print("   股票十大股东分析至少需要 2000 积分，请到 tushare.pro 提升积分后重试")
+            sys.exit(1)
+        # 非权限类异常（网络抖动/服务端问题）无法据此判定权限，放行本次检查
+        print(f"⚠️ 积分探测请求失败（可能为网络波动），本次跳过积分检查：{msg}")
+
+
 def init_tushare(cli_token: str | None = None) -> DataApi:
     """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
     命令行 --token > 已保存配置，两者皆无时直接报错。
+    初始化完成后自动做一次 top10_holders 积分探测（>=2000 门槛）。
     """
     global token, pro
     token = resolve_token(cli_token)
@@ -138,6 +167,7 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
             f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
+    _ensure_credit_2000()
     return pro
 # ====================================================
 

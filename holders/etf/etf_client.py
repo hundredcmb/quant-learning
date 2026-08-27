@@ -115,11 +115,39 @@ token: str = ""
 pro: DataApi | None = None
 
 
+# ===================== 积分权限探测 =====================
+# 探测用的固定老 ETF 老交易日：华泰柏瑞沪深300ETF（510300）2024 年首个交易日，数据必然存在
+_CREDIT_PROBE_ETF = ("510300.SH", "20240102")
+
+
+def _ensure_credit_5000() -> None:
+    """真实调用一次 fund_daily，探测账号积分 >= 5000（该接口的积分门槛）。
+
+    让积分不足在启动阶段就明确报错，而不是扫描几百只 ETF 后才失败；
+    探测请求单只单日、传输量最小，成功时静默返回。
+    """
+    try:
+        pro.fund_daily(
+            ts_code=_CREDIT_PROBE_ETF[0],
+            trade_date=_CREDIT_PROBE_ETF[1],
+            fields="ts_code",
+        )
+    except Exception as e:
+        msg = str(e)
+        if any(k in msg for k in ("积分", "权限", "抱歉")):
+            print(f"❌ 当前 Tushare token 积分不足 5000，无权调用 fund_daily 接口（Tushare 返回：{msg}）")
+            print("   ETF 十大持有人分析的日线行情获取至少需要 5000 积分，请到 tushare.pro 提升积分后重试")
+            sys.exit(1)
+        # 非权限类异常（网络抖动/服务端问题）无法据此判定权限，放行本次检查
+        print(f"⚠️ 积分探测请求失败（可能为网络波动），本次跳过积分检查：{msg}")
+
+
 def init_tushare(cli_token: str | None = None) -> DataApi:
     """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
     命令行 --token > 已保存配置，两者皆无时直接报错。
+    初始化完成后自动做一次 fund_daily 积分探测（>=5000 门槛）。
     """
     global token, pro
     token = resolve_token(cli_token)
@@ -129,6 +157,7 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
             f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
+    _ensure_credit_5000()
     return pro
 # ====================================================
 

@@ -18,6 +18,7 @@
 ## 日线行情获取
 
 - 接口：Tushare `fund_daily`（ETF 日线行情），**至少需要 5000 积分**，8000 积分频次更高
+- 各 ETF 分析脚本启动时会先用一条固定历史数据（510300.SH @ 20240102）真实调一次 `fund_daily` 探测权限，低于 5000 积分直接报错退出
 - 按 `trade_date` **一次请求拉全市场** ETF 日线（实测 ~1800-2100 只，单次最多 5000 行），**不建缓存、不做限流**；也可按 `ts_code` 或日期区间获取单只历史（备用）
 - `etf_client.get_daily_prices(trade_date)` 返回 `{无后缀代码: close}`，并顺带把返回的 tushare 代码回填到 `etf_basic.ts_code`
 - 需要 tushare 代码时优先用 `etf_basic.ts_code`；为空时按沪深两个市场枚举后缀（`.SH` / `.SZ`）解析（`resolve_ts_code`）
