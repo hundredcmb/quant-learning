@@ -1,8 +1,8 @@
 """十大股东脚本公共模块：Tushare 客户端、原始数据缓存与限流。
 
 四个 holders 脚本共享的数据获取逻辑统一放在这里：
-- Tushare token 经仓库根 config_store 共享配置获取（首次运行终端输入自动保存，
-  非交互环境用各脚本的 --token 参数指定），与申万行业模块共用同一份配置文件
+- Tushare token 经仓库根 config_store 共享配置获取（--token 参数传入即自动保存，
+  与申万行业模块共用同一份配置文件）
 - 原始数据缓存：holders/tushare_top10_holders_raw.json（随仓库提交，请勿删除）
 - 限流控制、指数成分股、收盘价查询、并发查询
 - 单报告期关键词筛选（query_single_stock）
@@ -39,7 +39,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 _REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from config_store import resolve_token
+from config_store import config_path, resolve_token
 
 MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
 MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
@@ -128,14 +128,14 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
     """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
-    命令行 --token > 已保存配置 > 终端输入（自动保存）。
+    命令行 --token > 已保存配置，两者皆无时直接报错。
     """
     global token, pro
     token = resolve_token(cli_token)
     if not token:
         raise ValueError(
-            "未获取到 Tushare token：交互终端可直接按提示输入，"
-            "非交互环境请用命令行参数指定 --token <你的token>"
+            "未获取到 Tushare token：请用命令行参数指定 --token <你的token>（传入后自动保存），"
+            f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
     return pro

@@ -91,7 +91,7 @@ def query_top10():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="单报告期十大股东席位关键词持仓市值统计")
     parser.add_argument("--token", default=None,
-                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+                        help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
 

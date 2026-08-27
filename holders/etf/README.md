@@ -9,9 +9,8 @@
 | `import_etf_data.py` | 从 Excel 导入 ETF 基础信息 + 十大持有人到缓存的脚本 |
 | `etf_client.py` | 公共模块：只读持有人/基础信息缓存；日线直查（`fund_daily`）、`ts_code` 回填、后缀枚举 |
 | `etf_top10_holders_value.py` | 单报告期关键词筛选 + 份额/市值统计（对标股票 value） |
-| `etf_top10_holders_change.py` | 双报告期份额变动对比，生成表格图片（对标股票 change） |
-| `etf_top10_holders_change_merged.py` | 同 change，另含按代码合并多席位统计（对标股票 change_merged） |
-| `etf_top10_return_between_dates.py` | 两个交易日公允价值变动 + 收益率，生成表格/汇总图（对标股票 return_between_dates） |
+| `etf_top10_holders_change.py` | 双报告期份额变动对比，单次运行输出「席位明细 + 按代码合并持有人」两套表格图片（对标股票 change） |
+| `etf_top10_return_between_dates.py` | 两个交易日公允价值变动 + 收益率，同样双视图输出明细/合并 × 表格/汇总图（对标股票 return_between_dates） |
 | `etf_top10_holders_raw.json` | 持有人缓存（结构与股票缓存一致） |
 | `etf_basic.json` | ETF 基础信息缓存（代码、名称、成立日） |
 | `etf_data_example.xlsx` | 本地 Excel 数据源（**不入库**，由 .gitignore 忽略） |

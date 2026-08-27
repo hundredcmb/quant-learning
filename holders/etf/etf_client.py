@@ -43,7 +43,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 _REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from config_store import resolve_token
+from config_store import config_path, resolve_token
 
 # 席位关键词-折算比例（示例默认值，按你的分析需要启用/调整；
 # ETF 十大持有人常见 券商/资管/理财/基金/保险/汇金 等）
@@ -119,14 +119,14 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
     """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
-    命令行 --token > 已保存配置 > 终端输入（自动保存）。
+    命令行 --token > 已保存配置，两者皆无时直接报错。
     """
     global token, pro
     token = resolve_token(cli_token)
     if not token:
         raise ValueError(
-            "未获取到 Tushare token：交互终端可直接按提示输入，"
-            "非交互环境请用命令行参数指定 --token <你的token>"
+            "未获取到 Tushare token：请用命令行参数指定 --token <你的token>（传入后自动保存），"
+            f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
     return pro

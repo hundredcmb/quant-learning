@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -28,9 +29,11 @@ REPORT_PERIOD = "20251231"  # 报告期（半年报 0630 / 年报 1231）
 REPORT_TRADE_DATE = "20251231"  # 日1：原报告期交易日
 NEW_TRADE_DATE = "20260630"  # 日2：对比的新交易日
 
-# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR）
+# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR；按代码合并视图单独一份）
 OUTPUT_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}.png")
 OUTPUT_SUMMARY_IMAGE_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_汇总版.png")
+OUTPUT_IMAGE_MERGED_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版.png")
+OUTPUT_SUMMARY_IMAGE_MERGED_FILE = os.path.join(OUTPUT_DIR, f"ETF股票组合收益统计_{REPORT_TRADE_DATE}_to_{NEW_TRADE_DATE}_合并版汇总.png")
 MAX_TABLE_ROWS = 500  # 图片最多展示行数（避免匹配过多时图片过大），完整数据见控制台
 # 持有人名称列样式
 NAME_FONT_SIZE = 12
@@ -96,8 +99,43 @@ def _wrap_text(text, draw, font, max_width, max_lines):
     return result
 
 
-def generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate):
-    """生成与命令行一致的 ETF 组合收益表格图片，标题含关键词+折算比例"""
+def merge_holders_by_stock(match_results):
+    """
+    按 ETF 代码合并持有人数据：同一 ETF 多个匹配席位合并为一行
+    相同代码合并到一行，持有人名称用分号隔开，份额/比例/市值累加
+    按日1市值从大到小排序，方便查看持仓最重的 ETF
+    """
+    etf_groups = defaultdict(list)
+    for item in match_results:
+        etf_groups[item["ts_code"]].append(item)
+
+    merged_results = []
+    for ts_code, items in etf_groups.items():
+        etf_name = items[0]["etf_name"]
+        holder_names = [item["holder_name"] for item in items]
+        merged_holder_names = "; ".join(holder_names)
+
+        merged_item = {
+            "ts_code": ts_code,
+            "etf_name": etf_name,
+            "holder_name": merged_holder_names,
+            "hold_amount": sum(item["hold_amount"] for item in items),
+            "hold_ratio": round(sum(item["hold_ratio"] for item in items), 2),
+            "original_value": round(sum(item["original_value"] for item in items), 2),
+            "adjust_value": round(sum(item["adjust_value"] for item in items), 2),
+            "adjust_value_new": round(sum(item["adjust_value_new"] for item in items), 2),
+            "has_corporate_action": any(item.get("has_corporate_action") for item in items),
+            "ratio_source": "标的覆盖" if any(item.get("ratio_source") == "标的覆盖" for item in items) else "关键词默认",
+        }
+        merged_results.append(merged_item)
+
+    merged_results.sort(key=lambda x: (-x["original_value"], x["ts_code"]))
+    return merged_results
+
+
+def generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate,
+                         output_file: str = "", title_suffix: str = ""):
+    """生成 ETF 组合收益表格图片（席位明细/按代码合并两视图共用），标题含关键词+折算比例"""
     PADDING = 10
     ROW_HEIGHT = 40
     FONT_SIZE = 14
@@ -136,7 +174,7 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
     font, header_font, name_font = _get_font(FONT_SIZE, HEADER_FONT_SIZE, NAME_FONT_SIZE)
 
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计（按日1市值降序）"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计{title_suffix}（按日1市值降序）"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -229,11 +267,13 @@ def generate_table_image(match_results, total_adjust_value, total_adjust_value_n
         y += ROW_HEIGHT
         draw.text((PADDING, y), "＊ 表示期间发生分红/份额折算，日2市值已按复权因子修正", font=font, fill="#8e44ad")
 
-    img.save(OUTPUT_IMAGE_FILE)
-    print(f"\n✅ 完整表格图片生成完成：{OUTPUT_IMAGE_FILE}")
+    target_file = output_file or OUTPUT_IMAGE_FILE
+    img.save(target_file)
+    print(f"\n✅ 完整表格图片生成完成：{target_file}")
 
 
-def generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate):
+def generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate,
+                           output_file: str = "", title_suffix: str = ""):
     """生成只显示汇总信息的图片（不带表格数据），样式与完整图片一致"""
     PADDING = 10
     ROW_HEIGHT = 30
@@ -252,7 +292,7 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     font, header_font, _name_font = _get_font(FONT_SIZE, HEADER_FONT_SIZE, NAME_FONT_SIZE)
 
     x, y = PADDING, PADDING
-    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计"
+    title_main = f"{REPORT_TRADE_DATE} 到 {NEW_TRADE_DATE} 的 ETF 组合收益统计{title_suffix}"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -281,8 +321,9 @@ def generate_summary_image(total_adjust_value, total_adjust_value_new, total_dif
     y += ROW_HEIGHT
     draw.text((PADDING, y), f"【收益率】{return_rate:.2f}%", font=font, fill="#e74c3c")
 
-    img.save(OUTPUT_SUMMARY_IMAGE_FILE)
-    print(f"✅ 汇总版图片生成完成：{OUTPUT_SUMMARY_IMAGE_FILE}")
+    target_file = output_file or OUTPUT_SUMMARY_IMAGE_FILE
+    img.save(target_file)
+    print(f"✅ 汇总版图片生成完成：{target_file}")
 
 
 def query_top10():
@@ -377,14 +418,53 @@ def query_top10():
     if any(item.get("has_corporate_action") for item in match_results):
         print("＊ 表示期间发生分红/份额折算，日2市值已按复权因子修正")
 
+    # ===== 视图二：按代码合并持有人（同一 ETF 多个匹配席位合并为一行）=====
+    merged_results = merge_holders_by_stock(match_results)
+    total_adjust_value_m = round(sum(item["adjust_value"] for item in merged_results), 2)
+    total_adjust_value_new_m = round(sum(item["adjust_value_new"] for item in merged_results), 2)
+    total_diff_m = round(total_adjust_value_new_m - total_adjust_value_m, 2)
+    return_rate_m = round(total_diff_m / total_adjust_value_m * 100, 2) if total_adjust_value_m > 0 else 0.00
+
+    print("\n\n" + "=" * 220)
+    print(f"【按代码合并持有人】同一 ETF 多个匹配席位合并为一行，共 {len(merged_results)} 只 ETF")
+    print("=" * 220)
+    print(f"{'代码':<10} {'ETF名称':<12} {'份额(份)':<15} {'比例(%)':<8} "
+          f"{'日1市值(亿)':<10} {'日1折算市值(亿)':<14} {'日2折算市值(亿)':<10} {'持有人名称':<32}")
+    print("-" * 220)
+    for item in merged_results:
+        name_display = item["etf_name"] + ("＊" if item.get("has_corporate_action") else "")
+        print(f"{item['ts_code']:<12} "
+              f"{name_display:<12} "
+              f"{item['hold_amount']:<16} "
+              f"{item['hold_ratio']:<10.2f} "
+              f"{item['original_value']:<12} "
+              f"{item['adjust_value']:<12} "
+              f"{item['adjust_value_new']:<12} "
+              f"{item['holder_name']:<64}")
+
+    print("-" * 220)
+    print(f"【{REPORT_TRADE_DATE}折算后总市值(亿)】{total_adjust_value_m}")
+    print(f"【{NEW_TRADE_DATE}折算后总市值(亿)】{total_adjust_value_new_m}")
+    print(f"【公允价值变动(亿)】{total_diff_m}")
+    print(f"【收益率】{return_rate_m}%")
+    if any(item.get("has_corporate_action") for item in merged_results):
+        print("＊ 表示期间发生分红/份额折算，日2市值已按复权因子修正")
+
+    # 视图一图片：席位明细（完整表格版 + 汇总版）
     generate_table_image(match_results, total_adjust_value, total_adjust_value_new, total_diff, return_rate)
     generate_summary_image(total_adjust_value, total_adjust_value_new, total_diff, return_rate)
 
+    # 视图二图片：按代码合并（独立文件名，避免覆盖明细图；同样含 完整表格版 + 汇总版）
+    generate_table_image(merged_results, total_adjust_value_m, total_adjust_value_new_m, total_diff_m, return_rate_m,
+                         output_file=OUTPUT_IMAGE_MERGED_FILE, title_suffix="（按代码合并）")
+    generate_summary_image(total_adjust_value_m, total_adjust_value_new_m, total_diff_m, return_rate_m,
+                           output_file=OUTPUT_SUMMARY_IMAGE_MERGED_FILE, title_suffix="（按代码合并）")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="两个交易日之间 ETF 十大持有人持仓收益统计")
+    parser = argparse.ArgumentParser(description="两个交易日之间 ETF 十大持有人持仓收益统计（同时输出席位明细与按代码合并两个视图）")
     parser.add_argument("--token", default=None,
-                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+                        help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
 

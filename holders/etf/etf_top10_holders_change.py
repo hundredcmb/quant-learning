@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -29,8 +30,9 @@ REPORT_TRADE_DATE1 = "20251231"  # 报告期1用于市值计算的交易日
 REPORT_PERIOD2 = "20260331"  # 报告期2（对比期）
 REPORT_TRADE_DATE2 = "20260331"  # 报告期2用于市值计算的交易日
 
-# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR）
+# 输出图片文件名（输出目录见 etf_client.OUTPUT_DIR；按代码合并视图单独一份）
 OUTPUT_TABLE_IMAGE_FILE = os.path.join(OUTPUT_DIR, "ETF持股变动表格.png")
+OUTPUT_TABLE_IMAGE_MERGED_FILE = os.path.join(OUTPUT_DIR, "ETF持股变动表格_合并版.png")
 MAX_TABLE_ROWS = 500  # 图片最多展示行数（避免匹配过多时图片过大），完整数据见控制台
 # ====================================================
 
@@ -141,6 +143,68 @@ def query_single_etf(ts_code: str, etf_name: str):
     return match_results
 
 
+def merge_holders_by_stock(match_results):
+    """
+    按代码合并持有人数据：同一 ETF 多个匹配席位合并为一行
+    相同代码合并到一行，持有人名称用分号隔开，份额和金额累加
+    变动类型基于合并后的总份额计算整体变动百分比
+    """
+    stock_groups = defaultdict(list)
+    for item in match_results:
+        stock_groups[item["ts_code"]].append(item)
+
+    merged_results = []
+    for ts_code, items in stock_groups.items():
+        etf_name = items[0]["etf_name"]
+        holder_names = [item["holder_name"] for item in items]
+        merged_holder_names = "; ".join(holder_names)
+
+        total_hold1 = sum(item["hold1_amount"] for item in items)
+        total_hold2 = sum(item["hold2_amount"] for item in items)
+        total_adjust1 = sum(item["adjust_value1"] for item in items)
+        total_adjust2 = sum(item["adjust_value2"] for item in items)
+
+        if total_hold1 == 0:
+            merged_change_type = "新增"
+            min_sort_rank = 0
+        elif total_hold2 == 0:
+            merged_change_type = "退出"
+            min_sort_rank = 4
+        else:
+            total_pct = (total_hold2 - total_hold1) / total_hold1 * 100
+            if abs(total_pct) < 0.01:
+                merged_change_type = "不变"
+                min_sort_rank = 2
+            else:
+                pct_round = round(total_pct, 2)
+                if total_hold2 > total_hold1:
+                    merged_change_type = f"增持(+{pct_round}%)"
+                    min_sort_rank = 1
+                elif total_hold2 < total_hold1:
+                    merged_change_type = f"减持({pct_round}%)"
+                    min_sort_rank = 3
+                else:
+                    merged_change_type = "不变"
+                    min_sort_rank = 2
+
+        merged_item = {
+            "ts_code": ts_code,
+            "etf_name": etf_name,
+            "holder_name": merged_holder_names,
+            "change_type": merged_change_type,
+            "sort_rank": min_sort_rank,
+            "hold1_amount": total_hold1,
+            "hold2_amount": total_hold2,
+            "adjust_value1": round(total_adjust1, 2),
+            "adjust_value2": round(total_adjust2, 2),
+            "ratio_source": "标的覆盖" if any(item.get("ratio_source") == "标的覆盖" for item in items) else "关键词默认",
+        }
+        merged_results.append(merged_item)
+
+    merged_results.sort(key=lambda x: x["sort_rank"])
+    return merged_results
+
+
 def _truncate_text(text, draw, font, max_width):
     """按像素宽度截断文本，超出列宽时以省略号结尾"""
     text = str(text)
@@ -179,8 +243,9 @@ def _wrap_text(text, draw, font, max_width, max_lines):
     return result
 
 
-def generate_table_image(match_results, total_adj1, total_adj2, report1, report2):
-    """生成与命令行一致的 ETF 持股变动表格图片，标题含关键词+折算比例"""
+def generate_table_image(match_results, total_adj1, total_adj2, report1, report2,
+                         output_file: str = "", title_suffix: str = ""):
+    """生成 ETF 持股变动表格图片（席位明细/按代码合并两视图共用），标题含关键词+折算比例"""
     # 基础样式配置
     PADDING = 10
     ROW_HEIGHT = 40
@@ -230,7 +295,7 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{report1} → {report2} ETF 持股变动统计表"
+    title_main = f"{report1} → {report2} ETF 持股变动统计表{title_suffix}"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -308,8 +373,9 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
     draw.text((PADDING, y), f"【持仓变动(亿)】{total_change}", font=font, fill="#e74c3c")
 
     # 保存图片
-    img.save(OUTPUT_TABLE_IMAGE_FILE)
-    print(f"\n✅ UI表格图片生成完成：{OUTPUT_TABLE_IMAGE_FILE}")
+    target_file = output_file or OUTPUT_TABLE_IMAGE_FILE
+    img.save(target_file)
+    print(f"\n✅ UI表格图片生成完成：{target_file}")
 
 
 def query_top10_change():
@@ -387,13 +453,44 @@ def query_top10_change():
     print(f"【{REPORT_PERIOD2} 折算后总市值(亿)】{total_adj2}")
     print(f"【持仓变动(亿)】{round(total_adj2 - total_adj1, 2)}")
 
+    # 视图一图片：席位明细
     generate_table_image(match_results, total_adj1, total_adj2, REPORT_PERIOD1, REPORT_PERIOD2)
+
+    # ===== 视图二：按代码合并持有人（同一 ETF 多个匹配席位合并为一行）=====
+    merged_results = merge_holders_by_stock(match_results)
+    total_adj1_m = round(sum(item["adjust_value1"] for item in merged_results), 2)
+    total_adj2_m = round(sum(item["adjust_value2"] for item in merged_results), 2)
+
+    print("\n\n" + "=" * 220)
+    print(f"【按代码合并持有人】同一 ETF 多个匹配席位合并为一行，共 {len(merged_results)} 只 ETF")
+    print("=" * 220)
+    print(f"{'代码':<10} {'ETF名称':<12} {'变动类型':<12} {'期1份额(份)':<15} {'期1市值(亿)':<10} "
+          f"{'期2份额(份)':<15} {'期2市值(亿)':<10} {'持有人名称':<32}")
+    print("-" * 220)
+    for item in merged_results:
+        print(f"{item['ts_code']:<12} "
+              f"{item['etf_name']:<12} "
+              f"{item['change_type']:<14} "
+              f"{item['hold1_amount']:<16} "
+              f"{item['adjust_value1']:<12} "
+              f"{item['hold2_amount']:<16} "
+              f"{item['adjust_value2']:<12} "
+              f"{item['holder_name']:<64}")
+
+    print("-" * 220)
+    print(f"【{REPORT_PERIOD1} 折算后总市值(亿)】{total_adj1_m}")
+    print(f"【{REPORT_PERIOD2} 折算后总市值(亿)】{total_adj2_m}")
+    print(f"【持仓变动(亿)】{round(total_adj2_m - total_adj1_m, 2)}")
+
+    # 视图二图片（独立文件名，避免覆盖明细图）
+    generate_table_image(merged_results, total_adj1_m, total_adj2_m, REPORT_PERIOD1, REPORT_PERIOD2,
+                         output_file=OUTPUT_TABLE_IMAGE_MERGED_FILE, title_suffix="（按代码合并）")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="多报告期 ETF 十大持有人席位关键词变动对比")
+    parser = argparse.ArgumentParser(description="多报告期 ETF 十大持有人席位关键词变动对比（同时输出席位明细与按代码合并两个视图）")
     parser.add_argument("--token", default=None,
-                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+                        help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
 

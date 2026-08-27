@@ -39,10 +39,12 @@ python3 -m venv .venv
 2. 打开页面，点击右上角「数据配置」，填写你的 Tushare token 并保存
 3. 可点「测试」验证 token 有效性
 
-token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore，不随仓库提交，权限 600），申万 Web/CLI 与 holders 各脚本**共用这份配置**，只需配置一次。除 Web 页面填写外，还有两种等效方式：
+token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore，不随仓库提交，权限 600），申万 Web/CLI 与 holders 各脚本**共用这份配置**，只需配置一次。两种配置方式等效：
 
-- **CLI 交互输入**：终端直接运行任一 holders 脚本或申万 CLI，未检测到配置时会提示输入 Tushare token，回车后自动保存，此后无需重复输入
-- **命令行参数指定**（定时任务等非交互环境用）：holders 各脚本支持 `--token <你的token>`，传入后同样自动保存
+- **Web 页面填写**：申万 Web 服务右上角「数据配置」（上文步骤 1-3）
+- **命令行参数**：holders 各脚本支持 `--token <你的token>`，第一次运行任一脚本时传入即可自动保存供未来使用；定时任务等场景每次显式传参也可以
+
+既没有已保存配置也不传 `--token` 时，holders 脚本会直接报错退出。
 
 > Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限；单日榜 PE-TTM/PB 另需 **VIP 接口 `fina_indicator_vip`**（需对应积分；积分不足时指标列显示"—"，涨幅榜不受影响，见 `shenwan_industry/docs/financial_indicators.md`）。
 
@@ -84,39 +86,35 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 ## 6. 十大股东席位分析（holders）
 
-在指定样本池（默认中证 800 + 中证 1000）中，按 `KEY_WORD_RATIO` 配置的席位关键词筛选十大股东，并按折算比例估算持仓市值（单位：亿元）。token 与申万模块共用同一份配置（第 2 节）：首次在终端运行任一脚本且未配置过时，会提示输入并自动保存；定时任务等非交互环境用 `--token <你的token>` 参数指定。
+在指定样本池（默认中证 800 + 中证 1000）中，按 `KEY_WORD_RATIO` 配置的席位关键词筛选十大股东，并按折算比例估算持仓市值（单位：亿元）。token 与申万模块共用同一份配置（第 2 节）：未保存过时用 `--token <你的token>` 运行任一脚本，传入后自动保存供未来使用；不传参且无保存配置则直接报错。
 
 > **Tushare 积分要求**：十大股东相关接口（如 `top10_holders`）有积分门槛，**至少需要 2000 积分才有权限调用**。积分低于 2000 时**没有任何接口权限**，只能使用仓库自带的缓存文件 `holders/stock/tushare_top10_holders_raw.json` 分析缓存中已包含的数据。该缓存针对样本池 **中证 800 + 中证 1000 成分股**（约 1800 只），完整覆盖 **2025 年年报（`20251231`）及以后**（如 `20260331`）。
 
 ### 股票（holders/stock/）
 
+除 `top10_holders_value.py` 外，另外两个脚本**单次运行同时输出「席位明细」与「按股票合并席位」两套结果**（控制台各一张表、图片独立文件名互不覆盖），无需再分开跑两个脚本。
+
 | 脚本 | 功能 | 输出 |
 | --- | --- | --- |
 | `top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
-| `top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
-| `top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
-| `top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
-| `top10_return_between_dates_merged.py` | 同 top10_return_between_dates，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/股票组合收益统计_*_to_*_合并版*.png` |
+| `top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出；附带按股票合并席位视图（整体变动百分比） | 控制台双表 + `output/持股变动表格.png` 与 `持股变动表格_合并版.png` |
+| `top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率；附带按代码合并席位视图 | 控制台双表 + `output/股票组合收益统计_*_to_*.png`（明细/合并 × 完整/汇总 共 4 张） |
 
 ```bash
 .venv/bin/python holders/stock/top10_holders_value.py
 .venv/bin/python holders/stock/top10_holders_change.py
-.venv/bin/python holders/stock/top10_holders_change_merged.py
 .venv/bin/python holders/stock/top10_return_between_dates.py
-.venv/bin/python holders/stock/top10_return_between_dates_merged.py
 ```
 
 ### ETF（holders/etf/）
 
-**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入缓存：先用 Excel 整理持有人数据，再运行 `import_etf_data.py` 导入（导入格式见 `holders/etf/README.md`）；ETF 日线行情从 Tushare `fund_daily` 直接获取（**至少需要 5000 积分**）。
+**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入缓存：先用 Excel 整理持有人数据，再运行 `import_etf_data.py` 导入（导入格式见 `holders/etf/README.md`）；ETF 日线行情从 Tushare `fund_daily` 直接获取（**至少需要 5000 积分**）。两个分析脚本同样单次运行输出「席位明细」+「按代码合并持有人」两套视图。
 
 ```bash
 .venv/bin/python holders/etf/import_etf_data.py
 .venv/bin/python holders/etf/etf_top10_holders_value.py
 .venv/bin/python holders/etf/etf_top10_holders_change.py
-.venv/bin/python holders/etf/etf_top10_holders_change_merged.py
 .venv/bin/python holders/etf/etf_top10_return_between_dates.py
-.venv/bin/python holders/etf/etf_top10_return_between_dates_merged.py
 ```
 
 运行前可在各脚本顶部「核心配置」区修改样本池指数、报告期、交易日和关键词；公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）分别集中在 `holders/stock/tushare_client.py` 与 `holders/etf/etf_client.py`。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存放于 `holders/` 下并随仓库提交，请勿删除（全量重新拉取受限流影响很慢）。

@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 import time
+from collections import defaultdict
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -33,8 +34,9 @@ REPORT_TRADE_DATE2 = "20260331"  # 报告期2用于市值计算的交易日
 # 席位关键词-折算比例（公共配置见 tushare_client.KEY_WORD_RATIO；
 # 如需本脚本单独调整，可在此处重新定义 KEY_WORD_RATIO 覆盖）
 
-# 输出图片文件名（输出目录见 tushare_client.OUTPUT_DIR）
+# 输出图片文件名（输出目录见 tushare_client.OUTPUT_DIR；按股票合并视图单独一份，避免互覆）
 OUTPUT_TABLE_IMAGE_FILE = os.path.join(OUTPUT_DIR, "持股变动表格.png")
+OUTPUT_TABLE_IMAGE_MERGED_FILE = os.path.join(OUTPUT_DIR, "持股变动表格_合并版.png")
 # ====================================================
 
 
@@ -144,6 +146,83 @@ def query_single_stock(ts_code: str, stock_name: str):
     return match_results
 
 
+def merge_holders_by_stock(match_results):
+    """
+    按股票代码合并股东数据：同一股票多个匹配席位合并为一行
+    相同股票代码合并到一行，股东名称用分号隔开，持股数量和金额累加
+    变动类型基于合并后的总持股量计算整体变动百分比
+    """
+    stock_groups = defaultdict(list)
+
+    # 按股票代码分组
+    for item in match_results:
+        stock_groups[item["ts_code"]].append(item)
+
+    merged_results = []
+
+    for ts_code, items in stock_groups.items():
+        # 取第一个item的基本信息
+        stock_name = items[0]["stock_name"]
+
+        # 合并股东名称
+        holder_names = [item["holder_name"] for item in items]
+        merged_holder_names = "; ".join(holder_names)
+
+        # 累加持股数量和折算金额
+        total_hold1 = sum(item["hold1_amount"] for item in items)
+        total_hold2 = sum(item["hold2_amount"] for item in items)
+        total_adjust1 = sum(item["adjust_value1"] for item in items)
+        total_adjust2 = sum(item["adjust_value2"] for item in items)
+
+        # 计算合并后的总变动百分比
+        if total_hold1 == 0:
+            # 全部都是新增
+            merged_change_type = "新增"
+            min_sort_rank = 0
+        elif total_hold2 == 0:
+            # 全部都是退出
+            merged_change_type = "退出"
+            min_sort_rank = 4
+        else:
+            # 计算总变动百分比
+            total_pct = (total_hold2 - total_hold1) / total_hold1 * 100
+
+            if abs(total_pct) < 0.01:
+                merged_change_type = "不变"
+                min_sort_rank = 2
+            else:
+                pct_round = round(total_pct, 2)
+                if total_hold2 > total_hold1:
+                    merged_change_type = f"增持(+{pct_round}%)"
+                    min_sort_rank = 1
+                elif total_hold2 < total_hold1:
+                    merged_change_type = f"减持({pct_round}%)"
+                    min_sort_rank = 3
+                else:
+                    merged_change_type = "不变"
+                    min_sort_rank = 2
+
+        merged_item = {
+            "ts_code": ts_code,
+            "stock_name": stock_name,
+            "holder_name": merged_holder_names,
+            "change_type": merged_change_type,
+            "sort_rank": min_sort_rank,
+            "hold1_amount": total_hold1,
+            "hold2_amount": total_hold2,
+            "adjust_value1": round(total_adjust1, 2),
+            "adjust_value2": round(total_adjust2, 2),
+            "ratio_source": "标的覆盖" if any(item.get("ratio_source") == "标的覆盖" for item in items) else "关键词默认",
+        }
+
+        merged_results.append(merged_item)
+
+    # 按原排序规则排序
+    merged_results.sort(key=lambda x: x["sort_rank"])
+
+    return merged_results
+
+
 def _wrap_text(text, draw, font, max_width, max_lines):
     """按像素宽度换行，最多 max_lines 行，超出的最后一行以省略号结尾"""
     text = str(text)
@@ -171,8 +250,9 @@ def _wrap_text(text, draw, font, max_width, max_lines):
     return result
 
 
-def generate_table_image(match_results, total_adj1, total_adj2, report1, report2):
-    """生成与命令行一致的持股变动UI表格图片，标题含关键词+折算比例"""
+def generate_table_image(match_results, total_adj1, total_adj2, report1, report2,
+                         output_file: str = "", title_suffix: str = ""):
+    """生成持股变动UI表格图片（席位明细/按股票合并两视图共用），标题含关键词+折算比例"""
     # 基础样式配置
     PADDING = 10
     ROW_HEIGHT = 40
@@ -219,7 +299,7 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
 
     # 第一行大标题
     x, y = PADDING, PADDING
-    title_main = f"{report1} → {report2} 持股变动统计表"
+    title_main = f"{report1} → {report2} 持股变动统计表{title_suffix}"
     draw.text((x, y), title_main, font=header_font, fill="#2c3e50")
     y += ROW_HEIGHT
 
@@ -289,8 +369,9 @@ def generate_table_image(match_results, total_adj1, total_adj2, report1, report2
     draw.text((PADDING, y), f"【持仓变动(亿)】{total_change}", font=font, fill="#e74c3c")
 
     # 保存图片
-    img.save(OUTPUT_TABLE_IMAGE_FILE)
-    print(f"\n✅ UI表格图片生成完成：{OUTPUT_TABLE_IMAGE_FILE}")
+    target_file = output_file or OUTPUT_TABLE_IMAGE_FILE
+    img.save(target_file)
+    print(f"\n✅ UI表格图片生成完成：{target_file}")
 
 
 def query_top10_change():
@@ -363,16 +444,49 @@ def query_top10_change():
     print(f"【{REPORT_PERIOD2} 折算后总持仓(亿)】{total_adj2}")
     print(f"【持仓变动(亿)】{round(total_adj2 - total_adj1, 2)}")
 
-    # 调用图片生成函数
+    # 视图一图片：原始席位明细
     generate_table_image(match_results, total_adj1, total_adj2, REPORT_PERIOD1, REPORT_PERIOD2)
+
+    # ===== 视图二：按股票合并席位（同一股票多个匹配席位合并为一行）=====
+    merged_results = merge_holders_by_stock(match_results)
+    total_adj1_m = round(sum(item["adjust_value1"] for item in merged_results), 2)
+    total_adj2_m = round(sum(item["adjust_value2"] for item in merged_results), 2)
+
+    print("\n\n" + "=" * 210)
+    print(f"【按股票合并席位】同一股票多个匹配席位合并为一行，共 {len(merged_results)} 只股票")
+    print("=" * 210)
+    print(f"{'股票代码':<7} {'股票名称':<8} {'变动类型':<11}"
+          f"{'期1持股(股)':<12} {'期1折算(亿)':<6} "
+          f"{'期2持股(股)':<12} {'期2折算(亿)':<8} "
+          f"{'股东名称':<32}")
+    print("-" * 210)
+
+    for item in merged_results:
+        print(f"{item['ts_code']:<10} "
+              f"{item['stock_name']:<8} "
+              f"{item['change_type']:<12} "
+              f"{item['hold1_amount']:<15} "
+              f"{item['adjust_value1']:<11} "
+              f"{item['hold2_amount']:<15} "
+              f"{item['adjust_value2']:<11} "
+              f"{item['holder_name']:<64}")
+
+    print("-" * 210)
+    print(f"【{REPORT_PERIOD1} 折算后总持仓(亿)】{total_adj1_m}")
+    print(f"【{REPORT_PERIOD2} 折算后总持仓(亿)】{total_adj2_m}")
+    print(f"【持仓变动(亿)】{round(total_adj2_m - total_adj1_m, 2)}")
+
+    # 视图二图片（独立文件名，避免覆盖明细图）
+    generate_table_image(merged_results, total_adj1_m, total_adj2_m, REPORT_PERIOD1, REPORT_PERIOD2,
+                         output_file=OUTPUT_TABLE_IMAGE_MERGED_FILE, title_suffix="（按股票合并）")
 
     save_raw_cache(RAW_CACHE)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="多报告期十大股东席位关键词变动对比")
+    parser = argparse.ArgumentParser(description="多报告期十大股东席位关键词变动对比（同时输出席位明细与按股票合并两个视图）")
     parser.add_argument("--token", default=None,
-                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+                        help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
 

@@ -17,7 +17,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
   - **`.venv`（shenwan_industry 与 holders 共用，均不依赖 vnpy）**：任意 Python 3.10+ 创建，装 `requirements.txt` 依赖（fastapi/uvicorn/pydantic/tushare/pandas/Pillow，GUI 另含 PySide6）
   - **`.venv-vnpy`（仅 vnpy_examples 专用）**：必须用 veighna studio 自带 Python 创建（`--system-site-packages` 继承 vnpy / tushare / pandas / TA-Lib / PySide6）
 - **禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同；veighna Python 路径由用户在命令行自行指定）
-- Tushare token 由**仓库根公共模块 `config_store.py`** 统一管理，存本地配置 `.quant-learning/settings.json`（已 gitignore）：申万与 holders **共用同一份配置**——申万 Web 页面右上角「数据配置」填写保存；holders 各脚本首次运行时终端交互输入自动保存、非交互环境支持 `--token <token>` 参数指定；详见「注意事项」 holders / 申万部分。仅 vnpy_examples（`.venv-vnpy`）的 token 与数据库连接仍从 `~/.vntrader/vt_setting.json` 动态读取（`datafeed.password` 为 token，配置示例见 README）。项目已**弃用 `.env` 环境变量**，**禁止在代码中硬编码 token**
+- Tushare token 由**仓库根公共模块 `config_store.py`** 统一管理，存本地配置 `.quant-learning/settings.json`（已 gitignore）：申万与 holders **共用同一份配置**——申万 Web 页面右上角「数据配置」填写保存；holders 各脚本用 `--token <token>` 命令行参数传入即自动保存，不传参且无保存配置时直接报错；详见「注意事项」 holders / 申万部分。仅 vnpy_examples（`.venv-vnpy`）的 token 与数据库连接仍从 `~/.vntrader/vt_setting.json` 动态读取（`datafeed.password` 为 token，配置示例见 README）。项目已**弃用 `.env` 环境变量**，**禁止在代码中硬编码 token**
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 
 ## 目录结构
@@ -26,9 +26,9 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 | --- | --- |
 | `README.md` | 项目使用说明与**全部运行命令**（shenwan_industry 与 holders 用 `.venv`、仅 vnpy_examples 用 `.venv-vnpy`；ETF 导入格式另见 `holders/etf/README.md`） |
 | `config.py` | 仅提供全局 `logger` |
-| `config_store.py` | 仓库级公共配置存储：Tushare token 存 `.quant-learning/settings.json`（已 gitignore），申万与 holders 共享同一份；`resolve_token` 按「`--token` 参数 > 已保存配置 > 终端输入并自动保存」解析 |
-| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 五个脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两者各有 `_merged` 合并席位版；均支持 `--token`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
-| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 五个脚本（对标股票 stock）+ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
+| `config_store.py` | 仓库级公共配置存储：Tushare token 存 `.quant-learning/settings.json`（已 gitignore），申万与 holders 共享同一份；`resolve_token` 按「`--token` 参数 > 已保存配置」解析，均无时返回空串由调用方报错 |
+| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 三个脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两只单次运行同时输出「席位明细 + 按股票合并席位」两套表格与图片；均支持 `--token`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
+| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 三个脚本（对标股票 stock，change/return 两只同样内置按代码合并视图）/ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
 | `output/` | 图片运行产物目录 |
 | `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/` | 申万行业模块：行业树 + 单日/区间涨幅榜（等权 / 自由流通市值加权 / 总市值加权）+ FastAPI Web 服务与桌面启动器；各文件功能、算法权威描述与强制核对流程见模块内 `AGENTS.md` |
@@ -47,7 +47,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 ### 十大股东分析（holders/）
 
-- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置 > 终端交互输入并自动保存），模块内不再 import 时就请求任何配置；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
+- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置，均无则报错退出），import 阶段不做任何配置读取和网络请求；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
 - 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；`top10_holders` 至少 2000 积分（低于时只能用缓存）；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；限流默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
 
 ### 股票与 ETF 十大持有人（严格区分）

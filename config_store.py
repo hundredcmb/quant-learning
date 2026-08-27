@@ -3,9 +3,10 @@
 配置保存在**项目根目录**的 `.quant-learning/settings.json`（已被 `.gitignore` 忽略、
 不随仓库提交），文件权限 600（Windows 除外）。token 解析优先级（见 resolve_token）：
 
-1. 命令行参数 `--token`（供定时任务等非交互环境使用）
+1. 命令行参数 `--token`（传入即自动保存）
 2. 已保存的本地配置
-3. 终端交互输入（输入后自动保存，下次无需重复输入）
+
+两者皆无时由调用方直接报错退出。
 """
 
 from __future__ import annotations
@@ -60,13 +61,12 @@ def set_token(token: str) -> None:
 
 
 def resolve_token(cli_token: str | None = None) -> str:
-    """解析可用的 Tushare token：命令行参数 > 已保存配置 > 终端交互输入。
+    """解析可用的 Tushare token：命令行参数 > 已保存配置。
 
-    - cli_token：来自脚本命令行参数 `--token`；非空时直接采用并自动保存
+    - cli_token：来自脚本命令行参数 `--token`；非空时采用并自动保存
+      （与已保存值相同则不重复写盘）
     - 已有保存配置时直接返回，不做任何改动
-    - 两者皆无时在终端提示输入，输入非空后自动保存供未来使用
-    - 非交互终端（stdin 已关闭）无法输入时返回空串并打印指引，
-      调用方应据此报错退出
+    - 两者皆无时返回空串，由调用方报错退出
     """
     token = (cli_token or "").strip()
     if token:
@@ -74,20 +74,4 @@ def resolve_token(cli_token: str | None = None) -> str:
             set_token(token)
             print(f"✅ token 已保存到 {config_path()}，后续运行无需再传 --token")
         return token
-
-    token = get_token()
-    if token:
-        return token
-
-    print(f"未找到 Tushare token 配置（{config_path()}）")
-    try:
-        token = input("请输入 Tushare token（回车确认，将自动保存供未来使用）：").strip()
-    except EOFError:
-        print("\n⚠️ 当前是非交互终端，无法手动输入；请改用命令行参数指定：--token <你的token>")
-        return ""
-    if not token:
-        print("⚠️ 未输入任何内容，本次不保存")
-        return ""
-    set_token(token)
-    print(f"✅ token 已保存到 {config_path()}，后续运行无需重复输入")
-    return token
+    return get_token()
