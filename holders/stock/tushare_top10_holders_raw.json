@@ -1488,7 +1488,68 @@
         "hold_ratio": 0.5836
       }
     ],
-    "688981.SH": [],
+    "688981.SH": [
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "HKSCCNOMINEESLIMITED",
+        "hold_amount": 4503750978.0,
+        "hold_ratio": 56.2866
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "中信证券股份有限公司-嘉实上证科创板芯片交易型开放式指数证券投资基金",
+        "hold_amount": 40217878.0,
+        "hold_ratio": 0.5026
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "中国信息通信科技集团有限公司",
+        "hold_amount": 72470855.0,
+        "hold_ratio": 0.9057
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "中国工商银行股份有限公司-易方达上证科创板50成份交易型开放式指数证券投资基金",
+        "hold_amount": 33725054.0,
+        "hold_ratio": 0.4214
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "中国建设银行股份有限公司-华夏国证半导体芯片交易型开放式指数证券投资基金",
+        "hold_amount": 20703256.0,
+        "hold_ratio": 0.2587
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "国家集成电路产业投资基金二期股份有限公司",
+        "hold_amount": 127458120.0,
+        "hold_ratio": 1.5929
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "国新投资有限公司",
+        "hold_amount": 43336233.0,
+        "hold_ratio": 0.5416
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "大唐控股(香港)投资有限公司",
+        "hold_amount": 1125042595.0,
+        "hold_ratio": 14.0604
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "招商银行股份有限公司-华夏上证科创板50成份交易型开放式指数证券投资基金",
+        "hold_amount": 61902850.0,
+        "hold_ratio": 0.7736
+      },
+      {
+        "ts_code": "688981.SH",
+        "holder_name": "鑫芯(香港)投资有限公司",
+        "hold_amount": 359700023.0,
+        "hold_ratio": 4.4954
+      }
+    ],
     "601211.SH": [
       {
         "ts_code": "601211.SH",
@@ -20283,7 +20344,68 @@
         "hold_ratio": 4.8073
       }
     ],
-    "688347.SH": [],
+    "688347.SH": [
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "上海华虹国际公司(ShanghaiHuaHongInternational,Inc.)",
+        "hold_amount": 347605650.0,
+        "hold_ratio": 20.0045
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "中信证券股份有限公司-嘉实上证科创板芯片交易型开放式指数证券投资基金",
+        "hold_amount": 8558459.0,
+        "hold_ratio": 0.4925
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "中国国有企业结构调整基金二期股份有限公司",
+        "hold_amount": 10511086.0,
+        "hold_ratio": 0.6049
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "华芯投资管理有限责任公司-国家集成电路产业投资基金二期股份有限公司",
+        "hold_amount": 48334249.0,
+        "hold_ratio": 2.7816
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "国泰君安证裕投资有限公司",
+        "hold_amount": 8155000.0,
+        "hold_ratio": 0.4693
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "招商银行股份有限公司-银河创新成长混合型证券投资基金",
+        "hold_amount": 11000000.0,
+        "hold_ratio": 0.633
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "海通创新证券投资有限公司",
+        "hold_amount": 8155000.0,
+        "hold_ratio": 0.4693
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "联和国际有限公司(Sino-AllianceInternational,Ltd.)",
+        "hold_amount": 160545541.0,
+        "hold_ratio": 9.2393
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "香港中央结算(代理人)有限公司(HKSCCNOMINEESLIMITED)",
+        "hold_amount": 820577499.0,
+        "hold_ratio": 47.2238
+      },
+      {
+        "ts_code": "688347.SH",
+        "holder_name": "香港中央结算有限公司",
+        "hold_amount": 6413533.0,
+        "hold_ratio": 0.369
+      }
+    ],
     "600096.SH": [
       {
         "ts_code": "600096.SH",
@@ -24444,7 +24566,68 @@
         "hold_ratio": 3.3759
       }
     ],
-    "688235.SH": [],
+    "688235.SH": [
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "AmgenInc.,安进公司",
+        "hold_amount": 246269426.0,
+        "hold_ratio": 15.9767
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "BakerBrothersLifeSciences,L.P.及其联属实体",
+        "hold_amount": 115666055.0,
+        "hold_ratio": 7.5038
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "CapitalResearchandManagementCompany及其联属实体",
+        "hold_amount": 77379268.0,
+        "hold_ratio": 5.02
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "中国工商银行股份有限公司-中欧医疗健康混合型证券投资基金",
+        "hold_amount": 1812660.0,
+        "hold_ratio": 0.1175
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "中国建设银行股份有限公司-工银瑞信前沿医疗股票型证券投资基金",
+        "hold_amount": 1800000.0,
+        "hold_ratio": 0.1167
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "交通银行股份有限公司-万家行业优选混合型证券投资基金(LOF)",
+        "hold_amount": 2000000.0,
+        "hold_ratio": 0.1297
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "兴业银行股份有限公司-永赢医药创新智选混合型发起式证券投资基金",
+        "hold_amount": 1970429.0,
+        "hold_ratio": 0.1278
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "广州高新区科技控股集团有限公司",
+        "hold_amount": 2300711.0,
+        "hold_ratio": 0.1492
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "新华人寿保险股份有限公司-传统-普通保险产品-018L-CT001沪",
+        "hold_amount": 1800820.0,
+        "hold_ratio": 0.1168
+      },
+      {
+        "ts_code": "688235.SH",
+        "holder_name": "香港中央结算有限公司",
+        "hold_amount": 2969964.0,
+        "hold_ratio": 0.1926
+      }
+    ],
     "002080.SZ": [
       {
         "ts_code": "002080.SZ",

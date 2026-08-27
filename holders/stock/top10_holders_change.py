@@ -10,11 +10,13 @@ from tushare_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
     RAW_CACHE,
+    assert_report_periods_disclosed,
     format_specific_ratio_summary,
     get_combined_stocks,
     get_stock_close_price,
     get_stock_top10_raw,
     init_tushare,
+    print_unpublished_stocks,
     run_parallel_queries,
     save_raw_cache,
 )
@@ -45,8 +47,8 @@ def query_single_stock(ts_code: str, stock_name: str):
     单个股票双报告期处理 + 新增持股变动百分比 + 排序权重
     排序规则：新增0 > 增持1 > 不变2 > 减持3 > 退出4
     """
-    raw_holders1 = get_stock_top10_raw(ts_code, REPORT_PERIOD1)
-    raw_holders2 = get_stock_top10_raw(ts_code, REPORT_PERIOD2)
+    raw_holders1 = get_stock_top10_raw(ts_code, REPORT_PERIOD1, stock_name)
+    raw_holders2 = get_stock_top10_raw(ts_code, REPORT_PERIOD2, stock_name)
     match_results = []
 
     def filter_keyword_holders(raw_data):
@@ -489,7 +491,9 @@ if __name__ == "__main__":
                         help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
+    assert_report_periods_disclosed([REPORT_PERIOD1, REPORT_PERIOD2])
 
     start_time = time.time()
     query_top10_change()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")
+    print_unpublished_stocks()

@@ -16,6 +16,7 @@
 
 注意：ETF 与股票代码都是 6 位，但属于不同标的类型，严禁混淆。
 """
+import datetime
 import json
 import os
 import sys
@@ -140,6 +141,38 @@ def _ensure_credit_5000() -> None:
             sys.exit(1)
         # 非权限类异常（网络抖动/服务端问题）无法据此判定权限，放行本次检查
         print(f"⚠️ 积分探测请求失败（可能为网络波动），本次跳过积分检查：{msg}")
+
+
+# ===================== 披露闸门 =====================
+# ETF 十大持有人一年只披露两期，法定截止日：半年报当年 8/31、年报次年 4/30
+_ETF_PERIOD_MMDD = ("0630", "1231")
+_DEADLINE_OFFSET_DAYS = {"0630": (0, 8, 31), "1231": (1, 4, 30)}   # (年偏移, 月, 日)
+
+
+def assert_report_periods_disclosed(periods: list[str], *, _today: datetime.date | None = None) -> None:
+    """启动闸门：报告期类型与披露进度双重校验，任一不满足即直接报错退出。
+
+    - 类型白名单：ETF 十大持有人仅有半年报(*0630)与年报(*1231)两期
+    - 截止日次日起该期才算可用——此前只有部分 ETF 完成手动录入/披露，
+      此时查询会把大量「未录入」的空结果当正常数据处理，误导分析结论
+    """
+    today = _today or datetime.date.today()
+    errors = []
+    for p in periods:
+        if len(p) != 8 or not p.isdigit() or p[4:] not in _ETF_PERIOD_MMDD:
+            errors.append(f"报告期 {p} 非法（ETF 仅支持 *0630 / *1231 两类）")
+            continue
+        year_offset, month, day = _DEADLINE_OFFSET_DAYS[p[4:]]
+        deadline = datetime.date(int(p[:4]) + year_offset, month, day)
+        if today <= deadline:
+            errors.append(f"报告期 {p} 未到法定披露截止 {deadline.isoformat()}（今天 {today.isoformat()}）")
+    if not errors:
+        return
+    print("❌ 报告期配置存在无法使用或未到可用时点的项，本次运行终止：")
+    for line in errors:
+        print(f"   {line}")
+    print("   请调整脚本顶部 REPORT_PERIOD 配置后重试")
+    sys.exit(1)
 
 
 def init_tushare(cli_token: str | None = None) -> DataApi:

@@ -9,6 +9,7 @@
 
 各脚本只保留自己的业务配置（指数/报告期/关键词/输出文件名）与业务逻辑。
 """
+import datetime
 import json
 import os
 import sys
@@ -197,20 +198,70 @@ def save_raw_cache(cache_data: dict) -> None:
 RAW_CACHE: dict = load_raw_cache()
 
 
+# ===================== 披露闸门与未披露公司跟踪 =====================
+# 各类报告期的法定披露截止日：（月日, 截止年份相对报告期末年的偏移）
+_DISCLOSURE_DEADLINE = {
+    "0331": ("0430", 0),   # 一季报: 当年 4 月 30 日
+    "0630": ("0831", 0),   # 半年报: 当年 8 月 31 日
+    "0930": ("1031", 0),   # 三季报: 当年 10 月 31 日
+    "1231": ("0430", 1),   # 年报: 次年 4 月 30 日
+}
+
+# 本轮运行中查询过但尚无披露数据的公司 {ts_code: 首见名称}，结束时统一打印
+_UNPUBLISHED: dict[str, str] = {}
+
+
+def report_period_deadline(period: str) -> datetime.date:
+    """报告期(YYYYMMDD)对应的法定披露截止日；非四类标准期末日抛 ValueError"""
+    if len(period) != 8 or not period.isdigit() or period[4:] not in _DISCLOSURE_DEADLINE:
+        raise ValueError(f"报告期 {period} 不是标准期末日（应为 *0331 / *0630 / *0930 / *1231）")
+    md, year_offset = _DISCLOSURE_DEADLINE[period[4:]]
+    return datetime.date(int(period[:4]) + year_offset, int(md[:2]), int(md[2:]))
+
+
+def assert_report_periods_disclosed(periods: list[str], *, _today: datetime.date | None = None) -> None:
+    """启动闸门：任一报告期未过法定披露截止日即直接报错退出。
+
+    截止日次日起该报告期才算可用——此前市场上只有部分公司完成披露，
+    此时查询会把大量「未披露」的空结果固化进缓存造成永久污染。
+    """
+    today = _today or datetime.date.today()
+    unready = [(p, report_period_deadline(p)) for p in periods]
+    unready = [(p, d) for p, d in unready if today <= d]
+    if not unready:
+        return
+    print("❌ 以下报告期尚未到达法定披露截止日，此时查询只有部分公司公布十大股东：")
+    for p, d in unready:
+        print(f"   报告期 {p}，法定截止 {d.isoformat()}，今天 {today.isoformat()}")
+    print("   为避免未披露公司的空结果污染缓存，本次运行终止；请调整报告期或等截止日过后再运行")
+    sys.exit(1)
+
+
+def print_unpublished_stocks() -> None:
+    """打印本轮查询过但尚无披露数据的公司清单（名称+代码），均未写入缓存。"""
+    if not _UNPUBLISHED:
+        return
+    print(f"\n⚠️ 共 {len(_UNPUBLISHED)} 家公司本期未查到十大股东数据（尚未披露或已延期披露，均未写入缓存）：")
+    for code, name in _UNPUBLISHED.items():
+        print(f"   {code}  {name}")
+
+
 # =================================================================
 
-def get_stock_top10_raw(ts_code: str, period: str) -> list:
+def get_stock_top10_raw(ts_code: str, period: str, stock_name: str = "") -> list:
     """
     【核心底层函数】
     获取单股票 原始十大股东数据（优先缓存，无则请求tushare）
-    返回：Tushare原始数据列表（空列表=无数据）
-    缓存：仅存储接口原始结果，无任何业务处理
+    返回：Tushare原始数据列表（空列表 = 该公司当期尚未披露）
+    缓存策略：仅缓存非空结果——空意味着「尚未披露/延期披露」，落盘会把
+    占位空记录固化成永久污染；空结果改记入未披露名单，下次运行自动重查。
+    历史遗留的空缓存条目在读取时同样视为未命中并重查覆盖（自愈）。
     """
-    # 1. 优先读缓存
-    if period in RAW_CACHE and ts_code in RAW_CACHE[period]:
-        return RAW_CACHE[period][ts_code]
+    cached = RAW_CACHE.get(period, {}).get(ts_code)
+    if cached:
+        return cached
 
-    # 2. 无缓存，执行限流 + 接口请求
+    # 2. 无缓存（或缓存为空的未披露占位），执行限流 + 接口请求
     rate_limit_control()
     raw_data = []
     try:
@@ -227,10 +278,11 @@ def get_stock_top10_raw(ts_code: str, period: str) -> list:
             save_raw_cache(RAW_CACHE)
             os._exit(-1)
 
-    # 3. 写入内存缓存
-    if period not in RAW_CACHE:
-        RAW_CACHE[period] = {}
-    RAW_CACHE[period][ts_code] = raw_data
+    # 3. 仅非空结果写入内存缓存；空结果记入未披露名单供结束时打印
+    if raw_data:
+        RAW_CACHE.setdefault(period, {})[ts_code] = raw_data
+    else:
+        _UNPUBLISHED.setdefault(ts_code, stock_name or "（未知名称）")
 
     return raw_data
 
@@ -430,7 +482,7 @@ def query_single_stock(
     _validate_keywords_once(key_word_ratio)
     _validate_specific_ratio_once(key_word_ratio, specific_ratio)
     sorted_keywords = _sorted_keywords(key_word_ratio)
-    raw_holders = get_stock_top10_raw(ts_code, period)
+    raw_holders = get_stock_top10_raw(ts_code, period, stock_name)
     match_list = []
 
     for row in raw_holders:

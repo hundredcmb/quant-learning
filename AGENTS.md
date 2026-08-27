@@ -47,8 +47,8 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 ### 十大股东分析（holders/）
 
-- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置，均无则报错退出），import 阶段不做任何配置读取和网络请求；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
-- 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；`top10_holders` 至少 2000 积分、ETF `fund_daily` 至少 5000 积分——两类脚本的 `init_tushare` 都会在启动时用一条固定历史数据真实调用各自门槛接口提前探测，不足即报错退出（网络异常则提示跳过检查）；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；限流默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
+- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置，均无则报错退出），import 阶段不做任何配置读取和网络请求；随后调用 `assert_report_periods_disclosed(...)` 做披露闸门校验（一季报 4/30 / 半年报 8/31 / 三季报 10/31 / 年报次年 4/30，截止日次日方可查询，未到期即报错退出防缓存污染；ETF 侧另限 *0630/*1231 白名单）；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
+- 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；**空结果从不写入缓存**（空=未披露，落盘即永久污染；历史遗留的空条目读取时视为未命中重查自愈），运行结束打印未披露公司清单；`top10_holders` 至少 2000 积分、ETF `fund_daily` 至少 5000 积分——两类脚本的 `init_tushare` 都会在启动时用一条固定历史数据真实调用各自门槛接口提前探测，不足即报错退出（网络异常则提示跳过检查）；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；限流默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
 
 ### 股票与 ETF 十大持有人（严格区分）
 

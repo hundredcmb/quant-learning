@@ -10,11 +10,13 @@ from tushare_client import (
     KEY_WORD_RATIO,
     OUTPUT_DIR,
     RAW_CACHE,
+    assert_report_periods_disclosed,
     format_specific_ratio_summary,
     get_adj_factors,
     get_combined_stocks,
     get_stock_close_price,
     init_tushare,
+    print_unpublished_stocks,
     query_single_stock,
     run_parallel_queries,
     save_raw_cache,
@@ -473,7 +475,9 @@ if __name__ == "__main__":
                         help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
+    assert_report_periods_disclosed([REPORT_PERIOD])
 
     start_time = time.time()
     query_top10()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")
+    print_unpublished_stocks()

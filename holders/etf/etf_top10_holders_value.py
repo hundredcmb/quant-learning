@@ -3,6 +3,7 @@ import time
 
 from etf_client import (
     KEY_WORD_RATIO,
+    assert_report_periods_disclosed,
     get_combined_etfs,
     get_daily_prices,
     init_tushare,
@@ -88,6 +89,7 @@ if __name__ == "__main__":
                         help="Tushare token（已保存配置时可省略；传入后自动保存供未来使用）")
     args = parser.parse_args()
     init_tushare(args.token)
+    assert_report_periods_disclosed([REPORT_PERIOD])
 
     start_time = time.time()
     query_top10()
