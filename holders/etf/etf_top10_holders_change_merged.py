@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import time
@@ -12,6 +13,7 @@ from etf_client import (
     get_combined_etfs,
     get_daily_prices,
     get_etf_holders,
+    init_tushare,
 )
 
 # Windows 控制台编码兼容：避免 GBK 下 emoji 打印崩溃
@@ -437,6 +439,12 @@ def query_top10_change():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="多报告期 ETF 十大持有人席位关键词变动对比（合并席位版）")
+    parser.add_argument("--token", default=None,
+                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+    args = parser.parse_args()
+    init_tushare(args.token)
+
     start_time = time.time()
     query_top10_change()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")

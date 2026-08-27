@@ -1,7 +1,8 @@
 """十大股东脚本公共模块：Tushare 客户端、原始数据缓存与限流。
 
 四个 holders 脚本共享的数据获取逻辑统一放在这里：
-- Tushare token 从 vnpy 全局配置动态获取（SETTINGS["datafeed.password"]）
+- Tushare token 经仓库根 config_store 共享配置获取（首次运行终端输入自动保存，
+  非交互环境用各脚本的 --token 参数指定），与申万行业模块共用同一份配置文件
 - 原始数据缓存：holders/tushare_top10_holders_raw.json（随仓库提交，请勿删除）
 - 限流控制、指数成分股、收盘价查询、并发查询
 - 单报告期关键词筛选（query_single_stock）
@@ -17,7 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import tushare as ts
 from tushare.pro.client import DataApi
-from vnpy.trader.setting import SETTINGS
 
 # Windows 控制台编码兼容：避免 GBK 下 emoji 打印崩溃
 for stream in (sys.stdout, sys.stderr):
@@ -34,6 +34,12 @@ CACHE_FILE = os.path.join(BASE_DIR, "tushare_top10_holders_raw.json")
 # 图片等运行产物统一输出到仓库根目录 output/（已在 .gitignore 中忽略）
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 引入仓库根公共配置模块（须先把仓库根加入 sys.path）：token 与申万行业模块共享
+_REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from config_store import resolve_token
 
 MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
 MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
@@ -109,15 +115,30 @@ SPECIFIC_RATIO: dict = {
 }
 # ====================================================
 
-# ===================== 初始化Tushare接口 =====================
-token: str = SETTINGS["datafeed.password"]
-if not token:
-    raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
-
-pro: DataApi = ts.pro_api(token=token)
+# ===================== 初始化Tushare接口（懒初始化） =====================
+# token / pro 由 init_tushare() 赋值；各脚本启动时必须先调用一次
+token: str = ""
+pro: DataApi | None = None
 request_timestamps: list[float] = []
 rate_limit_lock = threading.Lock()
 write_cache_lock = threading.Lock()
+
+
+def init_tushare(cli_token: str | None = None) -> DataApi:
+    """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
+
+    token 解析优先级（见仓库根 config_store.resolve_token）：
+    命令行 --token > 已保存配置 > 终端输入（自动保存）。
+    """
+    global token, pro
+    token = resolve_token(cli_token)
+    if not token:
+        raise ValueError(
+            "未获取到 Tushare token：交互终端可直接按提示输入，"
+            "非交互环境请用命令行参数指定 --token <你的token>"
+        )
+    pro = ts.pro_api(token=token)
+    return pro
 # ====================================================
 
 

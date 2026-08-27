@@ -14,20 +14,21 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 - Python 3.10+（代码使用 `X | None`、`dict[str, ...]` 等新语法）
 - 项目分两个独立环境，**不要混用**（创建步骤与命令见 README；Windows 路径 `.venv\Scripts\python.exe` / `.venv-vnpy\Scripts\python.exe`）：
-  - **`.venv`（申万模块专用，不依赖 vnpy）**：任意 Python 3.10+ 创建，装 `requirements.txt` 依赖（fastapi/uvicorn/pydantic/tushare/pandas，GUI 另含 PySide6）
-  - **`.venv-vnpy`（holders / vnpy_examples 专用）**：必须用 veighna studio 自带 Python 创建（`--system-site-packages` 继承 vnpy / tushare / pandas / TA-Lib / PySide6）
+  - **`.venv`（shenwan_industry 与 holders 共用，均不依赖 vnpy）**：任意 Python 3.10+ 创建，装 `requirements.txt` 依赖（fastapi/uvicorn/pydantic/tushare/pandas/Pillow，GUI 另含 PySide6）
+  - **`.venv-vnpy`（仅 vnpy_examples 专用）**：必须用 veighna studio 自带 Python 创建（`--system-site-packages` 继承 vnpy / tushare / pandas / TA-Lib / PySide6）
 - **禁止在代码/文档中硬编码 veighna 安装路径**（各机器安装路径不同；veighna Python 路径由用户在命令行自行指定）
-- vnpy 部分（`.venv-vnpy`）的 Tushare token 与数据库连接统一从 `~/.vntrader/vt_setting.json` 动态读取（`datafeed.password` 为 token，配置示例见 README）；申万部分 token 从 `shenwan_industry/config_store.py` 读取（见「注意事项」申万部分）。项目已**弃用 `.env` 环境变量**，**禁止在代码中硬编码 token**
+- Tushare token 由**仓库根公共模块 `config_store.py`** 统一管理，存本地配置 `.quant-learning/settings.json`（已 gitignore）：申万与 holders **共用同一份配置**——申万 Web 页面右上角「数据配置」填写保存；holders 各脚本首次运行时终端交互输入自动保存、非交互环境支持 `--token <token>` 参数指定；详见「注意事项」 holders / 申万部分。仅 vnpy_examples（`.venv-vnpy`）的 token 与数据库连接仍从 `~/.vntrader/vt_setting.json` 动态读取（`datafeed.password` 为 token，配置示例见 README）。项目已**弃用 `.env` 环境变量**，**禁止在代码中硬编码 token**
 - 图形界面（GUI）开发优先使用 vnpy 自带环境：客户端环境已内置 PySide6（vnpy 4.1.0 对应 PySide6 6.8）与 qdarkstyle，直接 `from PySide6.QtWidgets import ...` 开发窗口，不要额外安装 PyQt / PySide 等 GUI 依赖；需要与 vnpy 风格一致时优先复用 `vnpy.trader.ui` 与 `vnpy.chart` 的现成组件
 
 ## 目录结构
 
 | 路径 | 说明 |
 | --- | --- |
-| `README.md` | 项目使用说明与**全部运行命令**（申万模块用 `.venv`、其余用 `.venv-vnpy`；ETF 导入格式另见 `holders/etf/README.md`） |
-| `config.py` | 仅提供全局 `logger`（配置统一从 vnpy `SETTINGS` 动态获取，无环境变量） |
-| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 四个脚本（`top10_holders_value` / `top10_holders_change`（`+_merged` 版）/ `top10_return_between_dates`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
-| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块）/ 四个脚本（对标股票 stock）/ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
+| `README.md` | 项目使用说明与**全部运行命令**（shenwan_industry 与 holders 用 `.venv`、仅 vnpy_examples 用 `.venv-vnpy`；ETF 导入格式另见 `holders/etf/README.md`） |
+| `config.py` | 仅提供全局 `logger` |
+| `config_store.py` | 仓库级公共配置存储：Tushare token 存 `.quant-learning/settings.json`（已 gitignore），申万与 holders 共享同一份；`resolve_token` 按「`--token` 参数 > 已保存配置 > 终端输入并自动保存」解析 |
+| `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 五个脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两者各有 `_merged` 合并席位版；均支持 `--token`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
+| `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 五个脚本（对标股票 stock）+ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
 | `output/` | 图片运行产物目录 |
 | `docs/tushare_api_reference.md` | Tushare 接口文档快照（随仓库提交、clone 即用，唯一权威；来源与更新方式见「Tushare 数据获取」注意事项） |
 | `shenwan_industry/` | 申万行业模块：行业树 + 单日/区间涨幅榜（等权 / 自由流通市值加权 / 总市值加权）+ FastAPI Web 服务与桌面启动器；各文件功能、算法权威描述与强制核对流程见模块内 `AGENTS.md` |
@@ -46,7 +47,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 ### 十大股东分析（holders/）
 
-- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`，四个脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
+- 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置 > 终端交互输入并自动保存），模块内不再 import 时就请求任何配置；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
 - 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；`top10_holders` 至少 2000 积分（低于时只能用缓存）；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；限流默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
 
 ### 股票与 ETF 十大持有人（严格区分）
@@ -63,7 +64,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 ### 申万行业（shenwan_industry/）
 
-- **已彻底脱离 vnpy**（不 import 任何 vnpy 包）：token 从 `config_store.py` 读取（Web 页面右上角「数据配置」填写保存，存储位置与配置步骤见 README；**禁止硬编码 token**），依赖见根 `requirements.txt`；Web 保存新 token 后后台自动重置已构建的行业树上下文（`service.save_token` / `PreparedContext.ensure`）
+- **已彻底脱离 vnpy**（不 import 任何 vnpy 包）：token 从**仓库根公共模块** `config_store.py` 读取（与 holders 共享同一份 `.quant-learning/settings.json`；Web 页面右上角「数据配置」填写保存，存储位置与配置步骤见 README；**禁止硬编码 token**），依赖见根 `requirements.txt`；Web 保存新 token 后后台自动重置已构建的行业树上下文（`service.save_token` / `PreparedContext.ensure`）
 - **算法权威与强制核对**：涉及申万行业的任务在报告完成前，必须先对照模块 `AGENTS.md`（算法权威描述 + 强制核对流程）；官方指数算法纯文字版 `docs/Shenwan_Index_Series_Algorithm_Text.md` **只能读、禁止任何修改**（确需变更须用户提供新版本覆盖），各市值类加权算法与其同步的进度见 `docs/sync_progress.md`
 - **文档去重与一致性收尾（任务完成前置步骤）**：申万相关任务在上条强制核对通过后、宣布完成前，还须对本次涉及的模块文档（模块 `AGENTS.md` 与 `docs/` 各子文档）做一遍去重与一致性检查——同一文档内重复出现的表述收敛为唯一权威出处 + 引用；与代码冲突或过期的表述以代码为准修正（并在回复中列出冲突点）。检查通过并完成修订后，才算一个开发任务完成
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少），规划见 `docs/roadmap.md`
@@ -84,5 +85,5 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
   - 不要手写裸 `curl` 调 GitHub API、手工维护 token，也不要绕过 `gh` 直接操作 GitHub 网络资源
 
 - 开发机为 Windows 或 Linux/macOS 均可，示例命令以 Linux/macOS 路径为例（Windows 将 `.venv/bin/python` 换成 `.venv\Scripts\python.exe`、`.venv-vnpy/bin/python` 换成 `.venv-vnpy\Scripts\python.exe`、`/` 换成 `\`）；PIL 图片默认用 `msyh.ttc` 字体（代码已做跨平台兜底）；Windows PowerShell 读写中文文件时注意 UTF-8 编码
-- `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`~/.vntrader/vt_setting.json` 中的真实 token / 数据库信息严禁提交
+- `.gitignore` 已忽略 `.idea/` 与 `output/`（运行产物图片）；缓存 JSON 位于 `holders/` 且随仓库提交，不要忽略；新增生成文件时先确认是否应提交，`.quant-learning/settings.json`（申万 + holders 共用 token）与 `~/.vntrader/vt_setting.json`（vnpy 示例 token/数据库信息）中的真实信息严禁提交
 - 提交信息使用中文 Conventional Commits 风格（如 `feat:`、`fix:`），单行主题、简洁描述（ZCode 环境优先交给 `/commit` 技能按此规范生成）

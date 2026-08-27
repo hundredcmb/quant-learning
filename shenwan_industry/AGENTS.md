@@ -9,7 +9,6 @@
   - `industry_tree.py`：行业树与成分数据层（`ShenWanIndustryNode` / `ShenWanIndustryTree`：树构建、成分加载、`in_date`/`delist_date` 记录、股票池过滤 `filter_stock_pool`）
   - `market_data.py`：行情数据层 `MarketDataProvider`（API 调用计数、按日缓存、停牌 730 天回退、交易日历、区间逐日行情并发限流拉取；**财务数据三池批拉：`fina_indicator_vip`（扣非 `profit_dedt` + 非经常性损益 `extra_item` + 每股净资产 `bps`，归母净利润 = 前两者行内合成；TTM 归母 / TTM 扣非）、`balancesheet_vip`（归母普通股股东权益绝对额，供 PB）与 `express_vip`（业绩快报，归母净利润提前可用源）三池并行预热，PIT 均为 ann_date**，见第 5.1 节）
   - `industry_ranking.py`：排行榜算法库（`daily_rank_equal_weight` / `daily_rank_float_weight` / `daily_valuation_metric`（PE/PB 通用聚合，`daily_pe_ttm`/`daily_pb` 薄封装）/ `run_daily_ranking` / `rank_range`）+ 耗时工具 `print_timing`
-  - `config_store.py`：本地配置存储（Tushare token，存项目根目录 `.quant-learning/settings.json`、已 gitignore 不提交），CLI 与 Web 统一从这里读 token
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `data/`：需提交的数据/缓存子目录——`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
   - `__init__.py`：空
@@ -18,7 +17,7 @@
 
 ## 运行环境与数据源
 
-本模块**已彻底脱离 vnpy**（不 import 任何 vnpy 包），可用任一带 tushare/pandas 的 Python 运行；token 从本地配置 `config_store.py` 读取（Web 页面右上角「数据配置」填写保存，配置文件在项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；禁止硬编码）；需联网访问 Tushare Pro，接口权限依赖账号积分；日期统一 `YYYYMMDD`（内部用 `datetime`，`strftime("%Y%m%d")` 转换）。
+本模块**已彻底脱离 vnpy**（不 import 任何 vnpy 包），可用任一带 tushare/pandas 的 Python 运行；token 从**仓库根公共模块** `config_store.py` 读取（与 `holders/` 共享同一份本地配置：项目根目录 `.quant-learning/settings.json`、已 gitignore 不随仓库提交；Web 页面右上角「数据配置」填写保存，CLI 未配置时报错提示先在 Web 配置；禁止硬编码）；需联网访问 Tushare Pro，接口权限依赖账号积分；日期统一 `YYYYMMDD`（内部用 `datetime`，`strftime("%Y%m%d")` 转换）。
 
 ## 核心算法约定（必读）
 

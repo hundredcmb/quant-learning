@@ -19,7 +19,7 @@
 
 ## 调用约定
 
-- token 从本机配置读取（`shenwan_industry/config_store.py`，存储与填写方式见 `shenwan_industry/AGENTS.md`「运行环境与数据源」），代码中不出现真实 token；模块不依赖 vnpy
+- token 从本机配置读取（**仓库根公共模块** `config_store.py`，与 `holders/` 共享同一份本地配置；存储与填写方式见 `shenwan_industry/AGENTS.md`「运行环境与数据源」），代码中不出现真实 token；模块不依赖 vnpy
 - API 调用计数：`MarketDataProvider` 构造时包装 `pro` 并累计，`snapshot_api_calls()` 取快照；Web 任务前后快照求差即该任务实际调用次数（缓存命中不计；建树阶段调用不计入任务）
 - 限流（已实测）：本账号 5000 积分，单接口限流 **500 次/分钟**（按 60 秒滚动窗口计数，官方报错信息原文确认；本地文档未列具体数字）。区间榜一次约 78 次调用（daily 66 + daily_basic 6 + 其他 6），远低于上限，可安全并发；但同一分钟连续跑多次区间会累积，批量任务需按窗口留余量。项目节流器（按接口独立 ≤450 次/分钟、进程内生效）见 `shenwan_industry/AGENTS.md` 第 7 节
 - 接口名、参数、字段与权限要求以 `docs/tushare_api_reference.md` 为准，不要凭记忆硬写

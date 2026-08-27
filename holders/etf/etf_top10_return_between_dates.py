@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import time
@@ -11,6 +12,7 @@ from etf_client import (
     get_adj_factors,
     get_combined_etfs,
     get_daily_prices,
+    init_tushare,
     query_single_etf,
 )
 
@@ -380,6 +382,12 @@ def query_top10():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="两个交易日之间 ETF 十大持有人持仓收益统计")
+    parser.add_argument("--token", default=None,
+                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+    args = parser.parse_args()
+    init_tushare(args.token)
+
     start_time = time.time()
     query_top10()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")

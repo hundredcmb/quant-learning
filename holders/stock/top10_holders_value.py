@@ -1,3 +1,4 @@
+import argparse
 import time
 
 from tushare_client import (
@@ -5,6 +6,7 @@ from tushare_client import (
     RAW_CACHE,
     get_combined_stocks,
     get_stock_close_price,
+    init_tushare,
     query_single_stock,
     run_parallel_queries,
     save_raw_cache,
@@ -87,6 +89,12 @@ def query_top10():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="单报告期十大股东席位关键词持仓市值统计")
+    parser.add_argument("--token", default=None,
+                        help="Tushare token（未保存过配置且非交互环境时用此参数指定，传入后自动保存）")
+    args = parser.parse_args()
+    init_tushare(args.token)
+
     start_time = time.time()
     query_top10()
     print(f"\n总耗时：{round(time.time() - start_time, 2)} 秒")

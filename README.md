@@ -5,15 +5,16 @@ A 股复盘与投研辅助项目（量化为辅），主要用于辅助每日复
 本项目是一套可直接运行的 Python 脚本，分为**互不依赖的两部分**：
 
 - **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业财务指标（**PE-TTM** 归母净利润（Web 可切换扣非口径）、**PB** 归母普通股股东权益，各自由流通 / 总市值两种合成口径、**净利润TTM同比**（Web 可切换扣非口径；扭亏/转亏/持续亏损类别化），计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
-- **vnpy 生态**（`holders/` + `vnpy_examples/`）：十大股东席位关键词分析（国家队、社保、险资等，含 ETF）+ vnpy 入门示例（K 线入库、图表、指标、回测）。**必须依赖 vnpy 客户端（veighna studio）环境**
+- **十大股东席位关键词分析**（`holders/`）：A 股股票十大股东 + ETF 十大持有人（国家队、社保、险资等席位筛选，含持仓市值、变动对比与区间收益）。同样**不依赖 vnpy**，与申万行业分析共用 `.venv` 环境，token 也共用同一份配置
+- **vnpy 入门示例**（`vnpy_examples/`）：K 线入库、图表、指标、回测。**必须依赖 vnpy 客户端（veighna studio）环境**
 
 ---
 
-# 第一部分：申万行业分析（不依赖 vnpy）
+# 第一部分：不依赖 vnpy 的部分（shenwan_industry / holders）
 
 ## 1. 环境准备
 
-申万模块只需要 `fastapi / uvicorn / pydantic / tushare / pandas`（GUI 桌面窗口另需 `PySide6`），不依赖 vnpy。在项目根目录逐行执行：
+两部分共用一个虚拟环境：申万模块需要 `fastapi / uvicorn / pydantic / tushare / pandas`（GUI 桌面窗口另需 `PySide6`），holders 另需 `Pillow` 出图；全部依赖都已在 requirements.txt 中，安装一次即可。在项目根目录逐行执行：
 
 ```bash
 # 创建虚拟环境（Python 3.10+）
@@ -38,7 +39,10 @@ python3 -m venv .venv
 2. 打开页面，点击右上角「数据配置」，填写你的 Tushare token 并保存
 3. 可点「测试」验证 token 有效性
 
-token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore，不随仓库提交，权限 600），CLI 与 Web 共用这份配置，只需配置一次。
+token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore，不随仓库提交，权限 600），申万 Web/CLI 与 holders 各脚本**共用这份配置**，只需配置一次。除 Web 页面填写外，还有两种等效方式：
+
+- **CLI 交互输入**：终端直接运行任一 holders 脚本或申万 CLI，未检测到配置时会提示输入 Tushare token，回车后自动保存，此后无需重复输入
+- **命令行参数指定**（定时任务等非交互环境用）：holders 各脚本支持 `--token <你的token>`，传入后同样自动保存
 
 > Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限；单日榜 PE-TTM/PB 另需 **VIP 接口 `fina_indicator_vip`**（需对应积分；积分不足时指标列显示"—"，涨幅榜不受影响，见 `shenwan_industry/docs/financial_indicators.md`）。
 
@@ -78,11 +82,50 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE-TTM 用归母净利润（滚动 12 月、不足四期按 4/k 年化；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值，详见 `shenwan_industry/docs/financial_indicators.md`。
 
+## 6. 十大股东席位分析（holders）
+
+在指定样本池（默认中证 800 + 中证 1000）中，按 `KEY_WORD_RATIO` 配置的席位关键词筛选十大股东，并按折算比例估算持仓市值（单位：亿元）。token 与申万模块共用同一份配置（第 2 节）：首次在终端运行任一脚本且未配置过时，会提示输入并自动保存；定时任务等非交互环境用 `--token <你的token>` 参数指定。
+
+> **Tushare 积分要求**：十大股东相关接口（如 `top10_holders`）有积分门槛，**至少需要 2000 积分才有权限调用**。积分低于 2000 时**没有任何接口权限**，只能使用仓库自带的缓存文件 `holders/stock/tushare_top10_holders_raw.json` 分析缓存中已包含的数据。该缓存针对样本池 **中证 800 + 中证 1000 成分股**（约 1800 只），完整覆盖 **2025 年年报（`20251231`）及以后**（如 `20260331`）。
+
+### 股票（holders/stock/）
+
+| 脚本 | 功能 | 输出 |
+| --- | --- | --- |
+| `top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
+| `top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
+| `top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
+| `top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
+| `top10_return_between_dates_merged.py` | 同 top10_return_between_dates，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/股票组合收益统计_*_to_*_合并版*.png` |
+
+```bash
+.venv/bin/python holders/stock/top10_holders_value.py
+.venv/bin/python holders/stock/top10_holders_change.py
+.venv/bin/python holders/stock/top10_holders_change_merged.py
+.venv/bin/python holders/stock/top10_return_between_dates.py
+.venv/bin/python holders/stock/top10_return_between_dates_merged.py
+```
+
+### ETF（holders/etf/）
+
+**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入缓存：先用 Excel 整理持有人数据，再运行 `import_etf_data.py` 导入（导入格式见 `holders/etf/README.md`）；ETF 日线行情从 Tushare `fund_daily` 直接获取（**至少需要 5000 积分**）。
+
+```bash
+.venv/bin/python holders/etf/import_etf_data.py
+.venv/bin/python holders/etf/etf_top10_holders_value.py
+.venv/bin/python holders/etf/etf_top10_holders_change.py
+.venv/bin/python holders/etf/etf_top10_holders_change_merged.py
+.venv/bin/python holders/etf/etf_top10_return_between_dates.py
+.venv/bin/python holders/etf/etf_top10_return_between_dates_merged.py
+```
+
+运行前可在各脚本顶部「核心配置」区修改样本池指数、报告期、交易日和关键词；公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）分别集中在 `holders/stock/tushare_client.py` 与 `holders/etf/etf_client.py`。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存放于 `holders/` 下并随仓库提交，请勿删除（全量重新拉取受限流影响很慢）。
+
 ---
 
-# 第二部分：依赖 vnpy 的部分（holders / vnpy_examples）
+# 第二部分：依赖 vnpy 的部分（vnpy_examples）
 
-本部分需要 **vnpy 客户端（veighna studio）** 提供完整环境（vnpy、tushare、pandas、TA-Lib、PySide6 等）。vnpy 客户端下载：https://www.vnpy.com/
+本部分仅剩 **vnpy 入门示例**，需要 **vnpy 客户端（veighna studio）** 提供完整环境（vnpy、tushare、pandas、TA-Lib、PySide6 等）。vnpy 客户端下载：https://www.vnpy.com/
 
 ## 1. 安装 veighna studio
 
@@ -112,7 +155,7 @@ cd <你的项目根目录>
 
 ## 3. 配置 Tushare token 与数据库（vt_setting.json）
 
-本部分通过 vnpy 全局配置读取 Tushare token 和数据库连接。配置文件位于 `~/.vntrader/vt_setting.json`（Windows 下即 `C:\Users\<用户名>\.vntrader\vt_setting.json`），首次运行 vnpy 客户端时会自动生成；也可以直接在客户端界面中修改。
+**仅 `vnpy_examples/` 需要此配置**（申万与 holders 的 Tushare token 见第一部分第 2 节，两者相互独立、互不影响）。本部分通过 vnpy 全局配置读取数据服务与数据库连接。配置文件位于 `~/.vntrader/vt_setting.json`（Windows 下即 `C:\Users\<用户名>\.vntrader\vt_setting.json`），首次运行 vnpy 客户端时会自动生成；也可以直接在客户端界面中修改。
 
 配置示例（**把 `<>` 中的内容替换为你自己的 token 和数据库信息，切勿把真实信息提交到 git**）：
 
@@ -145,47 +188,11 @@ cd <你的项目根目录>
 
 说明：
 
-- `datafeed.*`：数据服务配置。`name` 固定为 `tushare`，`password` 填你的 Tushare token（需开通 `top10_holders`、`index_weight`、`stock_basic`、`daily` 等接口权限）；`holders/` 从这里读取 token
+- `datafeed.*`：数据服务配置。`name` 固定为 `tushare`，`password` 填你的 Tushare token（供示例脚本下载数据使用）
 - `database.*`：数据库连接配置，供 vnpy 示例读写 K 线使用（`vnpy_examples/02、03、05、06` 通过 `get_database()`）
 - 修改配置前请先关闭 vnpy 客户端，避免配置被覆盖
 
-## 4. 十大股东席位分析（holders）
-
-在指定样本池（默认中证 800 + 中证 1000）中，按 `KEY_WORD_RATIO` 配置的席位关键词筛选十大股东，并按折算比例估算持仓市值（单位：亿元）。
-
-> **Tushare 积分要求**：十大股东相关接口（如 `top10_holders`）有积分门槛，**至少需要 2000 积分才有权限调用**。积分低于 2000 时**没有任何接口权限**，只能使用仓库自带的缓存文件 `holders/stock/tushare_top10_holders_raw.json` 分析缓存中已包含的数据。该缓存针对样本池 **中证 800 + 中证 1000 成分股**（约 1800 只），完整覆盖 **2025 年年报（`20251231`）及以后**（如 `20260331`）。
-
-### 股票（holders/stock/）
-
-| 脚本 | 功能 | 输出 |
-| --- | --- | --- |
-| `top10_holders_value.py` | 单报告期关键词筛选，统计原始 / 折算持仓 | 控制台表格 |
-| `top10_holders_change.py` | 双报告期（`REPORT_PERIOD1` → `REPORT_PERIOD2`）持股变动对比，标记新增 / 增持 / 减持 / 不变 / 退出 | 控制台表格 + `output/持股变动表格.png` |
-| `top10_holders_change_merged.py` | 同 top10_holders_change，另将同一股票多个匹配席位合并统计 | 控制台表格 + `output/持股变动表格.png` |
-| `top10_return_between_dates.py` | 同一报告期、两个交易日间的公允价值变动与收益率 | 控制台表格 + `output/股票组合收益统计_*_to_*.png`（含汇总版） |
-
-```bash
-.venv-vnpy/bin/python holders/stock/top10_holders_value.py
-.venv-vnpy/bin/python holders/stock/top10_holders_change.py
-.venv-vnpy/bin/python holders/stock/top10_holders_change_merged.py
-.venv-vnpy/bin/python holders/stock/top10_return_between_dates.py
-```
-
-运行前可在脚本顶部“核心配置”区修改样本池指数、报告期、交易日和关键词。公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`。生成的图片统一输出到 `output/` 目录（已 gitignore）；Tushare 原始数据缓存保存在 `holders/stock/tushare_top10_holders_raw.json`（随仓库提交，请勿删除，全量重新拉取受限流影响很慢）。
-
-### ETF（holders/etf/）
-
-**A 股 ETF 的十大持有人无法从 Tushare 获取**，只能手动录入缓存：先用 Excel 整理持有人数据，再运行 `import_etf_data.py` 导入（导入格式见 `holders/etf/README.md`）；ETF 日线行情从 Tushare `fund_daily` 直接获取（**至少需要 5000 积分**）。
-
-```bash
-.venv-vnpy/bin/python holders/etf/import_etf_data.py
-.venv-vnpy/bin/python holders/etf/etf_top10_holders_value.py
-.venv-vnpy/bin/python holders/etf/etf_top10_holders_change.py
-.venv-vnpy/bin/python holders/etf/etf_top10_holders_change_merged.py
-.venv-vnpy/bin/python holders/etf/etf_top10_return_between_dates.py
-```
-
-## 5. vnpy 入门示例（vnpy_examples/）
+## 4. vnpy 入门示例（vnpy_examples/）
 
 示例按学习路径编号，建议按顺序运行：
 
@@ -214,7 +221,7 @@ Tushare 接口文档已随仓库提交：`docs/tushare_api_reference.md`（Tusha
 - **数据缓存**：`holders/stock/tushare_top10_holders_raw.json` 是 Tushare 原始接口数据的本地缓存（约 8 MB，随仓库提交），结构为 `{报告期: {股票代码: [原始记录]}}`，覆盖 **中证 800 + 中证 1000 成分股** 的 **2025 年年报及以后**（积分低于 2000 时没有接口权限，只能使用该缓存，见上文）。已有缓存会优先使用，避免重复请求；请勿删除该文件。生成的图片输出到 `output/` 目录，已加入 `.gitignore`
 - **关键词切换**：`KEY_WORD_RATIO` 按 T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组，统一在 `holders/stock/tushare_client.py` 中配置，启用或停用关键词通过注释切换，修改一处即可；如需某个脚本单独使用不同关键词，可在该脚本内重新定义覆盖
 - **ETF 日线行情**：`fund_daily` 接口需要**至少 5000 Tushare 积分**，按 `trade_date` 一次请求拉全市场（`etf_client.get_daily_prices`），不建缓存、不做限流；低于 5000 积分无法拉取。ETF 十大持有人与基础信息仍只从缓存读取（手动导入）
-- **信息安全**：`~/.vntrader/vt_setting.json`（vnpy 部分）与 `.quant-learning/settings.json`（申万部分）分别存放两部分的 Tushare token，切勿提交到 git（后者已 gitignore）。本项目已弃用 `.env` 环境变量
+- **信息安全**：Tushare token 统一保存在项目根目录 `.quant-learning/settings.json`（申万与 holders 共用，已 gitignore）；`~/.vntrader/vt_setting.json` 存放 vnpy 示例部分的 token 与数据库连接信息。两者切勿提交到 git。本项目已弃用 `.env` 环境变量
 - **编码**：所有代码和文本均为 UTF-8，Windows 下用编辑器或脚本读写中文时请注意编码
 
 # 免责声明

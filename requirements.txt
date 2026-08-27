@@ -1,16 +1,18 @@
 # quant-learning 项目依赖
 #
-# 第一部分：申万行业分析（shenwan_industry/，不依赖 vnpy）
-# 在任意 Python 3.10+ 环境安装下列依赖即可（含桌面窗口 GUI 的 PySide6）：
+# 第一部分：.venv 环境（申万行业分析 shenwan_industry/ 与 十大股东/ETF 十大持有人
+# holders/，两者均已不依赖 vnpy）；在任意 Python 3.10+ 环境安装下列依赖即可：
 fastapi
 uvicorn
 pydantic
 tushare
 pandas
+# 出图用（holders 各脚本绘制统计图片）
+Pillow
 # GUI（申万桌面窗口 desktop.pyw 使用 Qt WebEngine 需要 PySide6）
 PySide6
 
-# 第二部分：vnpy 生态（holders / vnpy_examples）
+# 第二部分：vnpy 生态（仅 vnpy_examples 学习示例）
 # 必须使用 vnpy 客户端（veighna studio）自带的 Python 运行（--system-site-packages
 # 继承 vnpy / vnpy_tushare / vnpy_ctastrategy / tushare / pandas / numpy / Pillow /
 # ta-lib 等全部依赖），无需（也请勿）用 pip 单独安装这些库。

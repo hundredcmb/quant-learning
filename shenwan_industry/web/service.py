@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+import sys
 import threading
 import time
 import warnings
@@ -16,7 +17,6 @@ from typing import Any, Iterator
 
 import tushare as ts
 
-from ..config_store import config_path, get_token, set_token
 from ..industry_ranking import (
     run_daily_ranking,
     rank_range,
@@ -25,6 +25,13 @@ from ..industry_ranking import (
 )
 from ..industry_tree import ShenWanIndustryTree
 from ..market_data import MarketDataProvider
+
+# token 配置在仓库根公共模块（与 holders 共享同一份 .quant-learning/settings.json）
+try:
+    from config_store import config_path, get_token, set_token
+except ImportError:  # 直接以脚本方式运行服务时的兜底
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from config_store import config_path, get_token, set_token
 
 
 logger = logging.getLogger("shenwan_industry.web.service")

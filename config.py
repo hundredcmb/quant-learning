@@ -2,8 +2,9 @@ import sys
 import logging
 
 # 日志配置
-# 本项目已弃用 .env 环境变量，所有配置（Tushare token、数据库连接等）
-# 统一从 vnpy 全局配置动态获取（~/.vntrader/vt_setting.json）
+# Tushare token 统一存放在仓库根 config_store.py 管理的 .quant-learning/settings.json
+# （申万与 holders 共用）；仅 vnpy 示例部分仍从 ~/.vntrader/vt_setting.json 读取。
+# 项目已弃用 .env 环境变量。
 logger = logging.getLogger()
 handler = logging.StreamHandler(sys.stderr)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s')

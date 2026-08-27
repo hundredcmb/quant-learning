@@ -23,7 +23,6 @@ import time
 
 import tushare as ts
 from tushare.pro.client import DataApi
-from vnpy.trader.setting import SETTINGS
 
 # Windows 控制台编码兼容：避免 GBK 下 emoji 打印崩溃
 for stream in (sys.stdout, sys.stderr):
@@ -39,6 +38,12 @@ BASIC_CACHE_FILE = os.path.join(BASE_DIR, "etf_basic.json")
 # 图片等运行产物统一输出到仓库根目录 output/（已在 .gitignore 中忽略）
 OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(BASE_DIR)), "output")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 引入仓库根公共配置模块（须先把仓库根加入 sys.path）：token 与申万行业模块共享
+_REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from config_store import resolve_token
 
 # 席位关键词-折算比例（示例默认值，按你的分析需要启用/调整；
 # ETF 十大持有人常见 券商/资管/理财/基金/保险/汇金 等）
@@ -104,12 +109,27 @@ KEY_WORD_RATIO = {
 SPECIFIC_RATIO: dict = {}
 # ====================================================
 
-# ===================== 初始化Tushare接口 =====================
-token: str = SETTINGS["datafeed.password"]
-if not token:
-    raise ValueError("请先在 vnpy 的 datafeed.password 配置中设置你的 tushare token")
+# ===================== 初始化Tushare接口（懒初始化） =====================
+# token / pro 由 init_tushare() 赋值；各脚本启动时必须先调用一次
+token: str = ""
+pro: DataApi | None = None
 
-pro: DataApi = ts.pro_api(token=token)
+
+def init_tushare(cli_token: str | None = None) -> DataApi:
+    """初始化 Tushare 客户端，各脚本启动时必须先调用一次。
+
+    token 解析优先级（见仓库根 config_store.resolve_token）：
+    命令行 --token > 已保存配置 > 终端输入（自动保存）。
+    """
+    global token, pro
+    token = resolve_token(cli_token)
+    if not token:
+        raise ValueError(
+            "未获取到 Tushare token：交互终端可直接按提示输入，"
+            "非交互环境请用命令行参数指定 --token <你的token>"
+        )
+    pro = ts.pro_api(token=token)
+    return pro
 # ====================================================
 
 

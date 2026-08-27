@@ -5,22 +5,28 @@
 industry_ranking.py (含 run_daily_ranking 编排), 本脚本负责组装、打印榜单并输出耗时分析。
 """
 
+import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import tushare as ts
 from tushare.pro.client import DataApi
 
 try:
-    from .config_store import config_path, get_token
     from .industry_tree import ShenWanIndustryTree
     from .market_data import MarketDataProvider
     from .industry_ranking import run_daily_ranking, print_timing
 except ImportError:
-    from config_store import config_path, get_token
     from industry_tree import ShenWanIndustryTree
     from market_data import MarketDataProvider
     from industry_ranking import run_daily_ranking, print_timing
+
+# token 配置在仓库根公共模块（与 holders 共享同一份 .quant-learning/settings.json）
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from config_store import config_path, get_token
 
 
 if __name__ == "__main__":
