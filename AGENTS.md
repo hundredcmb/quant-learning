@@ -65,6 +65,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 - **已彻底脱离 vnpy**（不 import 任何 vnpy 包）：token 从 `config_store.py` 读取（Web 页面右上角「数据配置」填写保存，存储位置与配置步骤见 README；**禁止硬编码 token**），依赖见根 `requirements.txt`；Web 保存新 token 后后台自动重置已构建的行业树上下文（`service.save_token` / `PreparedContext.ensure`）
 - **算法权威与强制核对**：涉及申万行业的任务在报告完成前，必须先对照模块 `AGENTS.md`（算法权威描述 + 强制核对流程）；官方指数算法纯文字版 `docs/Shenwan_Index_Series_Algorithm_Text.md` **只能读、禁止任何修改**（确需变更须用户提供新版本覆盖），各市值类加权算法与其同步的进度见 `docs/sync_progress.md`
+- **文档去重与一致性收尾（任务完成前置步骤）**：申万相关任务在上条强制核对通过后、宣布完成前，还须对本次涉及的模块文档（模块 `AGENTS.md` 与 `docs/` 各子文档）做一遍去重与一致性检查——同一文档内重复出现的表述收敛为唯一权威出处 + 引用；与代码冲突或过期的表述以代码为准修正（并在回复中列出冲突点）。检查通过并完成修订后，才算一个开发任务完成
 - **自建申万行业指数是项目未来核心工作**（官方指数不稳定且种类少），规划见 `docs/roadmap.md`
 - Web 服务入口 `web/server.py`（浏览器访问 `http://127.0.0.1:9010/`）：单 worker 串行队列 + 进度轮询 + 任务取消；服务启动/保存 token 后后台预建行业树（`service.prebuild_context` → `PreparedContext.build_async`，构建互斥，首次查询即就绪）
 - 端口冲突自动顺延（方案 B，`web/port_picker.py`）；排查 Windows 动态保留段：`netsh interface ipv4 show excludedportrange protocol=tcp`，或管理员 `net stop winnat && net start winnat` 释放后配合 `--port` 固定端口
