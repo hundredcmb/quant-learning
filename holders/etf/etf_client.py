@@ -45,6 +45,18 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 from config_store import config_path, resolve_token
+from rate_limiter import (
+    TIER_AT_LEAST_5000,
+    TIER_BELOW_2000,
+    InterfaceRateLimiter,
+    is_rate_limit_error,
+    probe_credit_tier,
+)
+
+# 接口限流：ETF 域必须 5000 积分档（官方约 500 次/分 -> 7.5 次/秒留 10% 余量，与申万一致）
+# 对 fund_daily / fund_adj 各自独立节流、跨接口并行；init_tushare 会用公共积分档
+# 探测强制确认该档位后才放行（见根 rate_limiter.py）
+_limiter = InterfaceRateLimiter(7.5)
 
 # 席位关键词-折算比例（示例默认值，按你的分析需要启用/调整；
 # ETF 十大持有人常见 券商/资管/理财/基金/保险/汇金 等）
@@ -116,33 +128,6 @@ token: str = ""
 pro: DataApi | None = None
 
 
-# ===================== 积分权限探测 =====================
-# 探测用的固定老 ETF 老交易日：华泰柏瑞沪深300ETF（510300）2024 年首个交易日，数据必然存在
-_CREDIT_PROBE_ETF = ("510300.SH", "20240102")
-
-
-def _ensure_credit_5000() -> None:
-    """真实调用一次 fund_daily，探测账号积分 >= 5000（该接口的积分门槛）。
-
-    让积分不足在启动阶段就明确报错，而不是扫描几百只 ETF 后才失败；
-    探测请求单只单日、传输量最小，成功时静默返回。
-    """
-    try:
-        pro.fund_daily(
-            ts_code=_CREDIT_PROBE_ETF[0],
-            trade_date=_CREDIT_PROBE_ETF[1],
-            fields="ts_code",
-        )
-    except Exception as e:
-        msg = str(e)
-        if any(k in msg for k in ("积分", "权限", "抱歉")):
-            print(f"❌ 当前 Tushare token 积分不足 5000，无权调用 fund_daily 接口（Tushare 返回：{msg}）")
-            print("   ETF 十大持有人分析的日线行情获取至少需要 5000 积分，请到 tushare.pro 提升积分后重试")
-            sys.exit(1)
-        # 非权限类异常（网络抖动/服务端问题）无法据此判定权限，放行本次检查
-        print(f"⚠️ 积分探测请求失败（可能为网络波动），本次跳过积分检查：{msg}")
-
-
 # ===================== 披露闸门 =====================
 # ETF 十大持有人一年只披露两期，法定截止日：半年报当年 8/31、年报次年 4/30
 _ETF_PERIOD_MMDD = ("0630", "1231")
@@ -180,7 +165,8 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
     命令行 --token > 已保存配置，两者皆无时直接报错。
-    初始化完成后自动做一次 fund_daily 积分探测（>=5000 门槛）。
+    初始化完成后用公共积分档探测确认 >=5000 档位（未达即报错退出，
+    全部接口保持 7.5 次/秒节流）。
     """
     global token, pro
     token = resolve_token(cli_token)
@@ -190,7 +176,17 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
             f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
-    _ensure_credit_5000()
+
+    tier = probe_credit_tier(pro, min_tier_points=5000, limiter=_limiter)
+    if tier is None:
+        print("⚠️ 无法确认积分档位，本次跳过档位检查继续运行")
+    elif tier != TIER_AT_LEAST_5000:
+        points = "不足 2000" if tier == TIER_BELOW_2000 else "在 2000~5000 之间"
+        print(f"❌ 当前 Tushare token 积分{points}，无权调用 fund_daily 接口")
+        print("   ETF 十大持有人分析的日线行情获取至少需要 5000 积分，请到 tushare.pro 提升积分后重试")
+        sys.exit(1)
+    else:
+        print(f"✅ 积分档位：{tier}，全部接口按 7.5/s 节流")
     return pro
 # ====================================================
 
@@ -217,10 +213,15 @@ def save_basic_cache() -> None:
         json.dump(BASIC_CACHE, f, ensure_ascii=False, indent=2)
 
 
-def _call_with_retry(fn, retries: int = 3):
-    """轻量重试：瞬时错误（网络/超时等）指数退避重试；权限/参数类错误不重试直接抛"""
+def _call_with_retry(fn, api_name: str, retries: int = 3):
+    """轻量重试：先按「接口独立」节流发射；瞬时错误指数退避重试；
+    触发官方频次限制则该接口速率自动减半后重试；权限/参数类错误不重试直接抛。
+
+    不同接口的限额各自独立（fund_daily / fund_adj 两桶并行互不等待）。
+    """
     last_exc = None
     for attempt in range(retries):
+        _limiter.acquire(api_name)
         try:
             return fn()
         except Exception as e:
@@ -228,6 +229,9 @@ def _call_with_retry(fn, retries: int = 3):
             msg = str(e)
             if any(k in msg for k in ("权限", "积分", "抱歉")):
                 raise
+            if is_rate_limit_error(msg):
+                _limiter.halve(api_name)
+                print(f"⚠️ {api_name} 触发官方频次限制，该接口速率自动减半后重试")
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
     raise last_exc
@@ -398,7 +402,8 @@ def resolve_ts_code(code: str, trade_date: str | None = None) -> str | None:
     for suffix in (".SH", ".SZ"):
         candidate = code + suffix
         try:
-            df = pro.fund_daily(ts_code=candidate, trade_date=trade_date, fields="ts_code")
+            df = _call_with_retry(lambda c=candidate: pro.fund_daily(
+                ts_code=c, trade_date=trade_date, fields="ts_code"), api_name="fund_daily")
         except Exception:
             continue
         if df is not None and not df.empty:
@@ -418,7 +423,8 @@ def get_daily_prices(trade_date: str) -> dict:
     - 非交易日/无数据返回空 dict
     """
     df = _call_with_retry(
-        lambda: pro.fund_daily(trade_date=trade_date, fields="ts_code,close")
+        lambda: pro.fund_daily(trade_date=trade_date, fields="ts_code,close"),
+        api_name="fund_daily",
     )
     if df is None or df.empty:
         return {}
@@ -449,7 +455,8 @@ def get_adj_factors(trade_date: str) -> dict:
     offset = 0
     for _ in range(10):  # 翻页保护：最多 10 页
         df = _call_with_retry(
-            lambda o=offset: pro.fund_adj(trade_date=trade_date, offset=o, fields="ts_code,adj_factor")
+            lambda o=offset: pro.fund_adj(trade_date=trade_date, offset=o, fields="ts_code,adj_factor"),
+            api_name="fund_adj",
         )
         if df is None or df.empty:
             break
@@ -471,6 +478,7 @@ def get_etf_daily(code: str, start_date: str, end_date: str) -> list:
         print(f"⚠️ 无法解析 {code} 的 tushare 代码，可能不在场内市场")
         return []
     df = _call_with_retry(
-        lambda: pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date)
+        lambda: pro.fund_daily(ts_code=ts_code, start_date=start_date, end_date=end_date),
+        api_name="fund_daily",
     )
     return [] if df is None or df.empty else df.to_dict("records")

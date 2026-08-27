@@ -41,9 +41,23 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(BASE_DIR))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 from config_store import config_path, resolve_token
+from rate_limiter import (
+    TIER_AT_LEAST_5000,
+    TIER_BELOW_2000,
+    TIER_RATES,
+    TIER_2000_TO_5000,
+    InterfaceRateLimiter,
+    is_rate_limit_error,
+    probe_credit_tier,
+)
 
-MAX_WORKERS = 5  # 并发数, 越大越快越容易被限流, 上限20
-MAX_REQUESTS_PER_MINUTE = 180  # 每分钟最大请求数(推荐设为tushare官方限制数减20)
+MAX_WORKERS = 5  # 并发数, 上限20
+
+# 接口限流：Tushare 各接口独立限额且随积分档放宽，本项目按账户档位对所有接口
+# 统一取值并留 10% 余量，同接口串行平摊、不同接口并行互不等待（见根 rate_limiter.py）：
+#   2000 积分档官方约 200 次/分 -> 3 次/秒；5000 积分档约 500 次/分 -> 7.5 次/秒（与申万一致）
+# 起始按 2000 档保守设定；init_tushare 的公共积分档探测完成后自动切换到实际档位
+_limiter = InterfaceRateLimiter(TIER_RATES[TIER_2000_TO_5000])
 
 # 席位关键词-折算比例（四个脚本共用）
 # 启用或停用关键词通过注释切换；如需某个脚本单独使用不同关键词，
@@ -116,41 +130,29 @@ SPECIFIC_RATIO: dict = {
 }
 # ====================================================
 
-# ===================== 初始化Tushare接口（懒初始化） =====================
+# ===================== Tushare 客户端（懒初始化） =====================
 # token / pro 由 init_tushare() 赋值；各脚本启动时必须先调用一次
 token: str = ""
 pro: DataApi | None = None
-request_timestamps: list[float] = []
-rate_limit_lock = threading.Lock()
 write_cache_lock = threading.Lock()
 
 
-# ===================== 积分权限探测 =====================
-# 探测用的固定老股老期：招商银行 2023 中报，历史数据必然存在，仅用于验证接口权限
-_CREDIT_PROBE_STOCK = ("600036.SH", "20230630")
+def _call_with_throttle(api_name: str, fn, max_attempts: int = 3):
+    """单次接口调用：先按「接口独立」速率取发射槽再发起请求。
 
-
-def _ensure_credit_2000() -> None:
-    """真实调用一次 top10_holders，探测账号积分 >= 2000（该接口的积分门槛）。
-
-    让积分不足在启动阶段就明确报错，而不是全市场扫描跑到一半才失败；
-    探测请求走正常限流，成功时静默返回。
+    触发官方频次限制时该接口速率自动减半并重试（本次运行不再回升）；
+    其余异常原样上抛由调用方处理。不同接口的限额各自独立，调用点无需互相等待。
     """
-    rate_limit_control()
-    try:
-        pro.top10_holders(
-            ts_code=_CREDIT_PROBE_STOCK[0],
-            period=_CREDIT_PROBE_STOCK[1],
-            fields="ts_code",
-        )
-    except Exception as e:
-        msg = str(e)
-        if any(k in msg for k in ("积分", "权限", "抱歉")):
-            print(f"❌ 当前 Tushare token 积分不足 2000，无权调用 top10_holders 接口（Tushare 返回：{msg}）")
-            print("   股票十大股东分析至少需要 2000 积分，请到 tushare.pro 提升积分后重试")
-            sys.exit(1)
-        # 非权限类异常（网络抖动/服务端问题）无法据此判定权限，放行本次检查
-        print(f"⚠️ 积分探测请求失败（可能为网络波动），本次跳过积分检查：{msg}")
+    for attempt in range(max_attempts):
+        _limiter.acquire(api_name)
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < max_attempts - 1 and is_rate_limit_error(str(e)):
+                _limiter.halve(api_name)
+                print(f"⚠️ {api_name} 触发官方频次限制，该接口速率自动减半后重试")
+                continue
+            raise
 
 
 def init_tushare(cli_token: str | None = None) -> DataApi:
@@ -158,7 +160,8 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
 
     token 解析优先级（见仓库根 config_store.resolve_token）：
     命令行 --token > 已保存配置，两者皆无时直接报错。
-    初始化完成后自动做一次 top10_holders 积分探测（>=2000 门槛）。
+    初始化完成后用公共积分档探测定性（<2000 报错退出；
+    2000~5000 档 3 次/秒、5000+ 档自动切换 7.5 次/秒）。
     """
     global token, pro
     token = resolve_token(cli_token)
@@ -168,8 +171,23 @@ def init_tushare(cli_token: str | None = None) -> DataApi:
             f"或先在配置文件 {config_path()} 中写入 tushare_token 字段"
         )
     pro = ts.pro_api(token=token)
-    _ensure_credit_2000()
+
+    tier = probe_credit_tier(pro, min_tier_points=2000, limiter=_limiter)
+    if tier == TIER_BELOW_2000:
+        print("❌ 当前 Tushare token 积分不足 2000，无权调用 top10_holders 接口")
+        print("   股票十大股东分析至少需要 2000 积分，请到 tushare.pro 提升积分后重试")
+        sys.exit(1)
+    if tier is None:
+        # 网络抖动等无法定级：按起始的 2000 档保守速率放行
+        print(f"⚠️ 无法确认积分档位，本次按 {TIER_RATES[TIER_2000_TO_5000]}/s 保守限速运行")
+        return pro
+
+    rate = TIER_RATES[tier]
+    _limiter.set_rate(rate)
+    print(f"✅ 积分档位：{tier}，全部接口按 {rate}/s 节流"
+          + ("（5000+ 档）" if tier == TIER_AT_LEAST_5000 else ""))
     return pro
+# ====================================================
 # ====================================================
 
 
@@ -261,19 +279,18 @@ def get_stock_top10_raw(ts_code: str, period: str, stock_name: str = "") -> list
     if cached:
         return cached
 
-    # 2. 无缓存（或缓存为空的未披露占位），执行限流 + 接口请求
-    rate_limit_control()
+    # 2. 无缓存（或缓存为空的未披露占位），限流后请求接口
     raw_data = []
     try:
-        df = pro.top10_holders(
+        df = _call_with_throttle("top10_holders", lambda: pro.top10_holders(
             ts_code=ts_code,
             period=period,
             fields="ts_code,holder_name,hold_amount,hold_ratio"
-        )
+        ))
         # 转换为原始字典列表（标准可序列化格式）
         raw_data = df.to_dict("records") if not df.empty else []
     except Exception as e:
-        print(f"⚠️  大股东查询接口请求失败 {ts_code}, 请修改限流或并发参数后重试：{str(e)}")
+        print(f"⚠️  大股东查询接口请求失败 {ts_code}：{str(e)}")
         with write_cache_lock:
             save_raw_cache(RAW_CACHE)
             os._exit(-1)
@@ -287,44 +304,33 @@ def get_stock_top10_raw(ts_code: str, period: str, stock_name: str = "") -> list
     return raw_data
 
 
-def rate_limit_control():
-    """限流控制函数"""
-    global request_timestamps
-    current_time = time.time()
-
-    with rate_limit_lock:
-        request_timestamps = [t for t in request_timestamps if current_time - t < 60]
-
-        while len(request_timestamps) >= MAX_REQUESTS_PER_MINUTE:
-            wait_seconds = 60 - (current_time - request_timestamps[0]) + 1
-            print(f"⚠️  已达每分钟最大请求次数({MAX_REQUESTS_PER_MINUTE})，等待 {wait_seconds:.1f} 秒后继续...")
-            time.sleep(wait_seconds)
-            current_time = time.time()
-            request_timestamps = [t for t in request_timestamps if current_time - t < 60]
-
-        request_timestamps.append(current_time)
+_STOCK_NAME_MAP: dict | None = None   # 全市场 ts_code->名称；None=尚未拉取（进程内共享一次）
 
 
 def get_index_stocks(index_code: str, index_date: str) -> dict:
     """获取单指数成分股"""
     try:
-        df = pro.index_weight(
+        df = _call_with_throttle("index_weight", lambda: pro.index_weight(
             index_code=index_code,
             start_date=index_date,
             end_date=index_date
-        )
+        ))
         if df.empty:
             print(f"未获取到 {index_code} 成分股数据")
             return {}
 
-        stock_basic = pro.stock_basic(exchange="", list_status="L", fields="ts_code,name")
-        name_map = stock_basic.set_index("ts_code")["name"].to_dict()
+        global _STOCK_NAME_MAP
+        if _STOCK_NAME_MAP is None:
+            # 全市场名称映射与指数无关，进程内只拉一次供多个样本池指数复用
+            sb = _call_with_throttle("stock_basic", lambda: pro.stock_basic(
+                exchange="", list_status="L", fields="ts_code,name"))
+            _STOCK_NAME_MAP = sb.set_index("ts_code")["name"].to_dict() if not sb.empty else {}
 
         stock_map = {}
         for _, row in df.iterrows():
             con_code = row["con_code"]
-            if con_code in name_map:
-                stock_map[con_code] = name_map[con_code]
+            if con_code in _STOCK_NAME_MAP:
+                stock_map[con_code] = _STOCK_NAME_MAP[con_code]
         return stock_map
     except Exception as e:
         print(f"⚠️  获取 {index_code} 成分股失败：{str(e)}")
@@ -345,10 +351,10 @@ def get_stock_close_price(stock_codes: list, trade_date: str) -> dict:
     if not stock_codes:
         return {}
     try:
-        df = pro.daily(
+        df = _call_with_throttle("daily", lambda: pro.daily(
             ts_code=",".join(stock_codes),
             trade_date=trade_date
-        )
+        ))
         return df.set_index("ts_code")["close"].to_dict()
     except Exception as e:
         print(f"⚠️  查询{trade_date}股价失败: {str(e)}")
@@ -363,7 +369,7 @@ def get_adj_factors(trade_date: str) -> dict:
     - 非交易日/无数据返回空 dict；请求失败时退出（与股价查询一致）
     """
     try:
-        df = pro.adj_factor(trade_date=trade_date)
+        df = _call_with_throttle("adj_factor", lambda: pro.adj_factor(trade_date=trade_date))
         if df is None or df.empty:
             return {}
         return dict(zip(df["ts_code"], df["adj_factor"]))

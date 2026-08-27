@@ -27,6 +27,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 | `README.md` | 项目使用说明与**全部运行命令**（shenwan_industry 与 holders 用 `.venv`、仅 vnpy_examples 用 `.venv-vnpy`；ETF 导入格式另见 `holders/etf/README.md`） |
 | `config.py` | 仅提供全局 `logger` |
 | `config_store.py` | 仓库级公共配置存储：Tushare token 存 `.quant-learning/settings.json`（已 gitignore），申万与 holders 共享同一份；`resolve_token` 按「`--token` 参数 > 已保存配置」解析，均无时返回空串由调用方报错 |
+| `rate_limiter.py` | 仓库级公共件：`InterfaceRateLimiter` 按接口独立串行平摊发射、跨接口并行互不等待（与申万模块同策略），触发官方频限后该接口速率减半自愈；`probe_credit_tier` 用门槛接口真实调用把账号定性为 <2000 / 2000~5000 / ≥5000 三档并联动限流速率；均进程内生效 |
 | `holders/stock/` | 十大股东分析：`tushare_client.py`（股票公共模块：token 懒初始化 `init_tushare`/缓存/限流/指数成分股/收盘价/关键词筛选/并发查询）+ 三个脚本（`top10_holders_value` / `top10_holders_change` / `top10_return_between_dates`，后两只单次运行同时输出「席位明细 + 按股票合并席位」两套表格与图片；均支持 `--token`）+ 缓存 `tushare_top10_holders_raw.json`（约 8 MB，勿删）；功能与命令见 README |
 | `holders/etf/` | ETF 十大持有人：`import_etf_data.py`（Excel 导入）/ `etf_client.py`（公共模块，同样经 `init_tushare` 接入共享 token）/ 三个脚本（对标股票 stock，change/return 两只同样内置按代码合并视图）/ 缓存 `etf_top10_holders_raw.json` + `etf_basic.json` / 示例 Excel（不入库）；说明见 `holders/etf/README.md` |
 | `output/` | 图片运行产物目录 |
@@ -48,7 +49,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 ### 十大股东分析（holders/）
 
 - 公共数据获取逻辑（token、缓存、限流、指数成分股、收盘价、并发查询）已抽到 `holders/stock/tushare_client.py`（ETF 同理由 `etf_client.py` 提供），各脚本只保留各自的业务配置与逻辑，修改公共逻辑只改这一处；每个脚本启动时必须先调用 `init_tushare(args.token)` 初始化客户端——token 经根 `config_store.resolve_token` 解析（优先级：`--token` 命令行参数 > 已保存配置，均无则报错退出），import 阶段不做任何配置读取和网络请求；随后调用 `assert_report_periods_disclosed(...)` 做披露闸门校验（一季报 4/30 / 半年报 8/31 / 三季报 10/31 / 年报次年 4/30，截止日次日方可查询，未到期即报错退出防缓存污染；ETF 侧另限 *0630/*1231 白名单）；`KEY_WORD_RATIO`（席位关键词 → 折算比例，T0 国家队 / T0 社保 / T1 平安 / T1 国寿 / T2 新华 / T2 太保 / T2 人保分组）也统一在此配置（改一处即可），如需某脚本单独调整可在该脚本 import 后重新定义覆盖
-- 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；**空结果从不写入缓存**（空=未披露，落盘即永久污染；历史遗留的空条目读取时视为未命中重查自愈），运行结束打印未披露公司清单；`top10_holders` 至少 2000 积分、ETF `fund_daily` 至少 5000 积分——两类脚本的 `init_tushare` 都会在启动时用一条固定历史数据真实调用各自门槛接口提前探测，不足即报错退出（网络异常则提示跳过检查）；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；限流默认 `MAX_REQUESTS_PER_MINUTE=180`（建议比官方限制低 20）、`MAX_WORKERS=5`（上限 20）
+- 输出位置、缓存结构、积分门槛与限流参数等运行细节见 README：图片输出仓库根目录 `output/`；缓存 `holders/stock/tushare_top10_holders_raw.json`（约 8 MB、已提交勿删、结构 `{报告期: {股票代码: [Tushare 原始记录列表]}}`，仅存接口原始数据，修改业务逻辑时优先复用缓存、不要改变该结构）；**空结果从不写入缓存**（空=未披露，落盘即永久污染；历史遗留的空条目读取时视为未命中重查自愈），运行结束打印未披露公司清单；`top10_holders` 至少 2000 积分、ETF `fund_daily` 至少 5000 积分——两类脚本的 `init_tushare` 都会在启动时调用根 `rate_limiter.probe_credit_tier`（唯一公共实现）以固定历史数据定性三档（<2000 / 2000~5000 / ≥5000）：股票 <2000、ETF <5000 即报错退出，通过后自动切换对应档位速率（2000~5000 档 3 次/秒、5000+ 档 7.5 次/秒）；限流用仓库根 `rate_limiter.py` 节流器：同接口独立串行平摊、跨接口并行互不等待，触发官方频限自动减半自愈，进程内生效多进程叠加；接口失败先 `save_raw_cache()` 再 `os._exit(-1)` 退出；线程并发 `MAX_WORKERS=5`（上限 20）
 
 ### 股票与 ETF 十大持有人（严格区分）
 
