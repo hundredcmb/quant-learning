@@ -689,16 +689,21 @@ def daily_roe(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
-) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, int]]:
-    """单日榜行业 ROE(加权平均算法, 四口径一次算出): 返回 ({basis: levels}, stats)
+) -> tuple[
+    dict[str, dict[str, dict[str, float]]],
+    dict[str, dict[str, dict[str, float]]],
+    dict[str, int],
+]:
+    """单日榜行业 ROE(加权平均算法, 四口径一次算出): 返回 (levels_float, levels_total, stats)
 
-    levels: {basis: {"1"|"2"|"3": {index_code: ROE%}}}——行业**整体法** Σ分子/Σ分母×100
-    (与 PE 的 Σ市值/Σ股东值、净利润同比的 Σ当期/Σ基期同构; 分母 = 官方加权平均净资产 E_waa
-    或分段推导 E_TTM, 恒>0); **无市值维度**(纯基本面比值, 等权模式也显示, 不随加权方式切换)。
-    数据(每股分子/分母对)见 market_data.get_ts_code_to_roes——披露值 roe_waa 锚定、全链不接
-    业绩快报、roe_waa 缺失四口径全部降级; 键缺失 = 无参与股票(前端显示"—")。
+    levels: {basis: {"1"|"2"|"3": {index_code: ROE%}}}——行业值 = **按当日市值权重的个股 ROE
+    加权算术平均** Σ(市值ᵢ×ROEᵢ)÷Σ市值ᵢ×100(指数按什么权重分配成分股、指标就用什么权重:
+    自由流通/总市值两套随加权方式切换, 等权模式无市值权重、前端与 PE/PB 一致显示"—";
+    个股 ROE 为负[亏损]正常参与加权, 算术平均对负值稳定)。数据(每股分子/分母对)见
+    market_data.get_ts_code_to_roes——披露值 roe_waa 锚定、全链不接业绩快报、roe_waa 缺失
+    四口径全部降级; 键缺失 = 无参与股票(前端显示"—")。
     stats: 数据层五键(periods/stocks_with_roe/stocks_missing/stocks_ttm_full/stocks_ttm_fallback)
-    叠加 pool_no_value(池内无 ROE 数据的股票数)
+    叠加 pool_no_value(池内无 ROE 数据)/pool_no_mv(无市值, 不能参与加权)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -716,6 +721,8 @@ def daily_roe(
     if timings is not None:
         _t0 = time.perf_counter()
     pct_map = market_data.get_ts_code_to_pct_chg(date)
+    free_map = market_data.get_ts_code_to_free_mv(date)  # 万股/万元口径同批缓存
+    total_map = market_data.get_ts_code_to_total_mv(date)
     stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(
         stock_pool,
@@ -725,16 +732,24 @@ def daily_roe(
         restructure_excluded=market_data.get_restructure_excluded(date),
     )
 
-    # 聚合容器: basis -> 层级键 -> index_code -> [Σ分子, Σ分母, 数量]
-    agg: dict[str, dict[str, dict[str, list[float]]]] = {basis: {} for basis in pair_maps}
+    # 聚合容器: 市值口径 -> basis -> 层级键 -> index_code -> [Σ(市值×ROE), Σ市值, 数量]
+    kinds = ("float", "total")
+    agg: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {
+        kind: {basis: {} for basis in pair_maps} for kind in kinds
+    }
     for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
-        for basis in agg:
-            agg[basis][level_key] = {
-                node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
-            }
+        for kind in kinds:
+            for basis in agg[kind]:
+                agg[kind][basis][level_key] = {
+                    node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
+                }
     level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
 
+    def _usable(mv: float | None) -> bool:
+        return mv is not None and not pd.isna(mv) and mv > 0
+
     pool_no_value = 0
+    pool_no_mv = 0
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
@@ -748,28 +763,39 @@ def daily_roe(
                 continue  # 各口径覆盖互不连坐(如扣非缺失仅缺扣非两档)
             has_any_basis = True
             numerator, denominator = pair
-            for l_node in (l3_node, l2_node, l1_node):
-                entry = agg[basis][level_key_map[l_node.level]][l_node.index_code]
-                entry[0] += numerator
-                entry[1] += denominator
-                entry[2] += 1
+            roe_pct = numerator / denominator * 100.0
+            for kind, mv_map in (("float", free_map), ("total", total_map)):
+                mv = mv_map.get(ts_code)
+                if not _usable(mv):
+                    continue  # 该市值口径缺失(停牌回退也没有)仅缺该口径
+                for l_node in (l3_node, l2_node, l1_node):
+                    entry = agg[kind][basis][level_key_map[l_node.level]][l_node.index_code]
+                    entry[0] += mv * roe_pct
+                    entry[1] += mv
+                    entry[2] += 1
         if not has_any_basis:
             pool_no_value += 1
+        elif not (_usable(free_map.get(ts_code)) or _usable(total_map.get(ts_code))):
+            pool_no_mv += 1  # 有 ROE 但两口径市值均缺失, 无法加权
 
-    levels: dict[str, dict[str, dict[str, float]]] = {basis: {} for basis in agg}
-    for basis, per_level in agg.items():
-        levels[basis] = {"1": {}, "2": {}, "3": {}}
-        for level_key, per_node in per_level.items():
-            for code, (sum_num, sum_den, count) in per_node.items():
-                if count == 0:
-                    continue  # 无参与股票不记键位, 前端显示 "—"
-                levels[basis][level_key][code] = sum_num / sum_den * 100.0
+    levels_by_kind: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for kind in kinds:
+        levels_by_kind[kind] = {basis: {"1": {}, "2": {}, "3": {}} for basis in agg[kind]}
+        for basis, per_level in agg[kind].items():
+            for level_key, per_node in per_level.items():
+                for code, (sum_wr, sum_w, count) in per_node.items():
+                    if count == 0:
+                        continue  # 无参与股票不记键位, 前端显示 "—"
+                    levels_by_kind[kind][basis][level_key][code] = sum_wr / sum_w
     if timings is not None:
         timings["compute"] = time.perf_counter() - _t0
 
-    if pool_no_value:
-        logger.warning(f"{date_str} ROE 剔除 {pool_no_value} 只(池内无 ROE 数据, 多为 roe_waa 未披露), 不计入行业合成")
-    return levels, {**stats, "pool_no_value": pool_no_value}
+    if pool_no_value or pool_no_mv:
+        logger.warning(
+            f"{date_str} ROE 剔除 {pool_no_value} 只(池内无 ROE 数据, 多为 roe_waa 未披露)、"
+            f"{pool_no_mv} 只(两口径市值均缺失), 不计入行业合成"
+        )
+    return levels_by_kind["float"], levels_by_kind["total"], {**stats, "pool_no_value": pool_no_value, "pool_no_mv": pool_no_mv}
 
 
 def daily_dividend_yield(
@@ -778,16 +804,19 @@ def daily_dividend_yield(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
-) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, int]]:
-    """单日榜行业股息率(双口径一次算出): 返回 ({"est": levels, "static": levels}, stats)
+) -> tuple[dict[str, dict[str, dict[str, dict[str, float]]]], dict[str, int]]:
+    """单日榜行业股息率(双口径一次算出): 返回 (levels_by_kind, stats)
 
-    levels[basis]["1"|"2"|"3"][index_code] = 股息率%(basis: "est"=TTM估算值/Web 默认,
-    "static"=静态); 行业**整体法** = Σ(每股DPS × 当前总股本) ÷ Σ(总市值) × 100——总额法下
-    DPS×总股本即该股分红总额, 等价 Σ(分红总额)÷Σ(总市值), 与子表每股口径(DPS/close)自洽。
-    与 PE/PB 不同**无 free/total 双市值维度**(股息率与加权方式无关, 等权模式也显示同一值)。
+    levels_by_kind: {"float"|"total": {basis("est"|"static"): {"1"|"2"|"3": {index_code: 股息率%}}}}
+    ——行业值 = **按当日市值权重的个股股息率加权平均**(指数按什么权重分配成分股、指标就用
+    什么权重): total = Σ(DPS×总股本)÷Σ总市值(数学上恒等于个股总市值股息率的市值加权平均,
+    即原整体法)、float = Σ(DPS×自由流通股本)÷Σ自由流通市值(自由流通盘的现金回报, 系统性
+    高于 total 口径); 等权模式无市值权重、前端与 PE/PB 一致显示"—"。
+    与子表每股口径(DPS/close)自洽(加权平均的权重与分母同源)。
     DPS 见 market_data.get_ts_code_to_dividend_dps(总额法/锚定/完整性三态/兜底规则);
     DPS 键缺失(无数据)的股票剔除并计入 pool_no_value——**DPS=0(齐备零分红)是数值, 正常参与
-    合成**(非分红股摊薄行业股息率, 属语义本身); 总市值/总股本缺失剔除并计入 pool_no_mv。
+    加权**(非分红股摊薄行业股息率, 属语义本身); 对应市值口径/收盘价缺失剔除并计入 pool_no_mv
+    (float 口径的自由流通股本 = 自由流通市值÷收盘价, 停牌无 close 时仅缺 float 口径)。
     stats: 数据层键(stocks_total/static/static_zero/static_fallback/est/est_zero/est_realized/
     no_anchor/no_profit/no_share) 叠加 pool_no_value / pool_no_mv
     """
@@ -808,7 +837,9 @@ def daily_dividend_yield(
     if timings is not None:
         _t0 = time.perf_counter()
     total_mv_map = market_data.get_ts_code_to_total_mv(date)  # 万元
-    share_map = market_data.get_ts_code_to_total_share(date)  # 万股
+    free_mv_map = market_data.get_ts_code_to_free_mv(date)
+    close_map = market_data.get_ts_code_to_close(date)
+    share_map = market_data.get_ts_code_to_total_share(date)  # 万股(总股本, total 口径分子)
     pct_map = market_data.get_ts_code_to_pct_chg(date)
     stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(
@@ -819,14 +850,21 @@ def daily_dividend_yield(
         restructure_excluded=market_data.get_restructure_excluded(date),
     )
 
-    # 聚合容器: basis -> 层级键 -> index_code -> [Σ分红总额(万元), Σ总市值(万元), 数量]
-    agg: dict[str, dict[str, dict[str, list[float]]]] = {basis: {} for basis in dps_maps}
+    # 聚合容器: 市值口径 -> basis -> 层级键 -> index_code -> [Σ(市值×股息率), Σ市值, 数量]
+    kinds = ("float", "total")
+    agg: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {
+        kind: {basis: {} for basis in dps_maps} for kind in kinds
+    }
     for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
-        for basis in agg:
-            agg[basis][level_key] = {
-                node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
-            }
+        for kind in kinds:
+            for basis in agg[kind]:
+                agg[kind][basis][level_key] = {
+                    node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
+                }
     level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
+
+    def _usable(mv: float | None) -> bool:
+        return mv is not None and not pd.isna(mv) and mv > 0
 
     pool_no_value = 0
     pool_no_mv = 0
@@ -836,42 +874,58 @@ def daily_dividend_yield(
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
+        close = close_map.get(ts_code)
+        free_mv = free_mv_map.get(ts_code)
         total_mv = total_mv_map.get(ts_code)
         share_wan = share_map.get(ts_code)
-        if total_mv is None or pd.isna(total_mv) or total_mv <= 0 or share_wan is None:
-            pool_no_mv += 1
-            continue
+        float_ok = _usable(free_mv) and close is not None and close > 0  # 自由流通股本=市值÷close
+        total_ok = _usable(total_mv) and share_wan is not None and share_wan > 0
         has_any_basis = False
         for basis, dps_map in dps_maps.items():
             dps = dps_map.get(ts_code)
             if dps is None:
                 continue  # 各口径覆盖互不连坐
             has_any_basis = True
-            dividend_wan = dps * share_wan  # 元/股 × 万股 = 万元(总额法下即该股分红总额)
-            for l_node in (l3_node, l2_node, l1_node):
-                entry = agg[basis][level_key_map[l_node.level]][l_node.index_code]
-                entry[0] += dividend_wan
-                entry[1] += total_mv
-                entry[2] += 1
+            for kind in kinds:
+                if kind == "float" and not float_ok:
+                    continue
+                if kind == "total" and not total_ok:
+                    continue
+                # 市值×个股股息率(= DPS×对应口径股本, 万元), 与分母同一权重源
+                if kind == "float":
+                    contribution = dps * (free_mv / close)
+                    weight = free_mv
+                else:
+                    contribution = dps * share_wan
+                    weight = total_mv
+                yield_pct = contribution / weight * 100.0
+                for l_node in (l3_node, l2_node, l1_node):
+                    entry = agg[kind][basis][level_key_map[l_node.level]][l_node.index_code]
+                    entry[0] += weight * yield_pct
+                    entry[1] += weight
+                    entry[2] += 1
         if not has_any_basis:
             pool_no_value += 1
+        elif not (float_ok or total_ok):
+            pool_no_mv += 1
 
-    levels: dict[str, dict[str, dict[str, float]]] = {}
-    for basis in dps_maps:
-        levels[basis] = {"1": {}, "2": {}, "3": {}}
-        for level_key, per_node in agg[basis].items():
-            for code, (sum_div, sum_mv, count) in per_node.items():
-                if count == 0:
-                    continue  # 无参与股票不记键位, 前端显示 "—"
-                levels[basis][level_key][code] = sum_div / sum_mv * 100.0
+    levels_by_kind: dict[str, dict[str, dict[str, dict[str, float]]]] = {}
+    for kind in kinds:
+        levels_by_kind[kind] = {basis: {"1": {}, "2": {}, "3": {}} for basis in dps_maps}
+        for basis, per_level in agg[kind].items():
+            for level_key, per_node in per_level.items():
+                for code, (sum_wy, sum_w, count) in per_node.items():
+                    if count == 0:
+                        continue  # 无参与股票不记键位, 前端显示 "—"
+                    levels_by_kind[kind][basis][level_key][code] = sum_wy / sum_w
     if timings is not None:
         timings["compute"] = time.perf_counter() - _t0
 
     if pool_no_value or pool_no_mv:
         logger.warning(
-            f"{date_str} 股息率剔除 {pool_no_value} 只(池内无 DPS 数据) 、{pool_no_mv} 只(无总市值/总股本), 不计入行业合成"
+            f"{date_str} 股息率剔除 {pool_no_value} 只(池内无 DPS 数据) 、{pool_no_mv} 只(两口径市值/股本均缺失), 不计入行业合成"
         )
-    return levels, {**stats, "pool_no_value": pool_no_value, "pool_no_mv": pool_no_mv}
+    return levels_by_kind, {**stats, "pool_no_value": pool_no_value, "pool_no_mv": pool_no_mv}
 
 
 def start_metric_prefetch(
@@ -1010,32 +1064,39 @@ def compute_fin_metric_suite(
         valuation[f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
         _mode += progress_step
 
-    # ROE(加权平均算法, 无市值维度)四口径一次算出: 披露值 roe_waa 锚定、全链不接业绩快报,
-    # roe_waa 缺失四口径全部降级; 失败时报错降级为空 levels
+    # ROE(加权平均算法)四口径一次算出: **按当日市值权重的加权算术平均**(随加权方式切换
+    # free/total 两口径、等权显示"—", 与 PE/PB 一致); 披露值 roe_waa 锚定、**全链不接业绩
+    # 快报**(快报窗口内时效落后 PE/同比一档)、roe_waa 缺失四口径全部降级; 失败时报错降级
     _notify_stage(_mode, "计算行业ROE(加权平均)")
     r_timings: dict[str, float] = {}
-    roe_levels: dict[str, dict[str, dict[str, float]]] = {}
+    roe_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
     roe_stats: dict[str, int] = {}
     try:
         _join_fina()
-        roe_levels, roe_stats = daily_roe(
+        roe_float, roe_total, roe_stats = daily_roe(
             tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
         )
+        roe_levels = {"float": roe_float, "total": roe_total}
     except Exception as err:
         logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
-        roe_levels, roe_stats = {}, {}
+        roe_levels, roe_stats = {"float": {}, "total": {}}, {}
     if timings is not None:
         timings["roe_compute"] = r_timings.get("compute", 0.0)
     for basis in PROFIT_BASES:
-        valuation[f"roe_waa_{basis}"] = {"value": roe_levels.get(basis, {}), "stats": roe_stats}
+        valuation[f"roe_waa_{basis}"] = {
+            "float": roe_levels["float"].get(basis, {}),
+            "total": roe_levels["total"].get(basis, {}),
+            "stats": roe_stats,
+        }
     _mode += progress_step
 
-    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): 失败时报错
-    # 降级为空 levels; 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
+    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): **按当日市值
+    # 权重的加权平均**(free/total 两口径随加权方式切换、等权显示"—"); 失败时报错降级为空
+    # levels; 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
     # 经下方 return 前的末段兜底补抛)
     _notify_stage(_mode, "计算行业股息率")
     d_timings: dict[str, float] = {}
-    div_levels: dict[str, dict[str, dict[str, float]]] = {}
+    div_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
     div_stats: dict[str, int] = {}
     try:
         _join_fina()
@@ -1048,10 +1109,14 @@ def compute_fin_metric_suite(
         )
     except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
         logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
-        div_levels, div_stats = {}, {}
+        div_levels, div_stats = {"float": {}, "total": {}}, {}
     if timings is not None:
         timings["div_yield_compute"] = d_timings.get("compute", 0.0)
-    valuation["div_yield"] = {"value": div_levels, "stats": div_stats}
+    valuation["div_yield"] = {
+        "float": div_levels.get("float", {}),
+        "total": div_levels.get("total", {}),
+        "stats": div_stats,
+    }
 
     # 末段取消兜底(股息率为全套最后阶段, 其降级 except 吞掉的取消信号在此补抛给上层)
     if cancel_check is not None:

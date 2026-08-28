@@ -667,9 +667,9 @@ def _run_daily(
                 basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
             },
             roe_maps={
-                basis: valuation[f"roe_waa_{basis}"]["value"] for basis in PROFIT_BASES
+                basis: valuation[f"roe_waa_{basis}"] for basis in PROFIT_BASES
             },
-            dividend_levels=valuation["div_yield"]["value"],
+            dividend_levels=valuation["div_yield"],
         ),
     }
     context = {
@@ -733,9 +733,9 @@ def _run_range(
                 basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
             },
             roe_maps={
-                basis: valuation[f"roe_waa_{basis}"]["value"] for basis in PROFIT_BASES
+                basis: valuation[f"roe_waa_{basis}"] for basis in PROFIT_BASES
             },
-            dividend_levels=valuation["div_yield"]["value"],
+            dividend_levels=valuation["div_yield"],
         )
     else:
         ew, fw, tw = rank_range(
@@ -874,16 +874,25 @@ def _build_levels(
             for basis, basis_value in (growth_maps or {}).items():
                 if basis_value:
                     row[f"profit_growth_{basis}"] = basis_value.get(level_name, {}).get(index_code)
-            # ROE 列仅单日榜携带(无市值维度, 加权平均算法; "ROE算法"下拉当前仅一档, 字段名带
-            # 算法段 roe_waa_ 供将来扩展): 数值%, 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            # ROE 列(仅单日/区间链式榜携带, 市值加权算术平均; "ROE算法"下拉当前仅一档, 字段名带
+            # 算法段 roe_waa_ 供将来扩展): **双市值口径字段 roe_waa_{basis}_float/total 随加权
+            # 方式切换**(等权无市值权重, 前端显示"—"); 数值%, 键缺失 = 未计算/失败降级/无参与股票
             for basis, basis_value in (roe_maps or {}).items():
-                if basis_value:
-                    row[f"roe_waa_{basis}"] = basis_value.get(level_name, {}).get(index_code)
-            # 股息率列仅单日榜携带(无市值维度, 双口径字段 div_est/div_static, 前端随
-            # "股息率口径"下拉切换): 数值%, 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
-            for basis, basis_value in (dividend_levels or {}).items():
-                if basis_value:
-                    row[f"div_{basis}"] = basis_value.get(level_name, {}).get(index_code)
+                for kind in ("float", "total"):
+                    kind_levels = (basis_value or {}).get(kind)
+                    if kind_levels:
+                        row[f"roe_waa_{basis}_{kind}"] = kind_levels.get(level_name, {}).get(index_code)
+            # 股息率列(仅单日/区间链式榜携带, 市值加权平均): **双市值口径字段 div_{basis}_float/
+            # total 随加权方式切换**(等权显示"—"), 前端另随"股息率口径"下拉切换 est/static;
+            # dividend_levels 结构 = {市值口径: {est/static: levels}}(与 roe_maps 的 {basis: {市值口径}}
+            # 不同构——basis 维度在内层); 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            for kind in ("float", "total"):
+                kind_levels = (dividend_levels or {}).get(kind)
+                if not kind_levels:
+                    continue
+                for basis, basis_value in kind_levels.items():
+                    if basis_value:
+                        row[f"div_{basis}_{kind}"] = basis_value.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows

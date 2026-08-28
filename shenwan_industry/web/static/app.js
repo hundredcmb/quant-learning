@@ -430,6 +430,8 @@ function renderMainTable() {
   };
   const peField = (peFields[state.profitBasis] || peFields.attr_ttm)[state.weight] || null;
   const pbField = { total: "pb_total", total_tr: "pb_total", float: "pb_float", float_tr: "pb_float" }[state.weight] || null;
+  // 市值口径段: 加权方式 -> 字段后缀(等权无市值权重 -> undefined, 该列与 PE/PB 一致显示"—")
+  const mvKind = { total: "total", total_tr: "total", float: "float", float_tr: "float" }[state.weight];
   const rows = sourceRows.map((row, index) => ({
     ...row,
     rank: index + 1,
@@ -438,8 +440,8 @@ function renderMainTable() {
     pe: peField ? row[peField] : undefined,
     pb: pbField ? row[pbField] : undefined,
     growth: row[`profit_growth_${state.profitBasis}`], // 净利润同比随"净利润口径"下拉切换
-    roe: row[`roe_${state.roeAlgo}_${state.profitBasis}`], // ROE 随"ROE算法"+"净利润口径"两下拉切换
-    div: row[`div_${state.divBasis}`], // 股息率随"股息率口径"下拉切换
+    roe: mvKind ? row[`roe_${state.roeAlgo}_${state.profitBasis}_${mvKind}`] : undefined, // ROE 随加权方式切换市值口径 + "ROE算法"/"净利润口径"两下拉(等权无值)
+    div: mvKind ? row[`div_${state.divBasis}_${mvKind}`] : undefined, // 股息率随加权方式切换市值口径 + "股息率口径"下拉(等权无值)
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {

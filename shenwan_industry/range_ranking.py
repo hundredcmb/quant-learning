@@ -130,8 +130,14 @@ if __name__ == "__main__":
         pe_data = chain_valuation[f"pe_{DEFAULT_PROFIT_BASIS}"]
         pb_data = chain_valuation["pb"]
         growth_data = chain_valuation[f"growth_{DEFAULT_PROFIT_BASIS}"]
-        roe_data = chain_valuation[f"roe_waa_{DEFAULT_PROFIT_BASIS}"]
-        div_levels = (chain_valuation["div_yield"].get("value") or {}).get("est", {})
+        roe_data = {
+            kind: chain_valuation[f"roe_waa_{DEFAULT_PROFIT_BASIS}"][kind]
+            for kind in ("float", "total")
+        }
+        div_levels = {
+            kind: (chain_valuation["div_yield"].get(kind) or {}).get("est", {})
+            for kind in ("float", "total")
+        }
 
         for level, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r in (
             (3, l3_ew_p, l3_ew_r, l3_fw_p, l3_fw_r, l3_tw_p, l3_tw_r),
@@ -143,10 +149,12 @@ if __name__ == "__main__":
             pb_free = pb_data["free"].get(str(level), {})
             pb_total = pb_data["total"].get(str(level), {})
             growth_for_level = growth_data["value"].get(str(level), {})
-            roe_for_level = roe_data["value"].get(str(level), {})
-            div_for_level = div_levels.get(str(level), {})
+            roe_for_level = roe_data["float"].get(str(level), {})
+            roe_total_for_level = roe_data["total"].get(str(level), {})
+            div_for_level = div_levels["float"].get(str(level), {})
+            div_total_for_level = div_levels["total"].get(str(level), {})
             print(f"\n\n{RANGE_START.strftime('%Y-%m-%d')} ~ {RANGE_END.strftime('%Y-%m-%d')} 申万{level}级行业区间涨幅榜(官方逐日链)")
-            print("总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE|股息率(TTM估算)|净利润同比|行业名称|成分股数量")
+            print("总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE(自由流通)|ROE(总市值)|股息率(TTM估算·自由流通)|股息率(TTM估算·总市值)|净利润同比|行业名称|成分股数量")
 
             def _fmt_metric(metric_for_level, code, label):
                 if code not in metric_for_level or metric_for_level[code] is None:

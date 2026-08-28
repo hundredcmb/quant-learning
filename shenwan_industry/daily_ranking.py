@@ -66,8 +66,10 @@ if __name__ == "__main__":
     growth_data = valuation[f"growth_{DEFAULT_PROFIT_BASIS}"]
     roe_data = valuation[f"roe_waa_{DEFAULT_PROFIT_BASIS}"]
     div_data = valuation.get("div_yield") or {}
-    div_levels = (div_data.get("value") or {}).get("est", {})  # 默认口径 = TTM估算值
+    div_levels = {}  # 默认口径 = TTM估算值; {市值口径: levels}(行业值按市值权重加权, 两口径随打印列展示)
     div_stats = div_data.get("stats") or {}
+    for _mv_kind in ("float", "total"):
+        div_levels[_mv_kind] = (div_data.get(_mv_kind) or {}).get("est", {})
     pe_free = pe_data["free"]
     pe_total = pe_data["total"]
     pe_stats = pe_data["stats"]
@@ -76,7 +78,7 @@ if __name__ == "__main__":
     pb_stats = pb_data["stats"]
     growth_levels = growth_data["value"]
     growth_stats = growth_data["stats"]
-    roe_levels = roe_data["value"]
+    roe_levels = {kind: roe_data[kind] for kind in ("float", "total")}  # 市值权重加权, 两口径
     roe_stats = roe_data["stats"]
 
     print_timing(
@@ -160,11 +162,13 @@ if __name__ == "__main__":
         pe_total_for_level = pe_total.get(str(industry_level), {})
         pb_free_for_level = pb_free.get(str(industry_level), {})
         pb_total_for_level = pb_total.get(str(industry_level), {})
-        roe_for_level = roe_levels.get(str(industry_level), {})
+        roe_for_level = roe_levels["float"].get(str(industry_level), {})
+        roe_total_for_level = roe_levels["total"].get(str(industry_level), {})
         growth_for_level = growth_levels.get(str(industry_level), {})
-        div_for_level = div_levels.get(str(industry_level), {})
+        div_for_level = div_levels["float"].get(str(industry_level), {})
+        div_total_for_level = div_levels["total"].get(str(industry_level), {})
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE|股息率(TTM估算)|净利润同比|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE(自由流通)|ROE(总市值)|股息率(TTM估算·自由流通)|股息率(TTM估算·总市值)|净利润同比|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:
@@ -232,7 +236,9 @@ if __name__ == "__main__":
                   f"{_fmt_metric(pb_free_for_level, index_ts_code, '资不抵债')}|" +
                   f"{_fmt_metric(pb_total_for_level, index_ts_code, '资不抵债')}|" +
                   f"{_fmt_roe(roe_for_level, index_ts_code)}|" +
+                  f"{_fmt_roe(roe_total_for_level, index_ts_code)}|" +
                   f"{_fmt_div(div_for_level, index_ts_code)}|" +
+                  f"{_fmt_div(div_total_for_level, index_ts_code)}|" +
                   f"{_fmt_growth(growth_for_level, index_ts_code)}|" +
                   f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{stock_count}",
                   [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_ts_code].constituent_stocks])
