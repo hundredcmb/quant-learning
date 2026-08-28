@@ -574,6 +574,10 @@ function renderSubTable() {
   const divKey = `div_${state.divBasis}`;
   const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey], growth: row[growthKey], roe: row[roeKey], div: row[divKey] }));
   sortRows(rows, state.subSort);
+  // 排名列(表头无 data-sort 不可排序——对排名排序是未定义行为): 序号随当前排序顺序编号
+  rows.forEach((row, index) => {
+    row.rank = index + 1;
+  });
   updateSortArrows("#sub-table", state.subSort);
 
   const tbody = $("#sub-tbody");
@@ -583,6 +587,7 @@ function renderSubTable() {
     // 成分股名称可点击查看个股前复权 K 线
     const nameHtml = `<a class="index-link" data-kline-code="${escapeHtml(row.ts_code)}">${escapeHtml(row.name)}</a>`;
     tr.innerHTML = `
+      <td>${row.rank}</td>
       <td>${nameHtml}</td>
       <td class="${pctClass(row.pct_chg)}">${formatPct(row.pct_chg)}</td>
       <td>${formatPrice(row.close)}</td>
