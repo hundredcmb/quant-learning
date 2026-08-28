@@ -283,9 +283,33 @@ class MarketDataProvider:
         return self.ts_code_to_close_cache.get(date) or {}
 
     def get_ts_code_to_amount(self, date: datetime) -> dict[str, float]:
-        """获取某日的成交额数据(千元): ts_code -> 成交额"""
+        """获取某日的成交额数据(千元): ts_code -> 成交额
+
+        通常随 get_ts_code_to_pct_chg 的全字段拉取顺带缓存; 但区间链式预取
+        (fetch_daily_by_date) 只拉 close/pre_close 回填 pct 缓存, 该路径下 pct 缓存已满
+        不会重拉——amount 仍空时单独拉一次全字段 daily 补齐(已缓存则零请求)
+        """
         self.get_ts_code_to_pct_chg(date)
-        return self.ts_code_to_amount_cache.get(date) or {}
+        cached = self.ts_code_to_amount_cache.get(date)
+        if cached:
+            return cached
+        date_str = date.strftime("%Y%m%d")
+        ts_code_to_amount: dict[str, float] = {}
+        offset = 0
+        while True:
+            self._acquire_rate_slot("daily")
+            df = self.pro.daily(trade_date=date_str, offset=offset, limit=5999)
+            if len(df) == 0:
+                break
+            for row in df.itertuples(index=False):
+                amount = getattr(row, "amount", None)
+                if amount is not None and not pd.isna(amount) and math.isfinite(float(amount)):
+                    ts_code_to_amount[str(row.ts_code)] = float(amount)
+            offset += len(df)
+            if len(df) < 5999:
+                break
+        self.ts_code_to_amount_cache[date] = ts_code_to_amount
+        return ts_code_to_amount
 
     def get_ts_code_to_free_mv(self, date: datetime) -> dict[str, float]:
         """获取A股某日的自由流通市值数据: ts_code -> 自由流通市值(万元)

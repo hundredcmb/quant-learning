@@ -266,10 +266,7 @@ function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
   $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
-  // 净利润口径/ROE算法/股息率口径仅单日榜有估值列, 区间榜隐藏三个下拉
-  $("#profit-basis-field").classList.toggle("hidden", !isDaily);
-  $("#roe-algo-field").classList.toggle("hidden", !isDaily);
-  $("#div-basis-field").classList.toggle("hidden", !isDaily);
+  // 净利润口径/ROE算法/股息率口径: 单日与区间榜均有财务指标列(区间=末交易日时点值), 始终显示
 }
 
 function submit() {
@@ -450,7 +447,10 @@ function renderMainTable() {
   });
 
   $("#table-title").textContent = `申万${["", "一", "二", "三"][state.level] || state.level}级行业排行`;
-  $("#table-count").textContent = `共 ${rows.length} 个行业`;
+  // 区间榜财务指标为"区间末交易日时点值"(涨幅=区间累计、指标=区间末收盘快照), 表头外注明口径
+  $("#table-count").textContent = state.result.mode === "range"
+    ? `共 ${rows.length} 个行业 · 财务指标为区间末交易日时点值`
+    : `共 ${rows.length} 个行业`;
   updateMainPctHeader();
   updateSortArrows("#main-table", state.mainSort);
 
@@ -463,7 +463,6 @@ function renderMainTable() {
     const hasKline = state.availableIndexes
       ? state.availableIndexes.has(row.index_code)
       : state.level === 1;
-    const indexCodeHtml = escapeHtml(row.index_code);
     const industryNameHtml = hasKline
       ? `<a class="index-link" data-kline-code="${escapeHtml(row.index_code)}">${escapeHtml(row.industry_name)}</a>`
       : escapeHtml(row.industry_name);
@@ -473,7 +472,6 @@ function renderMainTable() {
       : String(row.count);
     tr.innerHTML = `
       <td>${row.rank}</td>
-      <td>${indexCodeHtml}</td>
       <td>${industryNameHtml}</td>
       <td class="${pctClass(row.pct)}">${formatPct(row.pct)}</td>
       <td>${formatMetric(row.pe, "亏损")}</td>
@@ -583,7 +581,6 @@ function renderSubTable() {
     // 成分股名称可点击查看个股前复权 K 线
     const nameHtml = `<a class="index-link" data-kline-code="${escapeHtml(row.ts_code)}">${escapeHtml(row.name)}</a>`;
     tr.innerHTML = `
-      <td>${escapeHtml(row.ts_code)}</td>
       <td>${nameHtml}</td>
       <td class="${pctClass(row.pct_chg)}">${formatPct(row.pct_chg)}</td>
       <td>${formatPrice(row.close)}</td>
@@ -1025,7 +1022,7 @@ function formatPct(value) {
 }
 
 function formatMetric(value, nullLabel) {
-  // 键缺失(undefined) = 无数据/区间榜未计算; null = 行业股东值合计<=0(PE 亏损 / PB 资不抵债)
+  // 键缺失(undefined) = 无数据/降级(静态版区间榜未计算); null = 行业股东值合计<=0(PE 亏损 / PB 资不抵债)
   if (value === null) {
     return nullLabel;
   }

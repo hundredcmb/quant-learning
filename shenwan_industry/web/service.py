@@ -517,39 +517,24 @@ def run_worker(
     return result
 
 
-def _run_daily(
-    job: Any,
-    progress: Any,
-    cancel_check: Any,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
-    progress(0.0, "准备行业数据", "准备行业数据")
-    tree, provider = _CONTEXT.ensure()
-    before_calls = provider.snapshot_api_calls()
+def _compute_stock_metrics(
+    provider: MarketDataProvider,
+    rank_date: datetime,
+    close_map: dict[str, float],
+    total_map: dict[str, float],
+) -> dict[str, Any]:
+    """成分股子表的个股财务指标(单日榜与区间链式榜共用, rank_date=指标时点日)
 
-    rank_date = datetime.combine(job.payload["date"], datetime_time.min)
-    date_str = rank_date.strftime("%Y%m%d")
-
-    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, valuation = run_daily_ranking(
-        tree,
-        provider,
-        rank_date,
-        progress_callback=lambda pct, message, phase: progress(pct, message, phase),
-        cancel_check=cancel_check,
-    )
-
-    progress(95.0, "整理结果", "整理结果")
-    pct_map = provider.get_ts_code_to_pct_chg(rank_date)
-    close_map = provider.get_ts_code_to_close(rank_date)
-    free_map = provider.get_ts_code_to_free_mv(rank_date)
-    total_map = provider.get_ts_code_to_total_mv(rank_date)
-    amount_map = provider.get_ts_code_to_amount(rank_date)
-
-    # 个股估值(成分股子表展示, 总市值口径, 与行业总市值口径公式一致): 财务缓存命中零请求
-    # PE = 总市值(万元)/(净利润(元)/1e4); PB = 总市值(万元)/(归母普通股股东权益(元)/1e4)——
-    # 分母为 balancesheet_vip 权威绝对额(归母权益−其他权益工具[已含优先股], 不经"每股×股本"折算)
-    # PE 四口径(归母/扣非 × TTM/动态, PROFIT_BASES)一次算出供前端"净利润口径"切换; 值 None =
-    # 亏损(利润<=0) / 资不抵债(净资产<=0); 键缺失 = 无数据(前端显示"—")。循环按四口径利润键
-    # 并集驱动, 各口径覆盖互不连坐(归母合成失败仅缺归母列, 不影响该股其他口径/PB 行)
+    返回 {"stock_pe", "stock_pb", "stock_growth", "stock_roe", "stock_div"} 五键(区间榜口径=
+    区间末交易日, 与主表行业指标同一点位): 个股 PE(总市值口径, 四口径 pe_{basis})/PB(归母
+    普通股东权益)/净利润同比(四口径, 分类文本)/ROE(四口径作商)/股息率(双口径 DPS÷close);
+    全部命中财务缓存零新增请求; 值 None = 亏损/资不抵债, 键缺失 = 无数据(前端显示"—")。
+    股息率段失败降级为空(与行业列一致, 不波及其他指标)。
+    """
+    # 个股估值(总市值口径, 与行业总市值口径公式一致): PE = 总市值(万元)/(净利润(元)/1e4);
+    # PB = 总市值(万元)/(归母普通股股东权益(元)/1e4)——分母为 balancesheet_vip 权威绝对额
+    # (归母权益−其他权益工具[已含优先股], 不经"每股×股本"折算)。循环按四口径利润键并集驱动,
+    # 各口径覆盖互不连坐(归母合成失败仅缺归母列, 不影响该股其他口径/PB 行)
     stock_pe: dict[str, dict[str, float | None]] = {basis: {} for basis in PROFIT_BASES}
     profit_maps: dict[str, dict[str, float]] = {
         "attr_ttm": provider.get_ts_code_to_ttm_attr_profit(rank_date)[0],
@@ -600,10 +585,9 @@ def _run_daily(
         for basis, pair_map in roe_pair_maps.items()
     }
 
-    # 个股股息率(双口径, 总额法 DPS ÷ 当日收盘价 × 100): DPS 命中分红缓存零请求;
-    # 前端随"股息率口径"下拉切换(est=TTM估算值[默认]/static=静态); 键缺失 = 无数据(显示"—"),
-    # 值 0.0 = 齐备零分红(是数值); 收盘价缺失/非正的股票无该列值。
-    # 与行业列一致失败降级为空(分红缓存刷新失败等不波及涨幅榜主结果)
+    # 个股股息率(双口径, 总额法 DPS ÷ 当日收盘价 × 100): DPS 命中分红缓存零请求; 键缺失 =
+    # 无数据(显示"—"), 值 0.0 = 齐备零分红(是数值); 收盘价缺失/非正的股票无该列值。
+    # 失败降级为空(分红缓存刷新失败等不波及其他指标)
     stock_div: dict[str, dict[str, float]] = {"est": {}, "static": {}}
     try:
         est_dps, static_dps, _ = provider.get_ts_code_to_dividend_dps(rank_date)
@@ -619,6 +603,45 @@ def _run_daily(
         stock_div = {"est": _dps_to_yield(est_dps), "static": _dps_to_yield(static_dps)}
     except Exception as err:  # noqa: BLE001 - 股息率子表列降级
         logger.warning(f"个股股息率 计算失败, 子表该列全'—': {err!r}")
+
+    return {
+        "stock_pe": stock_pe,
+        "stock_pb": stock_pb,
+        "stock_growth": stock_growth,
+        "stock_roe": stock_roe,
+        "stock_div": stock_div,
+    }
+
+
+def _run_daily(
+    job: Any,
+    progress: Any,
+    cancel_check: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, int]]:
+    progress(0.0, "准备行业数据", "准备行业数据")
+    tree, provider = _CONTEXT.ensure()
+    before_calls = provider.snapshot_api_calls()
+
+    rank_date = datetime.combine(job.payload["date"], datetime_time.min)
+    date_str = rank_date.strftime("%Y%m%d")
+
+    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, valuation = run_daily_ranking(
+        tree,
+        provider,
+        rank_date,
+        progress_callback=lambda pct, message, phase: progress(pct, message, phase),
+        cancel_check=cancel_check,
+    )
+
+    progress(95.0, "整理结果", "整理结果")
+    pct_map = provider.get_ts_code_to_pct_chg(rank_date)
+    close_map = provider.get_ts_code_to_close(rank_date)
+    free_map = provider.get_ts_code_to_free_mv(rank_date)
+    total_map = provider.get_ts_code_to_total_mv(rank_date)
+    amount_map = provider.get_ts_code_to_amount(rank_date)
+
+    # 成分股子表个股指标(公共编排, 与区间链式榜共用; 见 _compute_stock_metrics docstring)
+    stock_metrics = _compute_stock_metrics(provider, rank_date, close_map, total_map)
 
     result = {
         "mode": "daily",
@@ -658,11 +681,7 @@ def _run_daily(
         "free_mv": free_map,
         "total_mv": total_map,
         "amount": amount_map,
-        "stock_pe": stock_pe,
-        "stock_pb": stock_pb,
-        "stock_growth": stock_growth,
-        "stock_roe": stock_roe,
-        "stock_div": stock_div,
+        **stock_metrics,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -684,7 +703,10 @@ def _run_range(
     chain_mode = bool(job.payload.get("chain", True))  # Web 默认官方逐日链式; 静态版仅显式 chain=false 或 CLI
 
     if chain_mode:
-        # 官方逐日链式: 6 条序列(等权/自由流通/总市值 × 官方价格式/全收益式)逐日再平衡累计
+        # 官方逐日链式: 6 条序列(等权/自由流通/总市值 × 官方价格式/全收益式)逐日再平衡累计;
+        # 财务指标(PE/PB/ROE/股息率/净利润同比)按**区间末交易日时点值**随链式一次算出
+        # (rank_range_chain 内启动预热并与逐日计算并行), 前端区间表同样展示、注明时点口径
+        valuation: dict[str, Any] = {}
         ew_p, ew_r, fw_p, fw_r, tw_p, tw_r = rank_range_chain(
             tree,
             provider,
@@ -694,8 +716,27 @@ def _run_range(
             progress_callback=lambda pct, message: progress(pct, message, "计算区间涨幅"),
             detail=detail,
             cancel_check=cancel_check,
+            valuation_out=valuation,
         )
-        levels = _build_levels(tree, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r)
+        levels = _build_levels(
+            tree, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r,
+            pe_maps={
+                basis: {
+                    "free": valuation[f"pe_{basis}"]["free"],
+                    "total": valuation[f"pe_{basis}"]["total"],
+                }
+                for basis in PROFIT_BASES
+            },
+            pb_free=valuation["pb"]["free"],
+            pb_total=valuation["pb"]["total"],
+            growth_maps={
+                basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
+            },
+            roe_maps={
+                basis: valuation[f"roe_waa_{basis}"]["value"] for basis in PROFIT_BASES
+            },
+            dividend_levels=valuation["div_yield"]["value"],
+        )
     else:
         ew, fw, tw = rank_range(
             tree,
@@ -710,10 +751,24 @@ def _run_range(
         # 静态版目前仅全收益式, 价格式列与全收益式同值(链式才有真正的官方价格式差异)
         levels = _build_levels(tree, ew, ew, fw, fw, tw, tw)
     progress(99.0, "整理结果", "整理结果")
-    # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定首日盘前，市值列需另行补拉末日）
-    end_free_mv = provider.get_ts_code_to_free_mv(end_date)
-    end_total_mv = provider.get_ts_code_to_total_mv(end_date)
-    end_amount = provider.get_ts_code_to_amount(end_date)
+    # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定首日盘前，市值列需另行补拉末日）:
+    # 链式版统一取**区间末交易日**(end_date 落在非交易日时 daily_basic 无数据, 与主表指标同一
+    # 时点); 静态版沿用 end_date 保持原行为
+    metric_date = end_date
+    if chain_mode:
+        trading_days = provider.get_trading_days(start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"))
+        if trading_days:
+            metric_date = datetime.strptime(trading_days[-1], "%Y%m%d")
+    end_free_mv = provider.get_ts_code_to_free_mv(metric_date)
+    end_total_mv = provider.get_ts_code_to_total_mv(metric_date)
+    end_amount = provider.get_ts_code_to_amount(metric_date)
+    # 成分股子表个股指标(区间末交易日时点, 与主表行业指标同一点位; 公共编排与单日榜共用,
+    # 财务缓存命中零新增请求; 静态版不算——context 无键时子表该五列显示"—")
+    stock_metrics: dict[str, Any] = {}
+    if chain_mode:
+        stock_metrics = _compute_stock_metrics(
+            provider, metric_date, detail.get("last_close") or {}, end_total_mv
+        )
     result = {
         "mode": "range",
         "start_date": start_date.strftime("%Y%m%d"),
@@ -734,6 +789,7 @@ def _run_range(
         "end_free_mv": end_free_mv,
         "end_total_mv": end_total_mv,
         "end_amount": end_amount,
+        **stock_metrics,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -903,8 +959,9 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             "total_mv": total_map.get(ts_code),
             "amount": amount_map.get(ts_code),
         }
-        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); PE 四口径(pe_{basis})与净利润同比
-        # 四口径(profit_growth_{basis})一次全带, 前端"净利润口径"下拉切换; 键缺失 = 无数据,
+        # 个股估值列: 单日榜(当日时点)与区间链式榜(区间末交易日时点)均携带, 静态版区间榜
+        # 不计算(context 无键, 前端显示"—"); PE 四口径(pe_{basis})与净利润同比四口径
+        # (profit_growth_{basis})一次全带, 前端"净利润口径"下拉切换; 键缺失 = 无数据,
         # None = 亏损/资不抵债
         if "stock_pe" in context:
             for basis, basis_pe in context["stock_pe"].items():
@@ -950,17 +1007,31 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
             if mv is None or (isinstance(mv, float) and math.isnan(mv)):
                 continue
 
-        rows.append(
-            {
-                "ts_code": ts_code,
-                "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
-                "pct_chg": pct_chg,
-                "close": last_close.get(ts_code),
-                "free_mv": end_free_mv.get(ts_code),
-                "total_mv": end_total_mv.get(ts_code),
-                "amount": end_amount.get(ts_code),
-            }
-        )
+        # 涨跌幅/收盘/市值/成交额之外, 个股估值列链式版携带(区间末交易日时点, 外层主表已
+        # 注明口径、子表不再重复); PE 四口径(pe_{basis})与净利润同比四口径(profit_growth_{basis})
+        # 一次全带, 前端"净利润口径"下拉切换; 键缺失 = 无数据(静态版区间榜不计算, 前端显示"—"),
+        # None = 亏损/资不抵债
+        row = {
+            "ts_code": ts_code,
+            "name": tree.stock_basic.get(ts_code, {}).get("name", ""),
+            "pct_chg": pct_chg,
+            "close": last_close.get(ts_code),
+            "free_mv": end_free_mv.get(ts_code),
+            "total_mv": end_total_mv.get(ts_code),
+            "amount": end_amount.get(ts_code),
+        }
+        if "stock_pe" in context:
+            for basis, basis_pe in context["stock_pe"].items():
+                row[f"pe_{basis}"] = basis_pe.get(ts_code)
+            row["pb"] = context["stock_pb"].get(ts_code)
+            for basis, basis_growth in context["stock_growth"].items():
+                row[f"profit_growth_{basis}"] = basis_growth.get(ts_code)
+            for basis, basis_value in context["stock_roe"].items():
+                row[f"roe_waa_{basis}"] = basis_value.get(ts_code)
+            # 个股股息率(双口径, DPS/close): 键缺失 = 无数据, 值 0.0 = 齐备零分红
+            for basis, basis_div in context["stock_div"].items():
+                row[f"div_{basis}"] = basis_div.get(ts_code)
+        rows.append(row)
     return rows
 
 

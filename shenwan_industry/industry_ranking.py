@@ -874,6 +874,192 @@ def daily_dividend_yield(
     return levels, {**stats, "pool_no_value": pool_no_value, "pool_no_mv": pool_no_mv}
 
 
+def start_metric_prefetch(
+    market_data: MarketDataProvider,
+    date: datetime,
+    universe: set[str],
+    cancel_check: CancelCheck | None = None,
+) -> tuple[threading.Thread, dict[str, float], threading.Thread, list[Exception]]:
+    """启动财务/分红后台预热(单日榜与区间链式榜共用, 调用方在编排最开始调用)
+
+    fina 三池(含增长基期 D-1年 串行补拉)与 dividend 缓存刷新各一线程、接口限流独立, 与
+    行情/市值拉取及涨幅计算全程并行、只写各自缓存; 指标计算阶段(compute_fin_metric_suite)
+    join 命中。返回 (fina 线程, fina 墙时 dict[键 "secs"], 分红线程, 分红异常转存列表)——
+    分红线程异常不直接抛(存列表, 由 suite 的股息率阶段 join 处重抛走该列降级)。
+    """
+    fina_wall: dict[str, float] = {}
+    div_exc: list[Exception] = []
+
+    def _warm_fina() -> None:
+        _w0 = time.perf_counter()
+        market_data.prefetch_fina_indicators(date, growth_base_date=market_data.growth_base_date(date))
+        fina_wall["secs"] = time.perf_counter() - _w0
+
+    def _warm_dividend() -> None:
+        _w0 = time.perf_counter()
+        try:
+            action = market_data.dividend_history.ensure_refresh(universe, cancel_check=cancel_check)
+            logger.info(f"分红缓存刷新: {action} ({time.perf_counter() - _w0:.1f}s)")
+        except Exception as err:  # noqa: BLE001 - 线程异常转存, suite 的股息率阶段重抛
+            div_exc.append(err)
+
+    fina_thread = threading.Thread(target=_warm_fina, daemon=True)
+    dividend_thread = threading.Thread(target=_warm_dividend, daemon=True)
+    fina_thread.start()
+    dividend_thread.start()
+    return fina_thread, fina_wall, dividend_thread, div_exc
+
+
+def compute_fin_metric_suite(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+    fina_thread: threading.Thread | None = None,
+    fina_wall: dict[str, float] | None = None,
+    dividend_thread: threading.Thread | None = None,
+    div_exc: list[Exception] | None = None,
+    notify: Callable[[float, str, str | None], None] | None = None,
+    progress_base: float = 93.5,
+    progress_step: float = 0.3,
+) -> dict[str, Any]:
+    """单日时点财务指标全套一次算出(PE 四口径/PB/净利润同比四口径/ROE 四口径/股息率双口径)
+
+    **单日榜(date=查询日)与区间链式榜(date=区间末交易日, "区间末时点值"口径)共用同一编排**,
+    避免两套实现漂移: 涨幅=区间累计、指标=区间末收盘快照(与指数公司估值表"最新收盘日"口径
+    一致)。预热线程由 start_metric_prefetch 启动、各阶段 join 命中缓存(缺省不 join, 供测试
+    直接调用); 各指标失败逐项降级为空数据(前端/CLI 显示"—"), 不影响涨幅榜主结果。
+    末段取消兜底: 股息率为本套最后阶段, 其降级 except 会连 JobCancelled 一并吞掉(任务误报
+    success), 函数返回前再查一次 cancel_check 把取消状态补抛(未请求取消时零副作用)。
+    notify(percent, message, phase): 进度回调; progress_base/progress_step 控制刻度
+    (单日 93.5/0.3, 区间链式 97.0/0.08——11 个指标段不越过"计算完成"刻度)。
+    返回 valuation dict, 键结构与 run_daily_ranking 的 valuation 完全一致(pe_{basis}/pb/
+    growth_{basis}/roe_waa_{basis}/div_yield, 降级也写入空结构, 调用方可硬下标)。
+    """
+    def _notify_stage(mode: float, message: str) -> None:
+        if notify is not None:
+            notify(max(0.0, min(99.0, mode)), message, "计算财务指标")
+
+    def _join_fina() -> None:
+        if fina_thread is not None:
+            fina_thread.join()
+        if timings is not None and "fina_fetch" not in timings and fina_wall and "secs" in fina_wall:
+            timings["fina_fetch"] = fina_wall["secs"]
+
+    valuation: dict[str, Any] = {}
+
+    def _run_valuation(
+        kind: str, label: str, mode: float, compute_key: str,
+        profit_kind: str = "attr", dynamic: bool = False,
+    ) -> dict[str, Any]:
+        """财务指标阶段(pe/pb): 失败时报错降级, 不影响涨幅榜主结果(口径见 daily_valuation_metric)"""
+        _notify_stage(mode, f"计算行业{label}")
+        v_timings: dict[str, float] = {}
+        metric_free: dict[str, dict[str, float | None]] = {}
+        metric_total: dict[str, dict[str, float | None]] = {}
+        metric_stats: dict[str, int] = {}
+        try:
+            _join_fina()  # 等待后台预热; 预热失败时 pe/pb 一致降级、不重复拉取
+            if kind == "pe":
+                metric_free, metric_total, metric_stats = daily_pe(
+                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check,
+                    profit_kind=profit_kind, dynamic=dynamic,
+                )
+            else:
+                metric_free, metric_total, metric_stats = daily_pb(
+                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check
+                )
+        except Exception as err:
+            logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
+        if timings is not None:
+            timings[compute_key] = v_timings.get("compute", 0.0)
+        return {"free": metric_free, "total": metric_total, "stats": metric_stats}
+
+    # PE 四口径(PROFIT_BASES)**一次全部算出**: 共享同一批报告期财务数据与市值缓存, 动态口径
+    # 仅本地重算零新增请求, Web 端"净利润口径"下拉切换显示; valuation 键 = "pe_"+basis
+    _mode = progress_base
+    for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
+        basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
+        valuation[f"pe_{basis}"] = _run_valuation(
+            "pe", f"PE({basis_label})", _mode, _valuation_compute_key("pe_", profit_kind, dynamic),
+            profit_kind=profit_kind, dynamic=dynamic,
+        )
+        _mode += progress_step
+    valuation["pb"] = _run_valuation("pb", "PB", _mode, "pb_compute")
+    _mode += progress_step
+
+    # 净利润同比(无市值维度)四口径一次算出: 与 PE 共用已拉报告期数据, 动态/扣非口径仅本地
+    # 重算零新增请求; 失败时报错降级为空 levels(前端显示"—")
+    for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
+        basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
+        _notify_stage(_mode, f"计算行业净利润同比({basis_label})")
+        g_timings: dict[str, float] = {}
+        levels_one: dict[str, dict[str, float | str]] = {}
+        stats_one: dict[str, int] = {}
+        try:
+            _join_fina()
+            levels_one, stats_one = daily_profit_growth(
+                tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
+                profit_kind=profit_kind, dynamic=dynamic,
+            )
+        except Exception as err:
+            logger.warning(f"净利润同比({basis}) 计算失败, 本次无该列: {err!r}")
+        if timings is not None:
+            timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
+        valuation[f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
+        _mode += progress_step
+
+    # ROE(加权平均算法, 无市值维度)四口径一次算出: 披露值 roe_waa 锚定、全链不接业绩快报,
+    # roe_waa 缺失四口径全部降级; 失败时报错降级为空 levels
+    _notify_stage(_mode, "计算行业ROE(加权平均)")
+    r_timings: dict[str, float] = {}
+    roe_levels: dict[str, dict[str, dict[str, float]]] = {}
+    roe_stats: dict[str, int] = {}
+    try:
+        _join_fina()
+        roe_levels, roe_stats = daily_roe(
+            tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
+        )
+    except Exception as err:
+        logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
+        roe_levels, roe_stats = {}, {}
+    if timings is not None:
+        timings["roe_compute"] = r_timings.get("compute", 0.0)
+    for basis in PROFIT_BASES:
+        valuation[f"roe_waa_{basis}"] = {"value": roe_levels.get(basis, {}), "stats": roe_stats}
+    _mode += progress_step
+
+    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): 失败时报错
+    # 降级为空 levels; 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
+    # 经下方 return 前的末段兜底补抛)
+    _notify_stage(_mode, "计算行业股息率")
+    d_timings: dict[str, float] = {}
+    div_levels: dict[str, dict[str, dict[str, float]]] = {}
+    div_stats: dict[str, int] = {}
+    try:
+        _join_fina()
+        if dividend_thread is not None:
+            dividend_thread.join()
+        if div_exc:
+            raise div_exc[0]
+        div_levels, div_stats = daily_dividend_yield(
+            tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
+        )
+    except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
+        logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
+        div_levels, div_stats = {}, {}
+    if timings is not None:
+        timings["div_yield_compute"] = d_timings.get("compute", 0.0)
+    valuation["div_yield"] = {"value": div_levels, "stats": div_stats}
+
+    # 末段取消兜底(股息率为全套最后阶段, 其降级 except 吞掉的取消信号在此补抛给上层)
+    if cancel_check is not None:
+        cancel_check()
+
+    return valuation
+
+
 def run_daily_ranking(
     tree: ShenWanIndustryTree,
     market_data: MarketDataProvider,
@@ -929,41 +1115,17 @@ def run_daily_ranking(
         if progress_callback is not None:
             progress_callback(max(0.0, min(100.0, percent)), message, phase)
 
-    # 财务数据后台预热: 在编排**最开始**启动(只依赖 provider、不依赖行情/市值), 与行情/市值拉取
-    # 及后续六条涨幅序列计算**全程并行**——fina_indicator_vip(利润/bps)、balancesheet_vip(归母
-    # 净资产) 与 express_vip(业绩快报) 三池同时并发(接口限流互相独立, 见
+    # 财务/分红后台预热: 在编排**最开始**启动(只依赖 provider、不依赖行情/市值), 与行情/市值
+    # 拉取及后续六条涨幅序列计算**全程并行**——fina_indicator_vip(利润/bps)、balancesheet_vip
+    # (归母净资产) 与 express_vip(业绩快报) 三池同时并发(接口限流互相独立, 见
     # MarketDataProvider.prefetch_fina_indicators), 并串行补拉 TTM 增长基期([D-36月, D-12月],
     # 旧报告期行数触顶 9999 自动翻页, 实测含基期共 ~16 次 fina 请求、限速地板 ~2.1s、预热总墙时
-    # ~3.1s——早启动才能整体藏进 行情+市值+涨幅计算 ~3.3s 的窗口内); PE/PB/增长阶段 join 命中
-    # 预热缓存; 线程失败在 join 处抛出、走既有"指标降级告警"路径
-    fina_wall: dict[str, float] = {}
-
-    def _warm_fina() -> None:
-        _w0 = time.perf_counter()
-        market_data.prefetch_fina_indicators(date, growth_base_date=market_data.growth_base_date(date))
-        fina_wall["secs"] = time.perf_counter() - _w0
-
-    fina_thread = threading.Thread(target=_warm_fina, daemon=True)
-    fina_thread.start()
-
-    # 分红缓存后台刷新: 与财务三池**同时**启动(dividend 接口限流独立), 供股息率列使用;
-    # 首次运行需全市场逐股首刷(约 5400 请求、7.5次/秒档 ~12 分钟, 一次性), 日常为增量
-    # 探测(双通道逐日 + 受影响股票重拉, 秒级~分钟级); 刷新异常存入列表、在股息率阶段
-    # join 处重抛(走该列降级路径; JobCancelled 经后续 cancel_check 兜底取消)
-    div_exc: list[Exception] = []
-
-    def _warm_dividend() -> None:
-        _w0 = time.perf_counter()
-        try:
-            action = market_data.dividend_history.ensure_refresh(
-                set(tree.all_member_codes), cancel_check=cancel_check
-            )
-            logger.info(f"分红缓存刷新: {action} ({time.perf_counter() - _w0:.1f}s)")
-        except Exception as err:  # noqa: BLE001 - 线程异常转存, join 处重抛
-            div_exc.append(err)
-
-    dividend_thread = threading.Thread(target=_warm_dividend, daemon=True)
-    dividend_thread.start()
+    # ~3.1s——早启动才能整体藏进 行情+市值+涨幅计算 ~3.3s 的窗口内) + dividend 缓存刷新
+    # (首次运行需全市场逐股首刷 ~12 分钟一次性, 日常增量秒级); PE/PB/增长阶段 join 命中预热
+    # 缓存; 线程失败在 join 处抛出、走既有"指标降级告警"路径
+    fina_thread, fina_wall, dividend_thread, div_exc = start_metric_prefetch(
+        market_data, date, set(tree.all_member_codes), cancel_check=cancel_check
+    )
 
     _notify(8.0, "拉取日线行情", "拉取日线行情")
     t0 = time.perf_counter()
@@ -1051,126 +1213,22 @@ def run_daily_ranking(
     timings["total_tr_fallback"] = tw_tr_timings.get("mv_fallback", 0.0)
     timings["total_tr_resolve"] = tw_tr_timings.get("mv_resolve", 0.0)
 
-    def _run_valuation(
-        kind: str, label: str, mode: float, compute_key: str,
-        profit_kind: str = "attr", dynamic: bool = False,
-    ) -> dict[str, Any]:
-        """财务指标阶段(pe/pb): 失败时报错降级, 不影响涨幅榜主结果(口径见 daily_valuation_metric)"""
-        _notify(mode, f"计算行业{label}", "计算财务指标")
-        v_timings: dict[str, float] = {}
-        metric_free: dict[str, dict[str, float | None]] = {}
-        metric_total: dict[str, dict[str, float | None]] = {}
-        metric_stats: dict[str, int] = {}
-        try:
-            fina_thread.join()  # 等待后台预热; 预热失败时 pe/pb 一致降级、不重复拉取
-            if "fina_fetch" not in timings and "secs" in fina_wall:
-                timings["fina_fetch"] = fina_wall["secs"]  # 真实拉取耗时(已与计算阶段并行, 墙体时间归零)
-            if kind == "pe":
-                metric_free, metric_total, metric_stats = daily_pe(
-                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check,
-                    profit_kind=profit_kind, dynamic=dynamic,
-                )
-            else:
-                metric_free, metric_total, metric_stats = daily_pb(
-                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check
-                )
-        except Exception as err:
-            logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
-        timings[compute_key] = v_timings.get("compute", 0.0)
-        return {"free": metric_free, "total": metric_total, "stats": metric_stats}
-
-    # PE/净利润同比四口径(归母/扣非 × TTM/动态, 见 PROFIT_BASES)**一次全部算出**: 共享同一批
-    # 报告期财务数据与市值缓存, 动态口径仅本地重算零新增请求(动态净利润=最新期累计×4/k;
-    # 动态同比基期"去年同季"恰落在 TTM 同比的基期预热窗口内), Web 端"净利润口径"下拉切换显示、
-    # 无需重跑任务, 默认口径 attr_ttm(CLI 打印该口径)。valuation 键 = "pe_"+basis(结构
-    # {"free"/"total": {"1"|"2"|"3": {index_code: 值|None}}, "stats": {...}})
-    valuation: dict[str, Any] = {}
-    _pe_mode = 93.5
-    for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
-        basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
-        valuation[f"pe_{basis}"] = _run_valuation(
-            "pe", f"PE({basis_label})", _pe_mode, _valuation_compute_key("pe_", profit_kind, dynamic),
-            profit_kind=profit_kind, dynamic=dynamic,
-        )
-        _pe_mode += 0.3
-    valuation["pb"] = _run_valuation("pb", "PB", _pe_mode, "pb_compute")
-
-    # 净利润同比(无市值维度)四口径一次算出(随 Web"净利润口径"下拉切换): 与 PE 共用已拉报告期
-    # 数据, 动态/扣非口径仅本地重算零新增请求(扣非无快报源, 快报窗口内时效落后归母一档;
-    # 类别四口径独立判定); 失败时报错降级为空 levels(前端显示"—")
-    _growth_mode = _pe_mode + 0.3
-    for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
-        basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
-        _notify(_growth_mode, f"计算行业净利润同比({basis_label})", "计算财务指标")
-        g_timings: dict[str, float] = {}
-        levels_one: dict[str, dict[str, float | str]] = {}
-        stats_one: dict[str, int] = {}
-        try:
-            fina_thread.join()
-            if "fina_fetch" not in timings and "secs" in fina_wall:
-                timings["fina_fetch"] = fina_wall["secs"]
-            levels_one, stats_one = daily_profit_growth(
-                tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
-                profit_kind=profit_kind, dynamic=dynamic,
-            )
-        except Exception as err:
-            logger.warning(f"净利润同比({basis}) 计算失败, 本次无该列: {err!r}")
-        timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
-        valuation[f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
-        _growth_mode += 0.3
-
-    # ROE(加权平均算法, 无市值维度)四口径一次算出: 随"净利润口径"下拉切换, "ROE算法"下拉当前仅
-    # 加权平均一档(valuation 键带算法段 "roe_waa_", 将来新增算法扩 "roe_dt_" 等不破坏现有键);
-    # 披露值 roe_waa 锚定、**全链不接业绩快报**(快报窗口内时效落后 PE/同比一档)、roe_waa 缺失
-    # 四口径全部降级; 失败时报错降级为空 levels(前端显示"—")
-    _notify(_growth_mode, "计算行业ROE(加权平均)", "计算财务指标")
-    r_timings: dict[str, float] = {}
-    roe_levels: dict[str, dict[str, dict[str, float]]] = {}
-    roe_stats: dict[str, int] = {}
-    try:
-        fina_thread.join()
-        if "fina_fetch" not in timings and "secs" in fina_wall:
-            timings["fina_fetch"] = fina_wall["secs"]
-        roe_levels, roe_stats = daily_roe(
-            tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
-        )
-    except Exception as err:
-        logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
-        roe_levels, roe_stats = {}, {}
-    timings["roe_compute"] = r_timings.get("compute", 0.0)
-    for basis in PROFIT_BASES:
-        valuation[f"roe_waa_{basis}"] = {"value": roe_levels.get(basis, {}), "stats": roe_stats}
-
-    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): 无 free/total
-    # 双市值维度(与加权方式无关, 等权模式也显示), Web"股息率口径"下拉切换; 数据=分红缓存
-    # (预热线程已刷新)+归母TTM(PE 同源, 已预热), 零新增接口类型; 失败时报错降级为空 levels
-    # (前端显示"—"); 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
-    # 经下方 return 前的末段兜底补抛)
-    _notify(_growth_mode + 0.3, "计算行业股息率", "计算财务指标")
-    d_timings: dict[str, float] = {}
-    div_levels: dict[str, dict[str, dict[str, float]]] = {}
-    div_stats: dict[str, int] = {}
-    try:
-        fina_thread.join()
-        dividend_thread.join()
-        if div_exc:
-            raise div_exc[0]
-        if "fina_fetch" not in timings and "secs" in fina_wall:
-            timings["fina_fetch"] = fina_wall["secs"]
-        div_levels, div_stats = daily_dividend_yield(
-            tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
-        )
-    except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
-        logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
-        div_levels, div_stats = {}, {}
-    timings["div_yield_compute"] = d_timings.get("compute", 0.0)
-    valuation["div_yield"] = {"value": div_levels, "stats": div_stats}
-
-    # 末段取消兜底: 股息率是编排最后计算阶段, 上方降级 except 会连取消信号(JobCancelled)
-    # 一并吞掉——任务将误报 success; 返回前再查一次 cancel_check 把取消状态补抛给上层
-    # (真实异常降级不受影响: 未请求取消时此处零副作用)
-    if cancel_check is not None:
-        cancel_check()
+    # 财务指标全套(PE 四口径/PB/净利润同比四口径/ROE 四口径/股息率双口径)一次算出: 公共编排
+    # 与区间链式榜共用(compute_fin_metric_suite), 键结构/降级/末段取消兜底见其 docstring
+    valuation = compute_fin_metric_suite(
+        tree,
+        market_data,
+        date,
+        timings=timings,
+        cancel_check=cancel_check,
+        fina_thread=fina_thread,
+        fina_wall=fina_wall,
+        dividend_thread=dividend_thread,
+        div_exc=div_exc,
+        notify=_notify,
+        progress_base=93.5,
+        progress_step=0.3,
+    )
 
     return (
         ew,
@@ -1520,6 +1578,7 @@ def rank_range_chain(
     progress_callback: ProgressCallback | None = None,
     detail: dict[str, dict[str, float]] | None = None,
     cancel_check: CancelCheck | None = None,
+    valuation_out: dict[str, Any] | None = None,
 ) -> tuple[
     tuple[RankList, RankList, RankList],
     tuple[RankList, RankList, RankList],
@@ -1535,11 +1594,18 @@ def rank_range_chain(
     Π(1+pct/100) 得到区间累计涨幅。
     返回 (等权·价格, 等权·全收益, 自由流通·价格, 自由流通·全收益, 总市值·价格, 总市值·全收益),
     每项为 (L1, L2, L3) 榜单。
+    valuation_out: 传入非 None dict 时, 追加计算**区间末交易日时点值**的财务指标全套
+    (PE 四口径/PB/净利润同比四口径/ROE 四口径/股息率双口径, 与单日榜同一公共编排
+    compute_fin_metric_suite)并写入该 dict(键结构与 run_daily_ranking 的 valuation 一致,
+    调用方可硬下标; Web 链式区间榜由此携带财务列——涨幅=区间累计、指标=区间末收盘快照,
+    与指数公司估值表"最新收盘日"口径一致); None 则完全不算(静态版/对照场景)。
 
     性能约定: 行情从 fetch_daily_batch 一次拉取(并回填 pct/close 缓存), 逐日不再重复请求;
     市值每日一次全市场 daily_basic(同请求缓存 free/total); 除息识别每日一次 dividend(仅价格式需要, 缓存共享);
     **停牌股跨日复用**: 当日不在全市场市值数据中的股票(=停牌)沿用最近一次已知市值(停牌期间必然不变),
-    零重复点查, 复牌/新上市当日由全市场数据自动刷新(见 market_data 缓存机制)。
+    零重复点查, 复牌/新上市当日由全市场数据自动刷新(见 market_data 缓存机制);
+    valuation_out 场景另在编排最开始启动财务/分红预热线程(与三池预取及逐日计算全程并行,
+    接口限流独立), 指标阶段 join 命中缓存、末日市值直接复用逐日循环已拉的缓存零新增请求。
     timings key: trade_cal / prefetch(三池并行总时长) / daily_fetch / mv_prefetch / ex_prefetch / accumulate / mv_resolve / compute / trading_days
     """
     if not tree.root.children:
@@ -1573,6 +1639,19 @@ def rank_range_chain(
         raise ValueError(f"区间内没有交易日: {start_str} ~ {end_str}")
     _notify(6.0, f"区间内共 {len(trading_days)} 个交易日")
     _check_cancel()
+
+    # 财务/分红后台预热(仅 valuation_out 场景): 以**区间末交易日**为时点, 与三池预取及逐日
+    # 链式计算全程并行(接口限流独立); 指标阶段 join 命中。末日市值由逐日循环的 daily_basic
+    # 缓存直接命中, 财务指标零重复拉取
+    fina_thread: threading.Thread | None = None
+    fina_wall: dict[str, float] | None = None
+    dividend_thread: threading.Thread | None = None
+    div_exc: list[Exception] | None = None
+    if valuation_out is not None:
+        last_day_dt = datetime.strptime(trading_days[-1], "%Y%m%d")
+        fina_thread, fina_wall, dividend_thread, div_exc = start_metric_prefetch(
+            market_data, last_day_dt, set(tree.all_member_codes), cancel_check=cancel_check
+        )
 
     # 行情/市值/除息**三池并行**预取(Tushare 每接口限额互相独立, 各自 7.5/s 节流, 接口间不互相等待):
     # 进度按份额加权合并(行情 20% + 市值 18% + 除息 18%, 完成度单调 => 合并进度单调),
@@ -1766,6 +1845,28 @@ def rank_range_chain(
         )
 
     levels = {series: tuple(_make_rank(series, lv) for lv in ("1", "2", "3")) for series in series_names}
+
+    # 区间末交易日时点财务指标全套(仅 valuation_out 场景): 与单日榜同一公共编排(键结构/降级/
+    # 末段取消兜底一致), 进度刻度 97.0~97.9(不越过 98"计算完成"段)
+    if valuation_out is not None:
+        _notify(97.0, "计算区间末财务指标")
+        valuation_out.update(
+            compute_fin_metric_suite(
+                tree,
+                market_data,
+                last_day_dt,
+                timings=timings,
+                cancel_check=cancel_check,
+                fina_thread=fina_thread,
+                fina_wall=fina_wall,
+                dividend_thread=dividend_thread,
+                div_exc=div_exc,
+                # 链式版 _notify 为 2 参(无阶段名), 套件按单日榜 3 参调用——包一层丢弃阶段名
+                notify=lambda pct, message, _phase: _notify(pct, message),
+                progress_base=97.0,
+                progress_step=0.08,
+            )
+        )
 
     if detail is not None:
         last_day_str = trading_days[-1]
