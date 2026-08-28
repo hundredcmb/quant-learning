@@ -47,6 +47,11 @@ from typing import Callable
 
 import pandas as pd
 
+try:
+    from .dividend_data import DividendHistory, compute_dividend_dps
+except ImportError:  # 直接运行本文件时
+    from dividend_data import DividendHistory, compute_dividend_dps
+
 logger = logging.getLogger("shenwan_industry.market_data")
 
 # 进度回调: (0~100 的百分比, 阶段说明)
@@ -193,6 +198,8 @@ class MarketDataProvider:
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
         self._rate_slots: dict[str, list] = {}  # 接口名 -> [锁, 下一请求开始时刻]; 每接口独立 7.5/s 节流
+        self._dividend_history: DividendHistory | None = None  # 分红事件持久缓存(惰性单例, 文件落盘)
+        self._div_dps_cache: dict[datetime, tuple[dict[str, float], dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM估算DPS, 静态DPS, 统计)——股息率双口径
 
     def _acquire_rate_slot(self, api_name: str) -> None:
         """按**接口独立**的请求开始速率节制: 每接口开始时刻按 MAX_DAILY_FETCH_RATE 平摊
@@ -1266,6 +1273,30 @@ class MarketDataProvider:
 
         self._equity_cache[date] = (equity_map, stats)
         return equity_map, stats
+
+    @property
+    def dividend_history(self) -> DividendHistory:
+        """分红事件持久缓存单例(惰性创建): 首刷/增量经 ensure_refresh(榜单池宇宙), 读取经 events()
+
+        缓存文件 data/dividend_history.json 跨进程复用; 刷新走 dividend 接口独立节流锁,
+        与行情/财务三池可并行(见 run_daily_ranking 的分红外预热线程)
+        """
+        if self._dividend_history is None:
+            self._dividend_history = DividendHistory(self)
+        return self._dividend_history
+
+    def get_ts_code_to_dividend_dps(
+        self, date: datetime
+    ) -> tuple[dict[str, float], dict[str, float], dict[str, int]]:
+        """获取各股票股息率分子 DPS(元/股, 总额法÷当前总股本) 双口径: (est_map, static_map, stats)
+
+        委托 dividend_data.compute_dividend_dps(规则栈/单位/兜底见其 docstring 与
+        docs/financial_indicators.md 第 7 节): est=TTM估算值(Web 默认, 进行中财年宣告优先/
+        外推补位)、static=静态(最近完整分红年度); 键缺失=无数据, 0.0=齐备零分红(是数值)。
+        结果按计算日缓存; 依赖分红缓存已刷新(run_daily_ranking 的分红外预热线程保证)与
+        fina 窗口/归母TTM 已预热(与 PE 同批, 零新增请求)
+        """
+        return compute_dividend_dps(self, date)
 
     def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表

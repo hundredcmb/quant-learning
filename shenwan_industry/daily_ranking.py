@@ -58,12 +58,16 @@ if __name__ == "__main__":
         (l1_rank_list_twr, l2_rank_list_twr, l3_rank_list_twr), timings, valuation = run_daily_ranking(
             tree, provider, rank_date
         )
-    # CLI 只打印默认口径(归母-TTM)的 PE/净利润同比列; 其余三口径(归母-动态/扣非-TTM/扣非-动态)
-    # 已在 run_daily_ranking 内一次算出(valuation 键 pe_{basis}/growth_{basis}), 供 Web 下拉切换
+    # CLI 只打印默认口径(归母-TTM)的 PE/净利润同比列与默认口径(TTM估算值)的股息率列;
+    # 其余口径已在 run_daily_ranking 内一次算出(valuation 键 pe_{basis}/growth_{basis}/
+    # roe_waa_{basis}/div_yield), 供 Web 下拉切换
     pe_data = valuation[f"pe_{DEFAULT_PROFIT_BASIS}"]
     pb_data = valuation["pb"]
     growth_data = valuation[f"growth_{DEFAULT_PROFIT_BASIS}"]
     roe_data = valuation[f"roe_waa_{DEFAULT_PROFIT_BASIS}"]
+    div_data = valuation.get("div_yield") or {}
+    div_levels = (div_data.get("value") or {}).get("est", {})  # 默认口径 = TTM估算值
+    div_stats = div_data.get("stats") or {}
     pe_free = pe_data["free"]
     pe_total = pe_data["total"]
     pe_stats = pe_data["stats"]
@@ -90,7 +94,8 @@ if __name__ == "__main__":
                           ("净利润同比(归母-动态)聚合计算", timings.get("growth_dynamic_compute", 0.0)),
                           ("净利润同比(扣非-TTM)聚合计算", timings.get("growth_deduct_compute", 0.0)),
                           ("净利润同比(扣非-动态)聚合计算", timings.get("growth_deduct_dynamic_compute", 0.0)),
-                          ("ROE(加权平均, 四口径一次)聚合计算", timings.get("roe_compute", 0.0))]),
+                          ("ROE(加权平均, 四口径一次)聚合计算", timings.get("roe_compute", 0.0)),
+                          ("股息率(双口径一次)聚合计算", timings.get("div_yield_compute", 0.0))]),
             ("排行计算", [
                 ("等权计算(两种口径)", timings["equal_compute"] + timings.get("equal_tr_compute", 0.0)),
                 ("停牌市值回退", timings["float_fallback"] + timings.get("total_fallback", 0.0) + timings.get("total_tr_fallback", 0.0)),
@@ -134,6 +139,16 @@ if __name__ == "__main__":
             f"无基期 {growth_stats.get('stocks_no_base', 0)} 只, "
             f"池内无数据 {growth_stats.get('pool_no_value', 0)} 只"
         )
+    if div_stats:
+        print(
+            f"股息率(TTM估算值)统计: 缓存 {div_stats.get('stocks_total', 0)} 只, "
+            f"静态有值 {div_stats.get('stocks_static', 0)} 只(其中零分红 {div_stats.get('stocks_static_zero', 0)} 只、"
+            f"7/31 推定 {div_stats.get('stocks_static_fallback', 0)} 只), "
+            f"估算有值 {div_stats.get('stocks_est', 0)} 只(其中零分红 {div_stats.get('stocks_est_zero', 0)} 只、"
+            f"实绩接管 {div_stats.get('stocks_est_realized', 0)} 只), "
+            f"无锚 {div_stats.get('stocks_no_anchor', 0)} 只, 无锚年利润 {div_stats.get('stocks_no_profit', 0)} 只, "
+            f"池内无数据 {div_stats.get('pool_no_value', 0)} 只, 无市值/股本 {div_stats.get('pool_no_mv', 0)} 只"
+        )
 
     rank_results = [(), (l1_rank_list_ew, l1_rank_list_ewtr, l1_rank_list_fw, l1_rank_list_fr, l1_rank_list_tw, l1_rank_list_twr), (l2_rank_list_ew, l2_rank_list_ewtr, l2_rank_list_fw, l2_rank_list_fr, l2_rank_list_tw, l2_rank_list_twr), (l3_rank_list_ew, l3_rank_list_ewtr, l3_rank_list_fw, l3_rank_list_fr, l3_rank_list_tw, l3_rank_list_twr)]
 
@@ -146,8 +161,9 @@ if __name__ == "__main__":
         pb_total_for_level = pb_total.get(str(industry_level), {})
         roe_for_level = roe_levels.get(str(industry_level), {})
         growth_for_level = growth_levels.get(str(industry_level), {})
+        div_for_level = div_levels.get(str(industry_level), {})
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE|净利润同比|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE|股息率(TTM估算)|净利润同比|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:
@@ -195,6 +211,12 @@ if __name__ == "__main__":
                     return value
                 return f"{'+' if value >= 0 else ''}{value:.2f}%"
 
+            def _fmt_div(metric_for_level: dict[str, float], code: str) -> str:
+                # 股息率: 两位小数%不带+号, 键缺失"—"; 值 0.00% = 齐备零分红(是事实数值)
+                if code not in metric_for_level:
+                    return "—"
+                return f"{metric_for_level[code]:.2f}%"
+
             print(f"{'+' if index_pct_chg_tw >= 0 else ''}{index_pct_chg_tw:.2f}%|" +
                   f"{'+' if index_pct_chg_twr >= 0 else ''}{index_pct_chg_twr:.2f}%|" +
                   f"{'+' if index_pct_chg >= 0 else ''}{index_pct_chg:.2f}%|" +
@@ -206,6 +228,7 @@ if __name__ == "__main__":
                   f"{_fmt_metric(pb_free_for_level, index_ts_code, '资不抵债')}|" +
                   f"{_fmt_metric(pb_total_for_level, index_ts_code, '资不抵债')}|" +
                   f"{_fmt_roe(roe_for_level, index_ts_code)}|" +
+                  f"{_fmt_div(div_for_level, index_ts_code)}|" +
                   f"{_fmt_growth(growth_for_level, index_ts_code)}|" +
                   f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{stock_count}",
                   [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_ts_code].constituent_stocks])

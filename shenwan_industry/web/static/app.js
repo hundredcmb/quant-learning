@@ -15,6 +15,7 @@ const state = {
   level: 1,
   profitBasis: "attr_ttm", // 净利润口径: attr_ttm=归母-TTM(默认) / attr_dynamic=归母-动态 / deduct_ttm=扣非-TTM / deduct_dynamic=扣非-动态, 后端一次算四口径、此处仅切换显示(列头固定"PE"/"净利润同比")
   roeAlgo: "waa", // ROE算法: waa=加权平均(当前唯一档), 字段名带算法段 roe_waa_{basis}, ROE 分子随"净利润口径"联动
+  divBasis: "est", // 股息率口径: est=TTM估算值(默认) / static=静态, 字段 div_{basis}
   jobId: null,
   pollTimer: null,
   result: null,
@@ -220,6 +221,16 @@ function bindEvents() {
     }
   });
 
+  $("#div-basis").addEventListener("change", (event) => {
+    state.divBasis = event.target.value;
+    if (state.result) {
+      renderMainTable();
+    }
+    if (!$("#sub-panel").classList.contains("hidden")) {
+      renderSubTable();
+    }
+  });
+
   $("#query-btn").addEventListener("click", submit);
   $("#cancel-btn").addEventListener("click", cancelTask);
   $("#config-btn").addEventListener("click", openConfigPanel);
@@ -255,9 +266,10 @@ function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
   $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
-  // 净利润口径/ROE算法仅单日榜有估值列, 区间榜隐藏两下拉
+  // 净利润口径/ROE算法/股息率口径仅单日榜有估值列, 区间榜隐藏三个下拉
   $("#profit-basis-field").classList.toggle("hidden", !isDaily);
   $("#roe-algo-field").classList.toggle("hidden", !isDaily);
+  $("#div-basis-field").classList.toggle("hidden", !isDaily);
 }
 
 function submit() {
@@ -430,6 +442,7 @@ function renderMainTable() {
     pb: pbField ? row[pbField] : undefined,
     growth: row[`profit_growth_${state.profitBasis}`], // 净利润同比随"净利润口径"下拉切换
     roe: row[`roe_${state.roeAlgo}_${state.profitBasis}`], // ROE 随"ROE算法"+"净利润口径"两下拉切换
+    div: row[`div_${state.divBasis}`], // 股息率随"股息率口径"下拉切换
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -466,6 +479,7 @@ function renderMainTable() {
       <td>${formatMetric(row.pe, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
       <td>${formatRoe(row.roe)}</td>
+      <td>${formatDividend(row.div)}</td>
       <td class="${growthClass(row.growth)}">${formatGrowth(row.growth)}</td>
       <td>${countHtml}</td>
     `;
@@ -557,7 +571,8 @@ function renderSubTable() {
   const peKey = `pe_${state.profitBasis}`;
   const growthKey = `profit_growth_${state.profitBasis}`;
   const roeKey = `roe_${state.roeAlgo}_${state.profitBasis}`;
-  const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey], growth: row[growthKey], roe: row[roeKey] }));
+  const divKey = `div_${state.divBasis}`;
+  const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey], growth: row[growthKey], roe: row[roeKey], div: row[divKey] }));
   sortRows(rows, state.subSort);
   updateSortArrows("#sub-table", state.subSort);
 
@@ -578,6 +593,7 @@ function renderSubTable() {
       <td>${formatMetric(row.pe, "亏损")}</td>
       <td>${formatMetric(row.pb, "资不抵债")}</td>
       <td>${formatRoe(row.roe)}</td>
+      <td>${formatDividend(row.div)}</td>
       <td class="${growthClass(row.growth)}">${formatGrowth(row.growth)}</td>
     `;
     tbody.appendChild(tr);
@@ -931,8 +947,8 @@ function sortRows(rows, sortState) {
       aValue = growthSortValue(aValue);
       bValue = growthSortValue(bValue);
     }
-    if (key === "roe") {
-      // ROE 列: 子表后端对无数据股票下发 null(主表为键缺失 undefined)——null 归一为
+    if (key === "roe" || key === "div") {
+      // ROE/股息率列: 子表后端对无数据股票下发 null(主表为键缺失 undefined)——null 归一为
       // undefined 走恒置底分支, 否则 null 落入"按最大值"分支、降序时"—"会置顶
       if (aValue == null) {
         aValue = undefined;
@@ -1030,6 +1046,15 @@ function formatRoe(value) {
     return "亏损";
   }
   return `${number.toFixed(2)}%`;
+}
+
+function formatDividend(value) {
+  // 股息率: 两位小数%不带+号不着色 | "—"(键缺失=无数据/降级); 无 null 语义(无负值、无亏损类别)。
+  // 值 0.00% 是事实(齐备零分红), 与 "—"(未知) 严格区分(排序按数值, "—"经 sortRows 恒置底)
+  if (value === undefined || value === null || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  return `${Number(value).toFixed(2)}%`;
 }
 
 function formatGrowth(value) {

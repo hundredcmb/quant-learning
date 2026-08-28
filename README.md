@@ -76,13 +76,16 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 ```bash
 .venv/bin/python shenwan_industry/daily_ranking.py   # 单日涨幅榜（日期在文件内配置）
 .venv/bin/python shenwan_industry/range_ranking.py   # 区间涨幅榜（区间在文件内配置）
+.venv/bin/python -m shenwan_industry.dividend_cache             # 分红缓存增量刷新+体检（股息率列日常自动增量，无需手动跑）
+.venv/bin/python -m shenwan_industry.dividend_cache --full      # 强制全量重建分红缓存（首刷约12分钟）
+.venv/bin/python -m shenwan_industry.dividend_cache --check 600036.SH 600519.SH   # 抽查个股分红事件与双口径股息率
 ```
 
 CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出耗时分析与 API 调用次数。
 
 ## 5. 功能说明
 
-行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值，详见 `shenwan_industry/docs/financial_indicators.md`。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值；股息率用 `dividend` 接口每股全历史持久缓存（首刷约12分钟一次性，之后自动增量），财年锚定+总额法自算（官方 dv_ratio/dv_ttm 为滚动窗口口径不采用），双口径「TTM估算值（默认，进行中财年宣告优先/外推补位）/静态（最近完整分红年度）」，详见 `shenwan_industry/docs/financial_indicators.md` 第 7 节。
 
 ## 6. 十大股东席位分析（holders）
 

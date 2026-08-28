@@ -81,6 +81,13 @@
               <option value="waa" selected>加权平均ROE</option>
             </select>
           </label>
+          <label class="field" id="div-basis-field">
+            <span>股息率口径</span>
+            <select id="div-basis">
+              <option value="est" selected>TTM估算值</option>
+              <option value="static">静态</option>
+            </select>
+          </label>
         </div>
       </div>
     </section>
@@ -122,6 +129,7 @@
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
               <th data-sort="roe">ROE</th>
+              <th data-sort="div">股息率</th>
               <th data-sort="growth">净利润同比</th>
               <th data-sort="count">成分股数量</th>
             </tr>
@@ -157,6 +165,7 @@
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
               <th data-sort="roe">ROE</th>
+              <th data-sort="div">股息率</th>
               <th data-sort="growth">净利润同比</th>
             </tr>
           </thead>

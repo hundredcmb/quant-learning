@@ -4,6 +4,7 @@
 - daily_rank_equal_weight / daily_rank_float_weight: 单日榜 (逻辑与原 classification.py 一致, 未改动)
 - run_daily_ranking: 单日榜编排 (拉行情/市值 -> 等权 -> 加权), CLI 与 Web 共用
 - daily_roe: 单日榜行业 ROE(加权平均算法, 四口径整体法 Σ分子/Σ分母, 见 docs/financial_indicators.md 第 6 节)
+- daily_dividend_yield: 单日榜行业股息率(总额法 DPS 双口径整体法 Σ分红总额/Σ总市值, 见第 7 节)
 - rank_range: 区间累计涨幅榜, 支持 timings 参数记录各阶段耗时
 - print_timing: 入口脚本用的耗时输出工具 (API 调用计数由 MarketDataProvider 提供)
 
@@ -771,6 +772,108 @@ def daily_roe(
     return levels, {**stats, "pool_no_value": pool_no_value}
 
 
+def daily_dividend_yield(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, int]]:
+    """单日榜行业股息率(双口径一次算出): 返回 ({"est": levels, "static": levels}, stats)
+
+    levels[basis]["1"|"2"|"3"][index_code] = 股息率%(basis: "est"=TTM估算值/Web 默认,
+    "static"=静态); 行业**整体法** = Σ(每股DPS × 当前总股本) ÷ Σ(总市值) × 100——总额法下
+    DPS×总股本即该股分红总额, 等价 Σ(分红总额)÷Σ(总市值), 与子表每股口径(DPS/close)自洽。
+    与 PE/PB 不同**无 free/total 双市值维度**(股息率与加权方式无关, 等权模式也显示同一值)。
+    DPS 见 market_data.get_ts_code_to_dividend_dps(总额法/锚定/完整性三态/兜底规则);
+    DPS 键缺失(无数据)的股票剔除并计入 pool_no_value——**DPS=0(齐备零分红)是数值, 正常参与
+    合成**(非分红股摊薄行业股息率, 属语义本身); 总市值/总股本缺失剔除并计入 pool_no_mv。
+    stats: 数据层键(stocks_total/static/static_zero/static_fallback/est/est_zero/est_realized/
+    no_anchor/no_profit/no_share) 叠加 pool_no_value / pool_no_mv
+    """
+    if not tree.root.children:
+        raise RuntimeError("请先构建行业树结构")
+    if not tree.constituent_stock_to_l3_node:
+        raise RuntimeError("请先加载行业成分股")
+
+    date_str = date.strftime("%Y%m%d")
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    est_map, static_map, stats = market_data.get_ts_code_to_dividend_dps(date)
+    dps_maps = {"est": est_map, "static": static_map}
+    if timings is not None:
+        timings["fetch"] = time.perf_counter() - _t0
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    total_mv_map = market_data.get_ts_code_to_total_mv(date)  # 万元
+    share_map = market_data.get_ts_code_to_total_share(date)  # 万股
+    pct_map = market_data.get_ts_code_to_pct_chg(date)
+    stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
+    tree.filter_stock_pool(
+        stock_pool,
+        date,
+        date,
+        cancel_check=cancel_check,
+        restructure_excluded=market_data.get_restructure_excluded(date),
+    )
+
+    # 聚合容器: basis -> 层级键 -> index_code -> [Σ分红总额(万元), Σ总市值(万元), 数量]
+    agg: dict[str, dict[str, dict[str, list[float]]]] = {basis: {} for basis in dps_maps}
+    for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
+        for basis in agg:
+            agg[basis][level_key] = {
+                node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
+            }
+    level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
+
+    pool_no_value = 0
+    pool_no_mv = 0
+    for idx, ts_code in enumerate(stock_pool):
+        if cancel_check is not None and idx % 500 == 0:
+            cancel_check()
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
+        if not l3_node or not l2_node or not l1_node:
+            continue
+        total_mv = total_mv_map.get(ts_code)
+        share_wan = share_map.get(ts_code)
+        if total_mv is None or pd.isna(total_mv) or total_mv <= 0 or share_wan is None:
+            pool_no_mv += 1
+            continue
+        has_any_basis = False
+        for basis, dps_map in dps_maps.items():
+            dps = dps_map.get(ts_code)
+            if dps is None:
+                continue  # 各口径覆盖互不连坐
+            has_any_basis = True
+            dividend_wan = dps * share_wan  # 元/股 × 万股 = 万元(总额法下即该股分红总额)
+            for l_node in (l3_node, l2_node, l1_node):
+                entry = agg[basis][level_key_map[l_node.level]][l_node.index_code]
+                entry[0] += dividend_wan
+                entry[1] += total_mv
+                entry[2] += 1
+        if not has_any_basis:
+            pool_no_value += 1
+
+    levels: dict[str, dict[str, dict[str, float]]] = {}
+    for basis in dps_maps:
+        levels[basis] = {"1": {}, "2": {}, "3": {}}
+        for level_key, per_node in agg[basis].items():
+            for code, (sum_div, sum_mv, count) in per_node.items():
+                if count == 0:
+                    continue  # 无参与股票不记键位, 前端显示 "—"
+                levels[basis][level_key][code] = sum_div / sum_mv * 100.0
+    if timings is not None:
+        timings["compute"] = time.perf_counter() - _t0
+
+    if pool_no_value or pool_no_mv:
+        logger.warning(
+            f"{date_str} 股息率剔除 {pool_no_value} 只(池内无 DPS 数据) 、{pool_no_mv} 只(无总市值/总股本), 不计入行业合成"
+        )
+    return levels, {**stats, "pool_no_value": pool_no_value, "pool_no_mv": pool_no_mv}
+
+
 def run_daily_ranking(
     tree: ShenWanIndustryTree,
     market_data: MarketDataProvider,
@@ -801,8 +904,12 @@ def run_daily_ranking(
     随"净利润口径"下拉切换, 键缺失=无数据/降级); **"roe_waa_{basis}" 为 {"value":
     {"1"|"2"|"3": {index_code: ROE%}}, "stats": {...}}**(ROE 加权平均算法四口径一次算出
     (daily_roe), 无市值维度、等权模式也显示、随"净利润口径"下拉切换, 键缺失=无数据/降级/
-    无参与股票); None=亏损/资不抵债(仅 PE/PB)、键缺失=无数据/降级;
-    口径见 daily_valuation_metric / daily_pe / daily_pb / daily_profit_growth / daily_roe;
+    无参与股票); **"div_yield" 为 {"value": {"est"|"static": {"1"|"2"|"3": {index_code:
+    股息率%}}}, "stats": {...}}**(股息率双口径一次算出(daily_dividend_yield), est=TTM估算值
+    [Web 默认]/static=静态, 无 free/total 双市值维度、等权模式也显示、随"股息率口径"下拉
+    切换, 键缺失=无数据/降级/无参与股票); None=亏损/资不抵债(仅 PE/PB)、键缺失=无数据/降级;
+    口径见 daily_valuation_metric / daily_pe / daily_pb / daily_profit_growth / daily_roe /
+    daily_dividend_yield;
     财务接口失败时
     任一指标降级为空数据(告警不中断, 涨幅榜不受影响)。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
@@ -812,7 +919,7 @@ def run_daily_ranking(
     total_tr_resolve / fina_fetch(fina+balancesheet+express 三池并行总墙时, 含增长基期串行补拉) /
     pe_compute / pe_dynamic_compute / pe_deduct_compute / pe_deduct_dynamic_compute / pb_compute /
     growth_compute / growth_dynamic_compute / growth_deduct_compute / growth_deduct_dynamic_compute /
-    roe_compute(ROE 四口径一次)
+    roe_compute(ROE 四口径一次) / div_yield_compute(股息率双口径一次)
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -838,6 +945,25 @@ def run_daily_ranking(
 
     fina_thread = threading.Thread(target=_warm_fina, daemon=True)
     fina_thread.start()
+
+    # 分红缓存后台刷新: 与财务三池**同时**启动(dividend 接口限流独立), 供股息率列使用;
+    # 首次运行需全市场逐股首刷(约 5400 请求、7.5次/秒档 ~12 分钟, 一次性), 日常为增量
+    # 探测(双通道逐日 + 受影响股票重拉, 秒级~分钟级); 刷新异常存入列表、在股息率阶段
+    # join 处重抛(走该列降级路径; JobCancelled 经后续 cancel_check 兜底取消)
+    div_exc: list[Exception] = []
+
+    def _warm_dividend() -> None:
+        _w0 = time.perf_counter()
+        try:
+            action = market_data.dividend_history.ensure_refresh(
+                set(tree.all_member_codes), cancel_check=cancel_check
+            )
+            logger.info(f"分红缓存刷新: {action} ({time.perf_counter() - _w0:.1f}s)")
+        except Exception as err:  # noqa: BLE001 - 线程异常转存, join 处重抛
+            div_exc.append(err)
+
+    dividend_thread = threading.Thread(target=_warm_dividend, daemon=True)
+    dividend_thread.start()
 
     _notify(8.0, "拉取日线行情", "拉取日线行情")
     t0 = time.perf_counter()
@@ -1014,6 +1140,31 @@ def run_daily_ranking(
     timings["roe_compute"] = r_timings.get("compute", 0.0)
     for basis in PROFIT_BASES:
         valuation[f"roe_waa_{basis}"] = {"value": roe_levels.get(basis, {}), "stats": roe_stats}
+
+    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): 无 free/total
+    # 双市值维度(与加权方式无关, 等权模式也显示), Web"股息率口径"下拉切换; 数据=分红缓存
+    # (预热线程已刷新)+归母TTM(PE 同源, 已预热), 零新增接口类型; 失败时报错降级为空 levels
+    # (前端显示"—"); 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
+    # 经后续 cancel_check 兜底取消)
+    _notify(_growth_mode + 0.3, "计算行业股息率", "计算财务指标")
+    d_timings: dict[str, float] = {}
+    div_levels: dict[str, dict[str, dict[str, float]]] = {}
+    div_stats: dict[str, int] = {}
+    try:
+        fina_thread.join()
+        dividend_thread.join()
+        if div_exc:
+            raise div_exc[0]
+        if "fina_fetch" not in timings and "secs" in fina_wall:
+            timings["fina_fetch"] = fina_wall["secs"]
+        div_levels, div_stats = daily_dividend_yield(
+            tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
+        )
+    except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
+        logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
+        div_levels, div_stats = {}, {}
+    timings["div_yield_compute"] = d_timings.get("compute", 0.0)
+    valuation["div_yield"] = {"value": div_levels, "stats": div_stats}
 
     return (
         ew,

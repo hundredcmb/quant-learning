@@ -600,6 +600,26 @@ def _run_daily(
         for basis, pair_map in roe_pair_maps.items()
     }
 
+    # 个股股息率(双口径, 总额法 DPS ÷ 当日收盘价 × 100): DPS 命中分红缓存零请求;
+    # 前端随"股息率口径"下拉切换(est=TTM估算值[默认]/static=静态); 键缺失 = 无数据(显示"—"),
+    # 值 0.0 = 齐备零分红(是数值); 收盘价缺失/非正的股票无该列值。
+    # 与行业列一致失败降级为空(分红缓存刷新失败等不波及涨幅榜主结果)
+    stock_div: dict[str, dict[str, float]] = {"est": {}, "static": {}}
+    try:
+        est_dps, static_dps, _ = provider.get_ts_code_to_dividend_dps(rank_date)
+
+        def _dps_to_yield(dps_map: dict[str, float]) -> dict[str, float]:
+            result_map: dict[str, float] = {}
+            for ts_code, dps in dps_map.items():
+                close = close_map.get(ts_code)
+                if close is not None and close > 0:
+                    result_map[ts_code] = dps / close * 100.0
+            return result_map
+
+        stock_div = {"est": _dps_to_yield(est_dps), "static": _dps_to_yield(static_dps)}
+    except Exception as err:  # noqa: BLE001 - 股息率子表列降级
+        logger.warning(f"个股股息率 计算失败, 子表该列全'—': {err!r}")
+
     result = {
         "mode": "daily",
         "date": date_str,
@@ -626,6 +646,7 @@ def _run_daily(
             roe_maps={
                 basis: valuation[f"roe_waa_{basis}"]["value"] for basis in PROFIT_BASES
             },
+            dividend_levels=valuation["div_yield"]["value"],
         ),
     }
     context = {
@@ -641,6 +662,7 @@ def _run_daily(
         "stock_pb": stock_pb,
         "stock_growth": stock_growth,
         "stock_roe": stock_roe,
+        "stock_div": stock_div,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -730,6 +752,7 @@ def _build_levels(
     pb_total: dict[str, dict[str, float | None]] | None = None,
     growth_maps: dict[str, dict[str, dict[str, float | str]]] | None = None,
     roe_maps: dict[str, dict[str, dict[str, float]]] | None = None,
+    dividend_levels: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -800,6 +823,11 @@ def _build_levels(
             for basis, basis_value in (roe_maps or {}).items():
                 if basis_value:
                     row[f"roe_waa_{basis}"] = basis_value.get(level_name, {}).get(index_code)
+            # 股息率列仅单日榜携带(无市值维度, 双口径字段 div_est/div_static, 前端随
+            # "股息率口径"下拉切换): 数值%, 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            for basis, basis_value in (dividend_levels or {}).items():
+                if basis_value:
+                    row[f"div_{basis}"] = basis_value.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows
@@ -886,6 +914,9 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
                 row[f"profit_growth_{basis}"] = basis_growth.get(ts_code)
             for basis, basis_value in context["stock_roe"].items():
                 row[f"roe_waa_{basis}"] = basis_value.get(ts_code)
+            # 个股股息率(双口径, DPS/close): 键缺失 = 无数据, 值 0.0 = 齐备零分红
+            for basis, basis_div in context["stock_div"].items():
+                row[f"div_{basis}"] = basis_div.get(ts_code)
         rows.append(row)
     return rows
 
