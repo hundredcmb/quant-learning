@@ -63,6 +63,7 @@ if __name__ == "__main__":
     pe_data = valuation[f"pe_{DEFAULT_PROFIT_BASIS}"]
     pb_data = valuation["pb"]
     growth_data = valuation[f"growth_{DEFAULT_PROFIT_BASIS}"]
+    roe_data = valuation[f"roe_waa_{DEFAULT_PROFIT_BASIS}"]
     pe_free = pe_data["free"]
     pe_total = pe_data["total"]
     pe_stats = pe_data["stats"]
@@ -71,6 +72,8 @@ if __name__ == "__main__":
     pb_stats = pb_data["stats"]
     growth_levels = growth_data["value"]
     growth_stats = growth_data["stats"]
+    roe_levels = roe_data["value"]
+    roe_stats = roe_data["stats"]
 
     print_timing(
         [
@@ -86,7 +89,8 @@ if __name__ == "__main__":
                           ("净利润同比(归母-TTM)聚合计算", timings.get("growth_compute", 0.0)),
                           ("净利润同比(归母-动态)聚合计算", timings.get("growth_dynamic_compute", 0.0)),
                           ("净利润同比(扣非-TTM)聚合计算", timings.get("growth_deduct_compute", 0.0)),
-                          ("净利润同比(扣非-动态)聚合计算", timings.get("growth_deduct_dynamic_compute", 0.0))]),
+                          ("净利润同比(扣非-动态)聚合计算", timings.get("growth_deduct_dynamic_compute", 0.0)),
+                          ("ROE(加权平均, 四口径一次)聚合计算", timings.get("roe_compute", 0.0))]),
             ("排行计算", [
                 ("等权计算(两种口径)", timings["equal_compute"] + timings.get("equal_tr_compute", 0.0)),
                 ("停牌市值回退", timings["float_fallback"] + timings.get("total_fallback", 0.0) + timings.get("total_tr_fallback", 0.0)),
@@ -113,6 +117,15 @@ if __name__ == "__main__":
             f"有净资产 {pb_stats.get('stocks_with_equity', 0)} 只, "
             f"无净资产 {pb_stats.get('stocks_missing', 0)} 只"
         )
+    if roe_stats:
+        print(
+            f"ROE(加权平均, 归母-TTM)统计: 报告期 {roe_stats.get('periods', 0)} 期, "
+            f"有披露值 {roe_stats.get('stocks_with_roe', 0)} 只, "
+            f"无数据 {roe_stats.get('stocks_missing', 0)} 只, "
+            f"TTM分母三期齐全 {roe_stats.get('stocks_ttm_full', 0)} 只, "
+            f"TTM分母兜底 {roe_stats.get('stocks_ttm_fallback', 0)} 只, "
+            f"池内无数据 {roe_stats.get('pool_no_value', 0)} 只"
+        )
     if growth_stats:
         print(
             f"净利润同比(归母-TTM)统计: 参与 {growth_stats.get('stocks_pair', 0)} 只, "
@@ -131,9 +144,10 @@ if __name__ == "__main__":
         pe_total_for_level = pe_total.get(str(industry_level), {})
         pb_free_for_level = pb_free.get(str(industry_level), {})
         pb_total_for_level = pb_total.get(str(industry_level), {})
+        roe_for_level = roe_levels.get(str(industry_level), {})
         growth_for_level = growth_levels.get(str(industry_level), {})
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|净利润同比|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE|净利润同比|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:
@@ -164,6 +178,15 @@ if __name__ == "__main__":
                     return none_label
                 return f"{value:.2f}"
 
+            def _fmt_roe(metric_for_level: dict[str, float | None], code: str) -> str:
+                # ROE: 正数两位小数不带+/不着色, 负值显示"亏损"(排序仍按真实负值), 键缺失"—"
+                if code not in metric_for_level:
+                    return "—"
+                value = metric_for_level[code]
+                if value is None:
+                    return "—"
+                return "亏损" if value < 0 else f"{value:.2f}"
+
             def _fmt_growth(metric_for_level: dict[str, float | str], code: str) -> str:
                 if code not in metric_for_level:
                     return "—"
@@ -182,6 +205,7 @@ if __name__ == "__main__":
                   f"{_fmt_metric(pe_total_for_level, index_ts_code, '亏损')}|" +
                   f"{_fmt_metric(pb_free_for_level, index_ts_code, '资不抵债')}|" +
                   f"{_fmt_metric(pb_total_for_level, index_ts_code, '资不抵债')}|" +
+                  f"{_fmt_roe(roe_for_level, index_ts_code)}|" +
                   f"{_fmt_growth(growth_for_level, index_ts_code)}|" +
                   f"{tree.index_code_to_node[index_ts_code].industry_name_long}|{stock_count}",
                   [f"{tree.stock_basic[s]['name']}({s})" for s in tree.index_code_to_node[index_ts_code].constituent_stocks])

@@ -589,6 +589,17 @@ def _run_daily(
         for basis, pair_map in pair_maps.items()
     }
 
+    # 个股 ROE 四口径(与行业整体法同一分子/分母对, 个股层面直接作商; 披露值 roe_waa 锚定、
+    # 不接快报, 命中缓存零请求; 前端随"净利润口径"下拉切换、随"ROE算法"下拉选算法[当前仅加权])
+    roe_pair_maps, _ = provider.get_ts_code_to_roes(rank_date)
+    stock_roe: dict[str, dict[str, float]] = {
+        basis: {
+            ts_code: numerator / denominator * 100.0
+            for ts_code, (numerator, denominator) in pair_map.items()
+        }
+        for basis, pair_map in roe_pair_maps.items()
+    }
+
     result = {
         "mode": "daily",
         "date": date_str,
@@ -612,6 +623,9 @@ def _run_daily(
             growth_maps={
                 basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
             },
+            roe_maps={
+                basis: valuation[f"roe_waa_{basis}"]["value"] for basis in PROFIT_BASES
+            },
         ),
     }
     context = {
@@ -626,6 +640,7 @@ def _run_daily(
         "stock_pe": stock_pe,
         "stock_pb": stock_pb,
         "stock_growth": stock_growth,
+        "stock_roe": stock_roe,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -714,6 +729,7 @@ def _build_levels(
     pb_free: dict[str, dict[str, float | None]] | None = None,
     pb_total: dict[str, dict[str, float | None]] | None = None,
     growth_maps: dict[str, dict[str, dict[str, float | str]]] | None = None,
+    roe_maps: dict[str, dict[str, dict[str, float]]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -779,6 +795,11 @@ def _build_levels(
             for basis, basis_value in (growth_maps or {}).items():
                 if basis_value:
                     row[f"profit_growth_{basis}"] = basis_value.get(level_name, {}).get(index_code)
+            # ROE 列仅单日榜携带(无市值维度, 加权平均算法; "ROE算法"下拉当前仅一档, 字段名带
+            # 算法段 roe_waa_ 供将来扩展): 数值%, 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            for basis, basis_value in (roe_maps or {}).items():
+                if basis_value:
+                    row[f"roe_waa_{basis}"] = basis_value.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows
@@ -863,6 +884,8 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             row["pb"] = context["stock_pb"].get(ts_code)
             for basis, basis_growth in context["stock_growth"].items():
                 row[f"profit_growth_{basis}"] = basis_growth.get(ts_code)
+            for basis, basis_value in context["stock_roe"].items():
+                row[f"roe_waa_{basis}"] = basis_value.get(ts_code)
         rows.append(row)
     return rows
 

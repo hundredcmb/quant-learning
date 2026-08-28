@@ -3,6 +3,7 @@
 
 - daily_rank_equal_weight / daily_rank_float_weight: 单日榜 (逻辑与原 classification.py 一致, 未改动)
 - run_daily_ranking: 单日榜编排 (拉行情/市值 -> 等权 -> 加权), CLI 与 Web 共用
+- daily_roe: 单日榜行业 ROE(加权平均算法, 四口径整体法 Σ分子/Σ分母, 见 docs/financial_indicators.md 第 6 节)
 - rank_range: 区间累计涨幅榜, 支持 timings 参数记录各阶段耗时
 - print_timing: 入口脚本用的耗时输出工具 (API 调用计数由 MarketDataProvider 提供)
 
@@ -681,6 +682,95 @@ def daily_profit_growth(
     return levels, {**stats, "pool_no_value": pool_no_value}
 
 
+def daily_roe(
+    tree: ShenWanIndustryTree,
+    market_data: MarketDataProvider,
+    date: datetime,
+    timings: dict[str, float] | None = None,
+    cancel_check: CancelCheck | None = None,
+) -> tuple[dict[str, dict[str, dict[str, float]]], dict[str, int]]:
+    """单日榜行业 ROE(加权平均算法, 四口径一次算出): 返回 ({basis: levels}, stats)
+
+    levels: {basis: {"1"|"2"|"3": {index_code: ROE%}}}——行业**整体法** Σ分子/Σ分母×100
+    (与 PE 的 Σ市值/Σ股东值、净利润同比的 Σ当期/Σ基期同构; 分母 = 官方加权平均净资产 E_waa
+    或分段推导 E_TTM, 恒>0); **无市值维度**(纯基本面比值, 等权模式也显示, 不随加权方式切换)。
+    数据(每股分子/分母对)见 market_data.get_ts_code_to_roes——披露值 roe_waa 锚定、全链不接
+    业绩快报、roe_waa 缺失四口径全部降级; 键缺失 = 无参与股票(前端显示"—")。
+    stats: 数据层五键(periods/stocks_with_roe/stocks_missing/stocks_ttm_full/stocks_ttm_fallback)
+    叠加 pool_no_value(池内无 ROE 数据的股票数)
+    """
+    if not tree.root.children:
+        raise RuntimeError("请先构建行业树结构")
+    if not tree.constituent_stock_to_l3_node:
+        raise RuntimeError("请先加载行业成分股")
+
+    date_str = date.strftime("%Y%m%d")
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    pair_maps, stats = market_data.get_ts_code_to_roes(date)
+    if timings is not None:
+        timings["fetch"] = time.perf_counter() - _t0
+
+    if timings is not None:
+        _t0 = time.perf_counter()
+    pct_map = market_data.get_ts_code_to_pct_chg(date)
+    stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
+    tree.filter_stock_pool(
+        stock_pool,
+        date,
+        date,
+        cancel_check=cancel_check,
+        restructure_excluded=market_data.get_restructure_excluded(date),
+    )
+
+    # 聚合容器: basis -> 层级键 -> index_code -> [Σ分子, Σ分母, 数量]
+    agg: dict[str, dict[str, dict[str, list[float]]]] = {basis: {} for basis in pair_maps}
+    for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
+        for basis in agg:
+            agg[basis][level_key] = {
+                node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]
+            }
+    level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
+
+    pool_no_value = 0
+    for idx, ts_code in enumerate(stock_pool):
+        if cancel_check is not None and idx % 500 == 0:
+            cancel_check()
+        l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
+        if not l3_node or not l2_node or not l1_node:
+            continue
+        has_any_basis = False
+        for basis, pair_map in pair_maps.items():
+            pair = pair_map.get(ts_code)
+            if pair is None:
+                continue  # 各口径覆盖互不连坐(如扣非缺失仅缺扣非两档)
+            has_any_basis = True
+            numerator, denominator = pair
+            for l_node in (l3_node, l2_node, l1_node):
+                entry = agg[basis][level_key_map[l_node.level]][l_node.index_code]
+                entry[0] += numerator
+                entry[1] += denominator
+                entry[2] += 1
+        if not has_any_basis:
+            pool_no_value += 1
+
+    levels: dict[str, dict[str, dict[str, float]]] = {basis: {} for basis in agg}
+    for basis, per_level in agg.items():
+        levels[basis] = {"1": {}, "2": {}, "3": {}}
+        for level_key, per_node in per_level.items():
+            for code, (sum_num, sum_den, count) in per_node.items():
+                if count == 0:
+                    continue  # 无参与股票不记键位, 前端显示 "—"
+                levels[basis][level_key][code] = sum_num / sum_den * 100.0
+    if timings is not None:
+        timings["compute"] = time.perf_counter() - _t0
+
+    if pool_no_value:
+        logger.warning(f"{date_str} ROE 剔除 {pool_no_value} 只(池内无 ROE 数据, 多为 roe_waa 未披露), 不计入行业合成")
+    return levels, {**stats, "pool_no_value": pool_no_value}
+
+
 def run_daily_ranking(
     tree: ShenWanIndustryTree,
     market_data: MarketDataProvider,
@@ -697,7 +787,7 @@ def run_daily_ranking(
     dict[str, float],
     dict[str, Any],
 ]:
-    """单日榜编排: 拉行情/市值 -> 等权 -> 加权 -> PE/PB/净利润同比, 返回
+    """单日榜编排: 拉行情/市值 -> 等权 -> 加权 -> PE/PB/净利润同比/ROE, 返回
     (等权·官方价格式, 等权·分红再投资式, 自由流通·官方价格式, 自由流通·分红再投资式,
     总市值·官方价格式, 总市值·分红再投资式, timings, valuation)
 
@@ -708,8 +798,12 @@ def run_daily_ranking(
     (共享同一批财务数据与市值缓存, 动态与扣非口径仅本地重算零新增请求), 供 Web"净利润口径"
     下拉切换显示; **"growth_{basis}" 为 {"value": {"1"|"2"|"3": {index_code: 数值%|"扭亏"/"转亏"/
     "持续亏损"}}, "stats": {...}}**(净利润同比四口径一次算出, 无市值维度、等权模式也显示、
-    随"净利润口径"下拉切换, 键缺失=无数据/降级); None=亏损/资不抵债、键缺失=无数据/降级;
-    口径见 daily_valuation_metric / daily_pe / daily_pb / daily_profit_growth; 财务接口失败时
+    随"净利润口径"下拉切换, 键缺失=无数据/降级); **"roe_waa_{basis}" 为 {"value":
+    {"1"|"2"|"3": {index_code: ROE%}}, "stats": {...}}**(ROE 加权平均算法四口径一次算出
+    (daily_roe), 无市值维度、等权模式也显示、随"净利润口径"下拉切换, 键缺失=无数据/降级/
+    无参与股票); None=亏损/资不抵债(仅 PE/PB)、键缺失=无数据/降级;
+    口径见 daily_valuation_metric / daily_pe / daily_pb / daily_profit_growth / daily_roe;
+    财务接口失败时
     任一指标降级为空数据(告警不中断, 涨幅榜不受影响)。
     供入口脚本 daily_ranking.py 与 Web service._run_daily 共用, 避免两套编排漂移。
     timings key: daily_fetch / mv_fetch / equal_compute / equal_tr_compute / float_compute /
@@ -717,7 +811,8 @@ def run_daily_ranking(
     total_compute / total_fallback / total_resolve / total_tr_compute / total_tr_fallback /
     total_tr_resolve / fina_fetch(fina+balancesheet+express 三池并行总墙时, 含增长基期串行补拉) /
     pe_compute / pe_dynamic_compute / pe_deduct_compute / pe_deduct_dynamic_compute / pb_compute /
-    growth_compute / growth_dynamic_compute / growth_deduct_compute / growth_deduct_dynamic_compute
+    growth_compute / growth_dynamic_compute / growth_deduct_compute / growth_deduct_dynamic_compute /
+    roe_compute(ROE 四口径一次)
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
     """
     date_str = date.strftime("%Y%m%d")
@@ -897,6 +992,28 @@ def run_daily_ranking(
         timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
         valuation[f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
         _growth_mode += 0.3
+
+    # ROE(加权平均算法, 无市值维度)四口径一次算出: 随"净利润口径"下拉切换, "ROE算法"下拉当前仅
+    # 加权平均一档(valuation 键带算法段 "roe_waa_", 将来新增算法扩 "roe_dt_" 等不破坏现有键);
+    # 披露值 roe_waa 锚定、**全链不接业绩快报**(快报窗口内时效落后 PE/同比一档)、roe_waa 缺失
+    # 四口径全部降级; 失败时报错降级为空 levels(前端显示"—")
+    _notify(_growth_mode, "计算行业ROE(加权平均)", "计算财务指标")
+    r_timings: dict[str, float] = {}
+    roe_levels: dict[str, dict[str, dict[str, float]]] = {}
+    roe_stats: dict[str, int] = {}
+    try:
+        fina_thread.join()
+        if "fina_fetch" not in timings and "secs" in fina_wall:
+            timings["fina_fetch"] = fina_wall["secs"]
+        roe_levels, roe_stats = daily_roe(
+            tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
+        )
+    except Exception as err:
+        logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
+        roe_levels, roe_stats = {}, {}
+    timings["roe_compute"] = r_timings.get("compute", 0.0)
+    for basis in PROFIT_BASES:
+        valuation[f"roe_waa_{basis}"] = {"value": roe_levels.get(basis, {}), "stats": roe_stats}
 
     return (
         ew,

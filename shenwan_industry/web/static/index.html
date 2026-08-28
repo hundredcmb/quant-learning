@@ -75,6 +75,12 @@
               <option value="deduct_dynamic">扣非净利润-动态</option>
             </select>
           </label>
+          <label class="field" id="roe-algo-field">
+            <span>ROE算法</span>
+            <select id="roe-algo">
+              <option value="waa" selected>加权平均ROE</option>
+            </select>
+          </label>
         </div>
       </div>
     </section>
@@ -115,6 +121,7 @@
               <th data-sort="pct" id="main-pct-header">涨幅</th>
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
+              <th data-sort="roe">ROE</th>
               <th data-sort="growth">净利润同比</th>
               <th data-sort="count">成分股数量</th>
             </tr>
@@ -126,7 +133,7 @@
   </main>
 
   <div id="sub-panel" class="modal-mask hidden">
-    <div class="modal">
+    <div class="modal sub-modal">
       <div class="modal-header">
         <div>
           <h2 id="sub-title">成分股</h2>
@@ -149,6 +156,7 @@
               <th data-sort="free_mv">自由流通市值</th>
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
+              <th data-sort="roe">ROE</th>
               <th data-sort="growth">净利润同比</th>
             </tr>
           </thead>

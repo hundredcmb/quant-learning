@@ -21,6 +21,10 @@
   主窗口 D 视角审定值、停披超一年的股票回落基期窗口兜底, 零新增请求; 不用"动态(D)/动态(D-1年)"
   ——两时点最新期披露节奏可能错位引入失真, 见 docs/financial_indicators.md); 数值/四类显示判定在
   industry_ranking.classify_profit_growth
+- ROE(加权平均算法): get_ts_code_to_roes 一次算出四口径(归母/扣非 × TTM/动态)——数据锚为
+  fina_indicator_vip 同批带回的披露值 roe_waa(9 号规则加权 ROE), 官方加权分母由 E_waa=归母×100/roe_waa
+  反推, TTM 分母分段推导 E_TTM=E_waa(A)+(E_waa(P)-E_waa(S))/2; 全链不接业绩快报, roe_waa 缺失
+  四口径全部降级"--"(详见 get_ts_code_to_roes 与 docs/financial_indicators.md 第 6 节)
 - 停牌自由流通市值回退: 新策略逐股[近730天 → 全窗回到上市日](limit 阶梯控 payload、以 free 为准),
   缺失股票由 resolve_missing_mv 线程池并发补齐; legacy 730 天逻辑保留(见 resolve_* 与
   shenwan_industry/AGENTS.md 第 5 节)
@@ -170,7 +174,7 @@ class MarketDataProvider:
         self.ts_code_to_total_mv_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总市值数据
         self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 随 daily_basic 同请求缓存; PB 已改用 balancesheet_vip 权威净资产, 股本不再参与 PB)
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
-        self._fina_period_cache: dict[str, dict[str, tuple[str, float, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 归母净利润, 每股净资产bps)
+        self._fina_period_cache: dict[str, dict[str, tuple[str, float, float, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 归母净利润, 每股净资产bps, 加权ROE%)
         self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
         self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM扣非, 统计)——扣非-TTM 口径
         self._ttm_attr_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM归母, 统计)——归母-TTM 口径(PE 默认)
@@ -178,6 +182,7 @@ class MarketDataProvider:
         self._dynamic_profit_cache: dict[tuple[datetime, str], tuple[dict[str, float], dict[str, int]]] = {}  # (计算日, 口径) -> (动态净利润, 统计)——动态口径 PE 分子
         self._growth_pair_cache: dict[tuple[datetime, str], tuple[dict[str, tuple[float, float]], dict[str, int]]] = {}  # (计算日, 口径) -> (TTM增长对, 统计)——净利润同比 TTM 口径
         self._dynamic_growth_pair_cache: dict[tuple[datetime, str], tuple[dict[str, tuple[float, float]], dict[str, int]]] = {}  # (计算日, 口径) -> (动态增长对, 统计)——净利润同比动态口径
+        self._roe_cache: dict[datetime, tuple[dict[str, dict[str, tuple[float, float]]], dict[str, int]]] = {}  # 计算日 -> ({basis: {ts_code: (分子, 分母)}}, 统计)——ROE 四口径(加权平均算法)
         self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)——旧 PB 口径(保留对照)
         self._bs_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 归母普通股股东权益元)
         self._bs_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期归母普通股股东权益)
@@ -373,20 +378,26 @@ class MarketDataProvider:
             return f"{year}1031"
         return f"{year + 1}0430"
 
-    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float, float]]:
-        """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, 扣非净利润, 归母净利润, bps)}
+    def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float, float, float]]:
+        """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, 扣非净利润, 归母净利润, bps, roe_waa)}
 
-        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,extra_item,bps'),
+        接口: fina_indicator_vip(period, fields='ts_code,ann_date,end_date,profit_dedt,extra_item,bps,roe_waa'),
         offset 分页循环(单批 FINA_FETCH_BATCH=9999, 实测整批可回全量 6870~8808 行)。
         **归母净利润为行内合成**: 利润表归母口径的绝对额不在本接口(n_income_attr_p 实测静默忽略),
         由恒等式 `归母 = profit_dedt + extra_item`(扣非 + 非经常性损益, 后者自带正负号)得出;
         全市场实测(20250630): 可对齐 6243 只、99.8% 相对误差 <0.1%(P95≈2e-16 浮点精度级)、
         有扣非时 extra_item 缺失率 0%。**只在同一行内两字段齐备时合成**, 否则该行归母=None,
         不跨行拼接(dedt/extra 各自最后非空来自不同行时宁缺)。
+        **roe_waa(2026-08-28 新增)= 按证监会《编报规则第 9 号》披露的加权平均净资产收益率(%)**,
+        报告期年初至今累计口径, 公司自行按 9 号公式(期初净资产+NP/2+按月加权的增发/回购/分红等
+        事件项)计算——实测同请求带回零新增请求、20250630 全市场覆盖 98.2%; 供 ROE 指标
+        (get_ts_code_to_roes)作披露锚与官方加权分母反推; 扣非口径加权 ROE 无披露字段
+        (roe_kf 等实测被静默忽略)。
         **数据质量(实测)**: 同一股票同一报告期会返回**多行**(更新行与 NaN 行, 20250630 有 1598 只重复、
-        416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: 扣非/归母/bps 各有自身
-        的最后非空(实测 601318 20260630 两行 bps 均有效但值不同 56.7800/56.7751, 差 0.009%,
-        不能整行丢弃); ann_date 取最后一条的非空值。
+        416 行 profit_dedt 为 NaN)——去重为**字段级**独立取最后一条非空值: 扣非/归母/bps/roe_waa 各有
+        自身的最后非空(实测 601318 20260630 两行 bps 均有效但值不同 56.7800/56.7751, 差 0.009%,
+        不能整行丢弃; 实测 600036 20250630 一行 roe_waa 有效一行全 NaN, 字段级去重天然适配);
+        ann_date 取最后一条的非空值。
         接口对 fields 中不存在的字段名**静默忽略**(不报错), 因此必须用 getattr 防御取值。
         利润字段均为**年初至今累计值**(实测 601318 五期 302.59/735.71/1420.57/1437.73/239.12 亿),
         不是单季值——TTM 换算见 get_ts_code_to_ttm_attr_profit(归母)/get_ts_code_to_ttm_deducted_profit(扣非);
@@ -395,13 +406,13 @@ class MarketDataProvider:
         cached = self._fina_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, tuple[str, float, float, float]] = {}
+        rows: dict[str, tuple[str, float, float, float, float]] = {}
         offset = 0
         while True:
             self._acquire_rate_slot("fina_indicator_vip")
             df = self.pro.fina_indicator_vip(
                 period=period,
-                fields="ts_code,ann_date,end_date,profit_dedt,extra_item,bps",
+                fields="ts_code,ann_date,end_date,profit_dedt,extra_item,bps,roe_waa",
                 offset=offset,
                 limit=FINA_FETCH_BATCH,
             )
@@ -413,17 +424,21 @@ class MarketDataProvider:
                 deduct = getattr(row, "profit_dedt", None)
                 extra = getattr(row, "extra_item", None)
                 bps = getattr(row, "bps", None)
+                roe_waa = getattr(row, "roe_waa", None)
                 # 行内合成归母: 两字段同一行齐备才算出(恒等式见 docstring), 缺一即 None 不猜
                 if deduct is not None and not pd.isna(deduct) and extra is not None and not pd.isna(extra):
                     attr_profit = float(deduct) + float(extra)
                 else:
                     attr_profit = None
-                ann_old, deduct_old, attr_old, bps_old = rows.get(ts_code, ("", None, None, None))
+                ann_old, deduct_old, attr_old, bps_old, roe_old = rows.get(
+                    ts_code, ("", None, None, None, None)
+                )
                 rows[ts_code] = (
                     ann_date or ann_old,
                     float(deduct) if deduct is not None and not pd.isna(deduct) else deduct_old,
                     attr_profit if attr_profit is not None else attr_old,
                     float(bps) if bps is not None and not pd.isna(bps) else bps_old,
+                    float(roe_waa) if roe_waa is not None and not pd.isna(roe_waa) else roe_old,
                 )
             offset += len(df)
             if len(df) < FINA_FETCH_BATCH:
@@ -572,8 +587,8 @@ class MarketDataProvider:
                     periods.append(period)
         return periods
 
-    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float]]]]:
-        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps)}})
+    def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float, float]]]]:
+        """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps, roe_waa)}})
 
         窗口 = _fina_period_window([D-24个月, D] 季末, 最多 8 期), 覆盖 PE TTM 式所需"最新期+去年年报+去年同季";
         PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
@@ -582,7 +597,7 @@ class MarketDataProvider:
         if cached is not None:
             return cached
         periods = self._fina_period_window(date)
-        per_stock: dict[str, dict[str, tuple[str, float, float]]] = {}
+        per_stock: dict[str, dict[str, tuple[str, float, float, float, float]]] = {}
         # 各期并发拉取: 请求开始时刻由节流器统一错开(7.5/s), 网络往返并行重叠(同 fetch_daily_batch 模式);
         # executor.map 结果按输入顺序产出(zip 回期号), 遇错即抛(与串行时一致, 由调用方降级处理), 不静默吞掉
         with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
@@ -753,7 +768,7 @@ class MarketDataProvider:
 
     def _merge_attr_with_express(
         self,
-        fina_per_stock: dict[str, dict[str, tuple[str, float, float, float]]],
+        fina_per_stock: dict[str, dict[str, tuple[str, float, float, float, float]]],
         express_per_stock: dict[str, dict[str, list[tuple[str, float]]]],
         date_str: str,
     ) -> tuple[dict[str, dict[str, tuple[str, float | None]]], int]:
@@ -1055,6 +1070,110 @@ class MarketDataProvider:
 
         self._dynamic_profit_cache[(date, profit_kind)] = (dyn_map, stats)
         return dyn_map, stats
+
+    def get_ts_code_to_roes(self, date: datetime) -> tuple[dict[str, dict[str, float]], dict[str, int]]:
+        """获取各股票截至 date 的 **ROE(%)**——加权平均算法、四口径一次算出: (roes, stats)
+
+        算法 = **加权平均 ROE**(证监会《编报规则第 9 号》, 与财报披露口径一致), 2026-08-28 新增:
+        - **数据锚 = 披露值 `roe_waa`**(fina_indicator_vip 同批带回零新增请求, 覆盖/反推对照实测
+          见 docs/financial_indicators.md 第 6 节): 报告期"年初至今累计"的加权平均净资产收益率,
+          公司按 9 号公式自行计算(期初净资产 + NP/2 + 按月加权的增发/回购/分红等全部事件项)。
+          **自建逐笔事件项在本项目数据源下不可拼全**(增发无接口、OCI 无逐笔数据), 故以披露值为
+          唯一权威锚; **官方加权分母反推: E_waa(期) = 该期归母累计(纯财报行内合成, 与披露值同口径)
+          × 100 ÷ roe_waa**——归母与 roe_waa 同号时商恒正, 反推结果 ≤ 0 视为数据异常按无数据处理。
+        - **全链不接业绩快报**: express 无 roe_waa, 分子若用快报利润会与披露分母期次错配
+          (宁缺勿错配)——快报窗口内(年报季 1~4 月)ROE 时效停在上一报告期, 落后 PE/净利润同比一档。
+        四口径(键与 industry_ranking.PROFIT_BASES 一致, 修改口径表需同步):
+        - `attr_dynamic`  = roe_waa(最新期) × 4/k —— 分子分母同乘年化系数, 即"动态净利润 ÷ 官方加权分母"
+        - `deduct_dynamic` = (扣非累计 × 4/k) ÷ E_waa(最新期) × 100 —— 扣非无披露值, 分子自建÷官方分母
+        - `attr_ttm`  = **纯财报归母 TTM**(不经 express 合并, 与披露分母同源同期) ÷ E_TTM × 100
+        - `deduct_ttm` = 扣非 TTM ÷ E_TTM × 100
+        **TTM 分母 E_TTM 分段推导**(复用 TTM 标准式同一组报告期 P=最新期/A=去年年报/S=去年同季):
+            E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
+        TTM 区间[去年同期末, 最新期末] = 去年下半年 + 今年年初至今; 全年披露 E_waa(A) 时间加权覆盖
+        12 个月、上半年披露 E_waa(S) 覆盖前 6 个月, 展开得 E_下半年 = 2×E_waa(A) − E_waa(S), 与
+        E_waa(P)(今年年初至今)按 6/6 等权合并即得上式; 最新期为年报时 S=A 自动退化为上下半年平均
+        (E_waa(P)+E_waa(A))/2。A 或 S 的 roe_waa 缺失(如新股/披露不全)时**兜底 E_TTM = E_waa(P)**
+        (与 TTM 分子 4/k 年化兜底天然配套); 推导结果 ≤ 0 时同样兜底。
+        PIT 与 TTM 同规则(最新期 ann_date ≤ D); **roe_waa 缺失或反推异常的股票四口径全部无数据**
+        (显示"—", 不做自建简化式兜底——实测简单平均分母 (E0+E1)/2 与官方加权分母偏差中位 2.9%、
+        P90 12.8%、约 1/3 公司 >5%, 披露值缺失时宁缺勿猜)。
+        roes: {basis: {ts_code: (分子元, 分母元)}}——**分子/分母对**(与 TTM 增长对同构):
+        个股 ROE% = 分子/分母×100, 行业整体法 ROE% = Σ分子/Σ分母×100(见 industry_ranking.daily_roe);
+        分子=所选口径净利润(动态=最新期累计×4/k, TTM=纯财报 TTM), 分母=E_waa(P)或 E_TTM, 恒>0。
+        stats: {"periods", "stocks_with_roe"(最新期 roe_waa+归母齐备), "stocks_missing",
+        "stocks_ttm_full"(E_TTM 三期齐全), "stocks_ttm_fallback"(E_TTM 兜底)} 全市场口径。
+        结果按计算日缓存(_roe_cache); 聚合见 industry_ranking.daily_roe
+        """
+        cached = self._roe_cache.get(date)
+        if cached is not None:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        periods, per_stock = self._fina_per_stock(date)
+        ttm_attr_pure, _ = self._compute_ttm(per_stock, 2, date_str, len(periods))  # 纯财报归母 TTM(不经 express)
+        ttm_deduct, _ = self.get_ts_code_to_ttm_deducted_profit(date)
+
+        bases = ("attr_ttm", "attr_dynamic", "deduct_ttm", "deduct_dynamic")  # 与 industry_ranking.PROFIT_BASES 同步
+        roes: dict[str, dict[str, tuple[float, float]]] = {basis: {} for basis in bases}
+        stats = {
+            "periods": len(periods),
+            "stocks_with_roe": 0,
+            "stocks_missing": 0,
+            "stocks_ttm_full": 0,
+            "stocks_ttm_fallback": 0,
+        }
+
+        def _e_waa_of(record: tuple[str, float, float, float, float] | None) -> float | None:
+            """反推该期官方加权平均净资产(元) = 归母×100/roe_waa; 数据不齐/结果异常返回 None"""
+            if record is None:
+                return None
+            attr_profit, roe_waa = record[2], record[4]
+            if attr_profit is None or roe_waa is None or roe_waa == 0.0:
+                return None
+            equity = attr_profit * 100.0 / roe_waa
+            return equity if equity > 0 else None  # 归母与 roe_waa 同号时恒正, ≤0 视为异常丢弃
+
+        for ts_code, by_period in per_stock.items():
+            latest = self._fina_latest_period(by_period, date_str)
+            if latest is None:
+                stats["stocks_missing"] += 1
+                continue
+            record_p = by_period[latest]
+            e_p = _e_waa_of(record_p)
+            if e_p is None:
+                stats["stocks_missing"] += 1  # roe_waa 缺失/反推异常: 四口径全无(宁缺勿猜)
+                continue
+            stats["stocks_with_roe"] += 1
+
+            # 动态两口径: 分子 = 最新期累计 × 4/k, 分母 = 官方加权分母 E_waa(P)
+            quarters = self._period_quarters(latest)
+            attr_p = record_p[2]  # 归母累计(与披露 roe_waa 同口径, _e_waa_of 已保证非空)
+            roes["attr_dynamic"][ts_code] = (attr_p * (4.0 / quarters), e_p)
+            deduct_p = record_p[1]
+            if deduct_p is not None:
+                roes["deduct_dynamic"][ts_code] = (deduct_p * (4.0 / quarters), e_p)
+
+            # TTM 分母: 分段推导(三期披露值齐全时), 否则兜底最新期加权平均
+            prev_year = str(int(latest[:4]) - 1)
+            e_a = _e_waa_of(by_period.get(f"{prev_year}1231"))
+            e_s = _e_waa_of(by_period.get(f"{prev_year}{latest[4:]}"))
+            if e_a is not None and e_s is not None and e_a + (e_p - e_s) / 2.0 > 0:
+                e_ttm = e_a + (e_p - e_s) / 2.0
+                stats["stocks_ttm_full"] += 1
+            else:
+                e_ttm = e_p  # 新股/缺去年年报或去年同季 roe_waa/推导非正: 兜底
+                stats["stocks_ttm_fallback"] += 1
+
+            attr_ttm = ttm_attr_pure.get(ts_code)
+            if attr_ttm is not None:
+                roes["attr_ttm"][ts_code] = (attr_ttm, e_ttm)
+            deduct_ttm = ttm_deduct.get(ts_code)
+            if deduct_ttm is not None:
+                roes["deduct_ttm"][ts_code] = (deduct_ttm, e_ttm)
+
+        self._roe_cache[date] = (roes, stats)
+        return roes, stats
 
     def get_ts_code_to_ttm_deducted_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
         """获取各股票截至 date 的**扣非净利润** TTM(元)——PE 扣非-TTM 口径(Web"净利润口径"下拉切换)
