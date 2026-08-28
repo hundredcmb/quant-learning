@@ -205,11 +205,14 @@ if __name__ == "__main__":
                 return "亏损" if value < 0 else f"{value:.2f}"
 
             def _fmt_growth(metric_for_level: dict[str, float | str], code: str) -> str:
+                # 净利润同比: 数值分档(≥100% 用 +x.xx倍、否则带符号两位小数%) | 类别文本 | "—"
                 if code not in metric_for_level:
                     return "—"
                 value = metric_for_level[code]
                 if isinstance(value, str):
                     return value
+                if value >= 100:
+                    return f"+{value / 100:.2f}倍"
                 return f"{'+' if value >= 0 else ''}{value:.2f}%"
 
             def _fmt_div(metric_for_level: dict[str, float], code: str) -> str:

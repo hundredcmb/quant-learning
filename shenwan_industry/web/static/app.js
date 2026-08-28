@@ -1055,7 +1055,8 @@ function formatDividend(value) {
 }
 
 function formatGrowth(value) {
-  // 净利润同比: 数值%(带符号两位小数, 格式同"涨幅") | 类别文本 | "—"(键缺失=无数据/降级)
+  // 净利润同比: 数值分档显示(≥100% 用 +x.xx倍、否则带符号两位小数%) | 类别文本 | "—"(键缺失=无数据/降级);
+  // 排序仍按真实数值(growthSortValue), 此处仅显示格式
   if (value === "持续亏损" || value === "转亏" || value === "扭亏") {
     return value;
   }
@@ -1063,6 +1064,9 @@ function formatGrowth(value) {
     return "—";
   }
   const number = Number(value);
+  if (number >= 100) {
+    return `+${(number / 100).toFixed(2)}倍`;
+  }
   return `${number > 0 ? "+" : ""}${number.toFixed(2)}%`;
 }
 
