@@ -336,7 +336,9 @@ E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
   同财年多事件直接加总——场景1/2 天然免疫（新旧年度分红各归各的财年，永不混合）
 - **总额法**：每股口径 = Σ(每股派现 × 该事件基准股本 `base_share`) ÷ 当前总股本——与官方
   dv_ratio 稀释口径一致，正确处理财年内送转（10送10 后每股基数不可直接相加）；
-  `base_share` 缺失的事件按"基准股本=当前总股本"退化
+  `base_share` 缺失的事件按"基准股本=当前总股本"退化；**当前总股本缺失**（整个上市期无
+  daily_basic，极罕见）时退化为每股金额直接相加（忽略 `base_share`——"每股×万股"与每股
+  口径混合无意义）且 payout 估算无定义跳过、由实绩兜底，主表合成侧该股本就因无股本剔除
 - **事件级级联：实施 > 预案 > 无**。只认实施与预案两态（`div_proc` 实际 5 态：预案/股东大会
   通过/实施/停止实施/预披露，文档只写 2 种）；实施行按 (ex_date, 金额) 去重（茅台 FY2024 双
   实施行实测）、预案取最新公告日（同日双预案=股本调整行）；**停止实施行作废公告日更早的
@@ -404,11 +406,16 @@ E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
   更正（known_issues 第 39/40 条同款）
 - **分红缓存**：`dividend` 接口按 ts_code 全历史拉取落盘（`data/dividend_history.json`），首刷
   约 5400 请求 ~12 分钟（一次性）；增量 = ann_date（**日历日**，公告可有周六如神华 20250830）+
-  ex_date（交易日）双通道逐日探测、受影响股票整股重拉——双通道必要性：部分实施行 ann_date
-  被回填为预案日仅扫公告日会漏
+  ex_date（交易日）双通道逐日探测、受影响股票整股重拉，并**顺带补拉缓存未覆盖的新成分**（新上市
+  股票首份分红公告前不在任何探测通道内）；**`--full` = 忽略现有缓存全量重拉**（只补缺失会把
+  last_refresh 推到今天而跳过增量窗口、旧股票新事件漏拉）；探测与单股拉取均 offset/limit 分页
+  循环（实测单日峰值约 3000 行单页即回，分页为极端披露日防御）——双通道必要性：部分实施行
+  ann_date 被回填为预案日仅扫公告日会漏
 - stats（CLI 统计行）：`stocks_total` / `stocks_static`（静态有值）/ `stocks_static_zero` /
   `stocks_static_fallback`（7/31 推定）/ `stocks_est` / `stocks_est_zero` / `stocks_est_realized`
-  （实绩接管）/ `stocks_no_anchor` / `stocks_no_profit` / `pool_no_value` / `pool_no_mv`
+  （实绩接管）/ `stocks_est_payout_capped`（payout 封顶）/ `stocks_est_zero_profit`
+  （TTM≤0 按 0 利润估算）/ `stocks_no_anchor` / `stocks_no_profit` / `stocks_no_share`
+  （当前股本缺失，DPS 按每股退化）/ `pool_no_value` / `pool_no_mv`
 - 分红缓存刷新或财务接口失败整体降级（该列全"—"），涨幅榜不受影响
 
 ## 8. 防御与展示约定

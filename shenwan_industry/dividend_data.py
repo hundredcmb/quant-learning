@@ -4,9 +4,12 @@
 - 持久缓存: dividend 接口按 ts_code 拉每股**全历史**分红事件(实施+预案+停止实施), 落盘
   data/dividend_history.json(首刷全市场约 5400 请求、7.5次/秒档约 12 分钟, 一次性); 增量 =
   last_refresh 之后的 ann_date(按**日历日**逐日——公告日常有周六, 如神华 20250830 预案)
-  + ex_date(按交易日)双通道探测, 受影响股票整股重拉。双通道必要性: 部分实施行的 ann_date
-  被数据商回填为预案日(茅台 FY2024 实施行 ann_date=20250403=预案日), 仅扫 ann_date 会漏
-  新落地实施; 仅扫 ex_date 会漏纯预案公告
+  + ex_date(按交易日)双通道探测, 受影响股票整股重拉, 并顺带补拉缓存未覆盖的新成分股票
+  (新上市股票首份分红公告前不在任何探测通道内)。force_full/--full = 忽略现有缓存全量
+  重拉(只补缺失会把 last_refresh 推到今天而跳过增量窗口)。双通道必要性: 部分实施行的
+  ann_date 被数据商回填为预案日(茅台 FY2024 实施行 ann_date=20250403=预案日), 仅扫
+  ann_date 会漏新落地实施; 仅扫 ex_date 会漏纯预案公告; 探测与单股拉取均 offset/limit
+  分页循环(实测单日峰值约 3000 行单页即回, 分页为极端披露日防御)
 - 股息率(列名"股息率")双口径, 规则栈与接口实测见 docs/financial_indicators.md 第 7 节:
   * **财年归属**: 每个分红事件按 end_date(分红年度)年份前缀归属财年——1231=年度、0630=中期、
     0930=三季度、0331=一季度、非报告期日期=特别分红(计入财年总额、不触发锚切换);
@@ -72,6 +75,9 @@ FALLBACK_MONTH_DAY = "0731"
 EST_PAYOUT_CAP = 0.95
 # 首刷/增量重拉的并发线程数(请求开始时刻由节流器统一平摊, 与 fina 池同模式)
 FILL_WORKERS = 8
+# dividend 接口单页行数(单股全历史与按日探测共用, offset/limit 分页循环直到不足一页):
+# 实测单日公告峰值约 3000 行(全阶段口径, 缓存三态约占 30%)单页即回, 分页仅防御极端披露日
+DIV_FETCH_BATCH = 9999
 # dividend 接口单股拉取字段: base_share 为实施/预案行基准股本(万股, 总额法分子必需;
 # 非默认显示字段须显式请求)
 DIV_FIELDS = "end_date,ann_date,div_proc,ex_date,cash_div,cash_div_tax,base_share"
@@ -169,10 +175,19 @@ class DividendHistory:
         CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _fetch_one(self, ts_code: str) -> list[dict]:
-        """单股全历史拉取(1 次请求): dividend(ts_code=) 返回该股全部阶段全历史"""
-        self._provider._acquire_rate_slot("dividend")
-        df = self._provider.pro.dividend(ts_code=ts_code, fields=DIV_FIELDS)
-        return _normalize_rows(df)
+        """单股全历史拉取(offset/limit 分页循环, 单股通常 1 页): dividend(ts_code=) 返回
+        该股全部阶段全历史"""
+        events: list[dict] = []
+        offset = 0
+        while True:
+            self._provider._acquire_rate_slot("dividend")
+            df = self._provider.pro.dividend(
+                ts_code=ts_code, fields=DIV_FIELDS, offset=offset, limit=DIV_FETCH_BATCH
+            )
+            events.extend(_normalize_rows(df))
+            if df is None or len(df) < DIV_FETCH_BATCH:
+                return events
+            offset += len(df)
 
     def _pull_stocks(self, ts_codes: list[str], today_str: str, cancel_check=None) -> int:
         """线程池并发整股重拉(请求速率由节流器平摊), 返回更新只数; 单股失败即抛不静默丢股"""
@@ -197,12 +212,18 @@ class DividendHistory:
     def ensure_refresh(
         self, universe: set[str], force_full: bool = False, cancel_check=None
     ) -> str:
-        """确保缓存新鲜: 首刷(全池逐股)或增量(ann_date+ex_date 双通道逐日探测), 幂等加锁
+        """确保缓存新鲜, 幂等加锁: 全量重建 / 增量(双通道探测 + 新成分补拉)
 
         universe: 需要覆盖的股票集合(榜单股票池 = 树全部成分, 首刷逐股拉取的对象);
-        探测发现的集合外股票忽略(不进榜单不浪费缓存)。force_full=True 强制全量重建
-        (缓存损坏/结构升级时用)。cancel_check: 协作式取消回调(首刷约 12 分钟, 逐股/逐日
-        检查点抛出)。返回动作说明("first-fill N只"/"incremental ..."/"up-to-date")。
+        探测发现的集合外股票忽略(不进榜单不浪费缓存)。cancel_check: 协作式取消回调
+        (首刷约 12 分钟, 逐股/逐日检查点抛出)。返回动作说明("full-rebuild N只"/
+        "incremental ..."/"up-to-date")。
+        - **全量重建**(force_full / 无缓存 / last_refresh 缺失无法定增量窗口):
+          **重拉 universe 全部股票**(已有数据整股覆盖, --full 语义=忽略现有缓存;
+          若只补缺失会把 last_refresh 推到 today 而**跳过增量窗口**, 旧股票新事件漏拉)
+        - **增量**: (last_refresh, today] 窗口——ann_date 按日历日逐日(公告可有周六),
+          ex_date 按交易日逐日(除权除息日必为交易日); 探测受影响股票 ∪ **缓存未覆盖的
+          新成分**(新上市股票首份分红公告前不在任何探测通道内, 主动补齐覆盖)
         异常语义: 失败向上抛(由调用方告警降级), 此时内存中已更新的股票保留、last_refresh
         不推进(下次运行重试同窗口)
         """
@@ -210,17 +231,15 @@ class DividendHistory:
             self._load()
             universe = {c for c in universe if c}
             today_str = datetime.now().strftime("%Y%m%d")
-            if force_full or not self._stocks:
-                missing = sorted(universe - set(self._stocks))
-                if missing:
-                    self._pull_stocks(missing, today_str, cancel_check)
+            if force_full or not self._stocks or not self.last_refresh:
+                self._stocks = {}  # 忽略现有缓存(手动 --full/结构升级/窗口起点缺失)
+                if universe:
+                    self._pull_stocks(sorted(universe), today_str, cancel_check)
                 self.last_refresh = today_str
                 self._save()
-                return f"first-fill {len(missing)}只"
-            if self.last_refresh and self.last_refresh >= today_str:
+                return f"full-rebuild {len(universe)}只"
+            if self.last_refresh >= today_str:
                 return "up-to-date"
-            # 增量: (last_refresh, today] 窗口——ann_date 按日历日逐日(公告可有周六),
-            # ex_date 按交易日逐日(除权除息日必为交易日)
             start_day = (
                 datetime.strptime(self.last_refresh, "%Y%m%d") + timedelta(days=1)
             ).strftime("%Y%m%d")
@@ -235,16 +254,27 @@ class DividendHistory:
                 for day in days:
                     if cancel_check is not None:
                         cancel_check()
-                    self._provider._acquire_rate_slot("dividend")
-                    df = self._provider.pro.dividend(**{probe_key: day})
-                    if df is not None and not df.empty:
-                        affected.update(df["ts_code"].astype(str))
-            hit = sorted(affected & universe)
+                    offset = 0
+                    while True:
+                        self._provider._acquire_rate_slot("dividend")
+                        df = self._provider.pro.dividend(
+                            **{probe_key: day, "offset": offset, "limit": DIV_FETCH_BATCH}
+                        )
+                        if df is not None and not df.empty:
+                            affected.update(df["ts_code"].astype(str))
+                        if df is None or len(df) < DIV_FETCH_BATCH:
+                            break
+                        offset += len(df)
+            new_codes = universe - set(self._stocks)
+            hit = sorted((affected & universe) | new_codes)
             if hit:
                 self._pull_stocks(hit, today_str, cancel_check)
             self.last_refresh = today_str
             self._save()
-            return f"incremental 窗口{start_day}~{today_str} 探测{len(ann_days) + len(ex_days)}次 重拉{len(hit)}只"
+            return (
+                f"incremental 窗口{start_day}~{today_str} 探测{len(ann_days) + len(ex_days)}次 "
+                f"重拉{len(hit)}只(其中新成分{len(new_codes)}只)"
+            )
 
     def events(self, ts_code: str) -> list[dict]:
         """读取单股事件列表(未加载时惰性加载)"""
@@ -313,22 +343,21 @@ def _group_by_fy(events: list[dict]) -> dict[int, dict[str, dict]]:
     return fy
 
 
-def _slot_total_wan(slot: dict, share_now_wan: float) -> float:
-    """单事件级联总额(万元) = 级联每股金额 × 基准股本(base_share 缺失按当前总股本退化)
+def _slot_pick(slot: dict) -> tuple[float, float | None] | None:
+    """级联选中行(实施 > 预案 > 无): 返回 (每股金额, 基准股本万股); None = 无可用行
 
-    级联: 实施 > 预案 > 无; 停止实施行作废公告日 ≤ 其公告日的预案(之后重报的预案有效);
-    实施行金额缺失视为 0(实施即权威, 不回退预案)
+    实施即权威(金额缺失视为 0, 不回退预案); 停止实施行作废公告日 ≤ 其公告日的预案
+    (之后重报的预案有效)
     """
     impl = slot["impl"]
     if impl is not None:
-        amt = impl["amt"] if impl["amt"] is not None else 0.0
-        return amt * (impl["base"] if impl["base"] else share_now_wan)
+        return (impl["amt"] if impl["amt"] is not None else 0.0), impl["base"]
     plan = slot["plan"]
     if plan is not None and plan["amt"] is not None:
         stopped = slot["stopped"]
         if stopped is None or plan["ann"] > stopped:
-            return float(plan["amt"]) * (plan["base"] if plan["base"] else share_now_wan)
-    return 0.0
+            return float(plan["amt"]), plan["base"]
+    return None
 
 
 def _slot_has_row(slot: dict) -> bool:
@@ -337,18 +366,22 @@ def _slot_has_row(slot: dict) -> bool:
 
 
 def _analyze(events: list[dict], date_str: str, share_now_wan: float | None) -> dict:
-    """锚/完整性/目标财年分析 + 相关财年分红总额(万元, 总额法), 纯函数
+    """锚/完整性/目标财年分析 + 相关财年分红总额, 纯函数
 
     锚走查(自当前财年降序): 首个"年度事件有行"的财年即锚(预案先行); 无行财年在
     T ≥ 7/31(Y+1) 时推定年度分红为零(齐备, 走查同样终止)。走查终止于第一个齐备财年,
     其上一自然财年即估算目标(年度分红尚未宣告)。
-    share_now_wan: 当前总股本(万股, 总额法折算), None 时总额按每股直接相加退化。
+    share_now_wan: 当前总股本(万股)。有值时财年总额 = Σ(级联每股金额×基准股本, base
+    缺失按当前总股本退化), 单位万元; **None 时退化为 Σ 级联每股金额直接相加**(纯每股
+    口径——有 base 的事件"每股×万股"与每股金额量纲混合无意义, 只在忽略 base 时自洽),
+    单位元/股, 调用方直接作 DPS 使用。
 
     返回键:
       anchor / anchor_ready / anchor_via_fallback
-      static_total_wan   锚财年分红总额(万元); 无锚 None
+      static_total_wan   锚财年分红总额(万元; share 缺失时为每股退化额); 无锚 None
       target             估算目标财年
-      target_total_wan   目标财年当前级联总额(万元, 年度未宣告时=中期等部分值)
+      target_total_wan   目标财年当前级联总额(万元, 年度未宣告时=中期等部分值;
+                         share 缺失时为每股退化额)
     """
     pit_events = _pitt_filter(events, date_str)
     fy = _group_by_fy(pit_events)
@@ -373,7 +406,14 @@ def _analyze(events: list[dict], date_str: str, share_now_wan: float | None) -> 
     def _fy_total_wan(year: int) -> float:
         total = 0.0
         for slot in (fy.get(year) or {}).values():
-            total += _slot_total_wan(slot, share_now_wan if share_now_wan else 1.0)
+            picked = _slot_pick(slot)
+            if picked is None:
+                continue
+            amt, base = picked
+            if share_now_wan:
+                total += amt * (base if base else share_now_wan)
+            else:
+                total += amt
         return total
 
     target = anchor + 1 if (anchor is not None and anchor < current_year) else current_year
@@ -404,8 +444,9 @@ def compute_dividend_dps(
     大亏)按 0 利润估算 → 0.00% 参与合成而非"—"**(分红率稳定假设下亏损期分红为零的正确推论);
     TTM 缺失(无财报新股)/锚年利润缺失或 ≤0 时估算无定义(交由实绩/无数据兜底)。
     目标财年实绩超过估算时用实绩(部分实绩防低估), 否则维持估算。
-    总额法分子: 事件级 每股派现×base_share(缺失按当前股本退化); 当前股本缺失的股票按
-    每股直接相加退化(share=1 万股折算恒等)。结果按计算日缓存。
+    总额法分子: 事件级 每股派现×base_share(缺失按当前股本退化); **当前股本缺失的股票
+    退化为每股金额直接相加(忽略 base_share——'每股×万股'与每股口径混合无意义, 且 payout
+    无定义跳过估算、由实绩兜底)**。结果按计算日缓存。
     """
     cached = provider._div_dps_cache.get(date)
     if cached is not None:
@@ -464,7 +505,9 @@ def compute_dividend_dps(
         if anchor is not None:
             if static_dps == 0.0:
                 estimate = 0.0  # 停发锚: 估算恒 0(不猜复分红, 复分红由预案级联接管)
-            else:
+            elif share_wan is not None:
+                # payout 需要真实总额(万元)÷当前股本折算——share 缺失时 _analyze 产出为
+                # 每股退化额, payout 无定义, 跳过估算(estimate=None 落实绩 target_dps 兜底)
                 annual_period = f"{anchor}1231"
                 record = fina_per_stock.get(ts_code, {}).get(annual_period)
                 profit = record[2] if record is not None else None
@@ -484,8 +527,8 @@ def compute_dividend_dps(
                         if payout > EST_PAYOUT_CAP:
                             payout = EST_PAYOUT_CAP
                             stats["stocks_est_payout_capped"] += 1
-                        estimate = _round6(payout * (ttm / 1e4) / share_wan) if share_wan else None
-                        if estimate is not None and estimate < 0:
+                        estimate = _round6(payout * (ttm / 1e4) / share_wan)
+                        if estimate < 0:
                             estimate = None
                 else:
                     stats["stocks_no_profit"] += 1

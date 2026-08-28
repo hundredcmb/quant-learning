@@ -1145,7 +1145,7 @@ def run_daily_ranking(
     # 双市值维度(与加权方式无关, 等权模式也显示), Web"股息率口径"下拉切换; 数据=分红缓存
     # (预热线程已刷新)+归母TTM(PE 同源, 已预热), 零新增接口类型; 失败时报错降级为空 levels
     # (前端显示"—"); 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
-    # 经后续 cancel_check 兜底取消)
+    # 经下方 return 前的末段兜底补抛)
     _notify(_growth_mode + 0.3, "计算行业股息率", "计算财务指标")
     d_timings: dict[str, float] = {}
     div_levels: dict[str, dict[str, dict[str, float]]] = {}
@@ -1165,6 +1165,12 @@ def run_daily_ranking(
         div_levels, div_stats = {}, {}
     timings["div_yield_compute"] = d_timings.get("compute", 0.0)
     valuation["div_yield"] = {"value": div_levels, "stats": div_stats}
+
+    # 末段取消兜底: 股息率是编排最后计算阶段, 上方降级 except 会连取消信号(JobCancelled)
+    # 一并吞掉——任务将误报 success; 返回前再查一次 cancel_check 把取消状态补抛给上层
+    # (真实异常降级不受影响: 未请求取消时此处零副作用)
+    if cancel_check is not None:
+        cancel_check()
 
     return (
         ew,
