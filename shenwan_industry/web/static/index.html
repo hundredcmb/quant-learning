@@ -69,8 +69,10 @@
           <label class="field" id="profit-basis-field">
             <span>净利润口径</span>
             <select id="profit-basis">
-              <option value="attr" selected>归母净利润</option>
-              <option value="deduct">扣非净利润</option>
+              <option value="attr_ttm" selected>归母净利润-TTM</option>
+              <option value="attr_dynamic">归母净利润-动态</option>
+              <option value="deduct_ttm">扣非净利润-TTM</option>
+              <option value="deduct_dynamic">扣非净利润-动态</option>
             </select>
           </label>
         </div>
@@ -111,9 +113,9 @@
               <th data-sort="index_code">行业代码</th>
               <th data-sort="industry_name" id="main-name-header">行业名称</th>
               <th data-sort="pct" id="main-pct-header">涨幅</th>
-              <th data-sort="pe">PE-TTM</th>
+              <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
-              <th data-sort="growth">净利润TTM同比</th>
+              <th data-sort="growth">净利润同比</th>
               <th data-sort="count">成分股数量</th>
             </tr>
           </thead>
@@ -145,9 +147,9 @@
               <th data-sort="amount">成交额</th>
               <th data-sort="total_mv">总市值</th>
               <th data-sort="free_mv">自由流通市值</th>
-              <th data-sort="pe">PE-TTM</th>
+              <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
-              <th data-sort="growth">净利润TTM同比</th>
+              <th data-sort="growth">净利润同比</th>
             </tr>
           </thead>
           <tbody id="sub-tbody"></tbody>

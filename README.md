@@ -4,7 +4,7 @@ A 股复盘与投研辅助项目（量化为辅），主要用于辅助每日复
 
 本项目是一套可直接运行的 Python 脚本，分为**互不依赖的两部分**：
 
-- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业财务指标（**PE-TTM** 归母净利润（Web 可切换扣非口径）、**PB** 归母普通股股东权益，各自由流通 / 总市值两种合成口径、**净利润TTM同比**（Web 可切换扣非口径；扭亏/转亏/持续亏损类别化），计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
+- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 单日榜行业财务指标（**PE** 与**净利润同比**（净利润口径四选一：归母/扣非 × TTM/动态，Web 下拉切换、默认归母-TTM；同比扭亏/转亏/持续亏损类别化）、**PB** 归母普通股股东权益，PE/PB 各自由流通 / 总市值两种合成口径，计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
 - **十大股东席位关键词分析**（`holders/`）：A 股股票十大股东 + ETF 十大持有人（国家队、社保、险资等席位筛选，含持仓市值、变动对比与区间收益）。同样**不依赖 vnpy**，与申万行业分析共用 `.venv` 环境，token 也共用同一份配置
 - **vnpy 入门示例**（`vnpy_examples/`）：K 线入库、图表、指标、回测。**必须依赖 vnpy 客户端（veighna studio）环境**
 
@@ -46,7 +46,7 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 
 既没有已保存配置也不传 `--token` 时，holders 脚本会直接报错退出。
 
-> Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限；单日榜 PE-TTM/PB 另需 **VIP 接口 `fina_indicator_vip`**（需对应积分；积分不足时指标列显示"—"，涨幅榜不受影响，见 `shenwan_industry/docs/financial_indicators.md`）。
+> Tushare token 在 [tushare.pro](https://tushare.pro) 注册后获取，需开通 `stock_basic`、`daily`、`daily_basic`、`index_classify`、`index_member_all`、`sw_daily` 等接口权限；单日榜 PE/PB 另需 **VIP 接口 `fina_indicator_vip`**（需对应积分；积分不足时指标列显示"—"，涨幅榜不受影响，见 `shenwan_industry/docs/financial_indicators.md`）。
 
 ## 3. 启动 Web 服务
 
@@ -56,7 +56,7 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 
 浏览器访问 <http://127.0.0.1:9010/>，支持：
 
-- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级；单日榜含行业 PE-TTM 一列，随加权方式显示对应口径，等权为空）
+- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级；单日榜含行业 PE 一列，随加权方式显示对应口径、随"净利润口径"下拉切换归母/扣非 × TTM/动态四档，等权为空）
 - 行业成分股子表
 - 一级行业官方指数 K 线（成交额/成交量切换）
 - 任务进度条与取消
@@ -82,7 +82,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 ## 5. 功能说明
 
-行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE-TTM 用归母净利润（滚动 12 月、不足四期按 4/k 年化；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值，详见 `shenwan_industry/docs/financial_indicators.md`。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值，详见 `shenwan_industry/docs/financial_indicators.md`。
 
 ## 6. 十大股东席位分析（holders）
 

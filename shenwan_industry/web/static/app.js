@@ -13,7 +13,7 @@ const state = {
   mode: "daily",
   weight: "float_tr",
   level: 1,
-  profitBasis: "attr", // 净利润口径: attr=归母(默认) / deduct=扣非, 后端一次算两口径、此处仅切换显示(列头固定"PE-TTM")
+  profitBasis: "attr_ttm", // 净利润口径: attr_ttm=归母-TTM(默认) / attr_dynamic=归母-动态 / deduct_ttm=扣非-TTM / deduct_dynamic=扣非-动态, 后端一次算四口径、此处仅切换显示(列头固定"PE"/"净利润同比")
   jobId: null,
   pollTimer: null,
   result: null,
@@ -400,12 +400,14 @@ function renderMainTable() {
   const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
   const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
   // 财务指标单列随加权方式切换市值口径(free/total)、随"净利润口径"下拉切换利润口径
-  // (pe_ttm_*=归母 / pe_ttm_deducted_*=扣非, 后端两套字段一次全部返回): 等权无定义(undefined -> "—")
+  // (pe_{basis}_*=归母/扣非 × TTM/动态四套字段, 后端一次全部返回): 等权无定义(undefined -> "—")
   const peFields = {
-    attr: { total: "pe_ttm_total", total_tr: "pe_ttm_total", float: "pe_ttm_float", float_tr: "pe_ttm_float" },
-    deduct: { total: "pe_ttm_deducted_total", total_tr: "pe_ttm_deducted_total", float: "pe_ttm_deducted_float", float_tr: "pe_ttm_deducted_float" },
+    attr_ttm: { total: "pe_attr_ttm_total", total_tr: "pe_attr_ttm_total", float: "pe_attr_ttm_float", float_tr: "pe_attr_ttm_float" },
+    attr_dynamic: { total: "pe_attr_dynamic_total", total_tr: "pe_attr_dynamic_total", float: "pe_attr_dynamic_float", float_tr: "pe_attr_dynamic_float" },
+    deduct_ttm: { total: "pe_deduct_ttm_total", total_tr: "pe_deduct_ttm_total", float: "pe_deduct_ttm_float", float_tr: "pe_deduct_ttm_float" },
+    deduct_dynamic: { total: "pe_deduct_dynamic_total", total_tr: "pe_deduct_dynamic_total", float: "pe_deduct_dynamic_float", float_tr: "pe_deduct_dynamic_float" },
   };
-  const peField = (peFields[state.profitBasis] || peFields.attr)[state.weight] || null;
+  const peField = (peFields[state.profitBasis] || peFields.attr_ttm)[state.weight] || null;
   const pbField = { total: "pb_total", total_tr: "pb_total", float: "pb_float", float_tr: "pb_float" }[state.weight] || null;
   const rows = sourceRows.map((row, index) => ({
     ...row,
@@ -414,7 +416,7 @@ function renderMainTable() {
     count: row[countField],
     pe: peField ? row[peField] : undefined,
     pb: pbField ? row[pbField] : undefined,
-    growth: state.profitBasis === "deduct" ? row.profit_growth_deducted : row.profit_growth, // 净利润TTM同比随"净利润口径"下拉切换
+    growth: row[`profit_growth_${state.profitBasis}`], // 净利润同比随"净利润口径"下拉切换
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -537,9 +539,9 @@ function openSubPanel(indexCode, industryName) {
 }
 
 function renderSubTable() {
-  // PE/净利润TTM同比列随"净利润口径"下拉取值并合成为排序字段(与主表同法), 保证排序与显示同口径
-  const peKey = state.profitBasis === "deduct" ? "pe_ttm_deducted" : "pe_ttm";
-  const growthKey = state.profitBasis === "deduct" ? "profit_growth_deducted" : "profit_growth";
+  // PE/净利润同比列随"净利润口径"下拉取值并合成为排序字段(与主表同法), 保证排序与显示同口径
+  const peKey = `pe_${state.profitBasis}`;
+  const growthKey = `profit_growth_${state.profitBasis}`;
   const rows = state.subRows.map((row) => ({ ...row, pe: row[peKey], growth: row[growthKey] }));
   sortRows(rows, state.subSort);
   updateSortArrows("#sub-table", state.subSort);
@@ -909,7 +911,7 @@ function sortRows(rows, sortState) {
     let aValue = a[key];
     let bValue = b[key];
     if (key === "growth" || key === "profit_growth") {
-      // 净利润TTM同比列: 四级序(持续亏损<转亏<数值<扭亏), 类别文本映射为哨兵数值后参与比较
+      // 净利润同比列: 四级序(持续亏损<转亏<数值<扭亏), 类别文本映射为哨兵数值后参与比较
       aValue = growthSortValue(aValue);
       bValue = growthSortValue(bValue);
     }
@@ -992,7 +994,7 @@ function formatMetric(value, nullLabel) {
 }
 
 function formatGrowth(value) {
-  // 净利润TTM同比: 数值%(带符号两位小数, 格式同"涨幅") | 类别文本 | "—"(键缺失=无数据/降级)
+  // 净利润同比: 数值%(带符号两位小数, 格式同"涨幅") | 类别文本 | "—"(键缺失=无数据/降级)
   if (value === "持续亏损" || value === "转亏" || value === "扭亏") {
     return value;
   }
@@ -1093,7 +1095,7 @@ function pctClass(value) {
   }
   return "zero";
 }
-// 净利润TTM同比着色: 仅数值走红涨绿跌(同涨幅列), 类别文本("扭亏"/"转亏"/"持续亏损")与
+// 净利润同比着色: 仅数值走红涨绿跌(同涨幅列), 类别文本("扭亏"/"转亏"/"持续亏损")与
 // 无数据不着色——字符串经 pctClass 数值化为 NaN 自然落入 zero 中性类
 function growthClass(value) {
   return pctClass(value);

@@ -16,11 +16,11 @@ from tushare.pro.client import DataApi
 try:
     from .industry_tree import ShenWanIndustryTree
     from .market_data import MarketDataProvider
-    from .industry_ranking import run_daily_ranking, print_timing
+    from .industry_ranking import run_daily_ranking, print_timing, DEFAULT_PROFIT_BASIS
 except ImportError:
     from industry_tree import ShenWanIndustryTree
     from market_data import MarketDataProvider
-    from industry_ranking import run_daily_ranking, print_timing
+    from industry_ranking import run_daily_ranking, print_timing, DEFAULT_PROFIT_BASIS
 
 # token 配置在仓库根公共模块（与 holders 共享同一份 .quant-learning/settings.json）
 _REPO_ROOT = str(Path(__file__).resolve().parents[1])
@@ -58,9 +58,11 @@ if __name__ == "__main__":
         (l1_rank_list_twr, l2_rank_list_twr, l3_rank_list_twr), timings, valuation = run_daily_ranking(
             tree, provider, rank_date
         )
-    pe_data = valuation["pe"]
+    # CLI 只打印默认口径(归母-TTM)的 PE/净利润同比列; 其余三口径(归母-动态/扣非-TTM/扣非-动态)
+    # 已在 run_daily_ranking 内一次算出(valuation 键 pe_{basis}/growth_{basis}), 供 Web 下拉切换
+    pe_data = valuation[f"pe_{DEFAULT_PROFIT_BASIS}"]
     pb_data = valuation["pb"]
-    growth_data = valuation["growth"]
+    growth_data = valuation[f"growth_{DEFAULT_PROFIT_BASIS}"]
     pe_free = pe_data["free"]
     pe_total = pe_data["total"]
     pe_stats = pe_data["stats"]
@@ -75,12 +77,16 @@ if __name__ == "__main__":
             ("数据准备", [("行业树+成分加载", prep_secs)]),
             ("行情数据", [("行情获取 daily", timings["daily_fetch"])]),
             ("市值数据", [("市值获取 daily_basic", timings["mv_fetch"])]),
-            ("财务指标", [("PE-TTM/PB 数据获取 fina_indicator_vip+balancesheet_vip+express_vip(三池并行)", timings.get("fina_fetch", 0.0)),
-                          ("PE-TTM(归母)聚合计算", timings.get("pe_compute", 0.0)),
-                          ("PE-TTM(扣非)聚合计算", timings.get("pe_deduct_compute", 0.0)),
+            ("财务指标", [("PE/PB 数据获取 fina_indicator_vip+balancesheet_vip+express_vip(三池并行)", timings.get("fina_fetch", 0.0)),
+                          ("PE(归母-TTM)聚合计算", timings.get("pe_compute", 0.0)),
+                          ("PE(归母-动态)聚合计算", timings.get("pe_dynamic_compute", 0.0)),
+                          ("PE(扣非-TTM)聚合计算", timings.get("pe_deduct_compute", 0.0)),
+                          ("PE(扣非-动态)聚合计算", timings.get("pe_deduct_dynamic_compute", 0.0)),
                           ("PB 聚合计算", timings.get("pb_compute", 0.0)),
-                          ("净利润TTM同比聚合计算", timings.get("growth_compute", 0.0)),
-                          ("净利润TTM同比(扣非)聚合计算", timings.get("growth_deduct_compute", 0.0))]),
+                          ("净利润同比(归母-TTM)聚合计算", timings.get("growth_compute", 0.0)),
+                          ("净利润同比(归母-动态)聚合计算", timings.get("growth_dynamic_compute", 0.0)),
+                          ("净利润同比(扣非-TTM)聚合计算", timings.get("growth_deduct_compute", 0.0)),
+                          ("净利润同比(扣非-动态)聚合计算", timings.get("growth_deduct_dynamic_compute", 0.0))]),
             ("排行计算", [
                 ("等权计算(两种口径)", timings["equal_compute"] + timings.get("equal_tr_compute", 0.0)),
                 ("停牌市值回退", timings["float_fallback"] + timings.get("total_fallback", 0.0) + timings.get("total_tr_fallback", 0.0)),
@@ -95,7 +101,7 @@ if __name__ == "__main__":
 
     if pe_stats:
         print(
-            f"\nPE-TTM(归母)统计: 报告期 {pe_stats.get('periods', 0)} 期, "
+            f"\nPE(归母-TTM)统计: 报告期 {pe_stats.get('periods', 0)} 期, "
             f"标准式 {pe_stats.get('stocks_standard', 0)} 只, "
             f"不足四期年化 {pe_stats.get('stocks_annualized', 0)} 只, "
             f"无财报 {pe_stats.get('stocks_missing', 0)} 只, "
@@ -109,7 +115,7 @@ if __name__ == "__main__":
         )
     if growth_stats:
         print(
-            f"净利润TTM同比统计: 参与 {growth_stats.get('stocks_pair', 0)} 只, "
+            f"净利润同比(归母-TTM)统计: 参与 {growth_stats.get('stocks_pair', 0)} 只, "
             f"扭亏 {growth_stats.get('stocks_turnaround', 0)} 只, 转亏 {growth_stats.get('stocks_turnloss', 0)} 只, "
             f"持续亏损 {growth_stats.get('stocks_continued_loss', 0)} 只, "
             f"无基期 {growth_stats.get('stocks_no_base', 0)} 只, "
@@ -127,7 +133,7 @@ if __name__ == "__main__":
         pb_total_for_level = pb_total.get(str(industry_level), {})
         growth_for_level = growth_levels.get(str(industry_level), {})
         print(f"\n\n{rank_date.strftime('%Y-%m-%d')} 申万{industry_level}级行业涨幅榜")
-        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE-TTM(自由流通)|PE-TTM(总市值)|PB(自由流通)|PB(总市值)|净利润TTM同比|行业名称|成分股数量 成分股列表")
+        print(f"总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|净利润同比|行业名称|成分股数量 成分股列表")
         for index_ts_code, index_pct_chg, stock_count in rank_list:
             index_pct_chg_ew = -100
             for i in rank_list_equal_weight:
@@ -149,7 +155,7 @@ if __name__ == "__main__":
                 raise ValueError(f"没有获取到总市值·分红再投资涨幅数据: index_code={index_ts_code}")
 
             # 指标列: 键缺失 -> "—"(无数据/计算失败); PE/PB 值为 None -> "亏损"/"资不抵债";
-            # 净利润TTM同比值为 数值%/类别文本("扭亏"/"转亏"/"持续亏损")
+            # 净利润同比值为 数值%/类别文本("扭亏"/"转亏"/"持续亏损")
             def _fmt_metric(metric_for_level: dict[str, float | None], code: str, none_label: str) -> str:
                 if code not in metric_for_level:
                     return "—"

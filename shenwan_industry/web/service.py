@@ -22,6 +22,7 @@ from ..industry_ranking import (
     rank_range,
     rank_range_chain,
     classify_profit_growth,
+    PROFIT_BASES,
 )
 from ..industry_tree import ShenWanIndustryTree
 from ..market_data import MarketDataProvider
@@ -544,45 +545,48 @@ def _run_daily(
     amount_map = provider.get_ts_code_to_amount(rank_date)
 
     # 个股估值(成分股子表展示, 总市值口径, 与行业总市值口径公式一致): 财务缓存命中零请求
-    # PE = 总市值(万元)/(TTM(元)/1e4); PB = 总市值(万元)/(归母普通股股东权益(元)/1e4)——
+    # PE = 总市值(万元)/(净利润(元)/1e4); PB = 总市值(万元)/(归母普通股股东权益(元)/1e4)——
     # 分母为 balancesheet_vip 权威绝对额(归母权益−其他权益工具[已含优先股], 不经"每股×股本"折算)
-    # PE 双口径(归母/扣非)一次算出供前端"净利润口径"切换; 值 None = 亏损(TTM<=0) / 资不抵债
-    # (净资产<=0); 键缺失 = 无数据(前端显示"—")。循环按两 TTM 键并集驱动, 两口径覆盖互不
-    # 连坐(归母合成失败仅缺归母列, 不影响该股扣非/PB 行)
-    ttm_map, _ = provider.get_ts_code_to_ttm_attr_profit(rank_date)
-    ttm_deduct_map, _ = provider.get_ts_code_to_ttm_deducted_profit(rank_date)
+    # PE 四口径(归母/扣非 × TTM/动态, PROFIT_BASES)一次算出供前端"净利润口径"切换; 值 None =
+    # 亏损(利润<=0) / 资不抵债(净资产<=0); 键缺失 = 无数据(前端显示"—")。循环按四口径利润键
+    # 并集驱动, 各口径覆盖互不连坐(归母合成失败仅缺归母列, 不影响该股其他口径/PB 行)
+    stock_pe: dict[str, dict[str, float | None]] = {basis: {} for basis in PROFIT_BASES}
+    profit_maps: dict[str, dict[str, float]] = {
+        "attr_ttm": provider.get_ts_code_to_ttm_attr_profit(rank_date)[0],
+        "attr_dynamic": provider.get_ts_code_to_dynamic_profit(rank_date, "attr")[0],
+        "deduct_ttm": provider.get_ts_code_to_ttm_deducted_profit(rank_date)[0],
+        "deduct_dynamic": provider.get_ts_code_to_dynamic_profit(rank_date, "deduct")[0],
+    }
     equity_map, _ = provider.get_ts_code_to_equity(rank_date)
-    stock_pe: dict[str, float | None] = {}
-    stock_pe_deducted: dict[str, float | None] = {}
     stock_pb: dict[str, float | None] = {}
-    for ts_code in ttm_map.keys() | ttm_deduct_map.keys():
+    for ts_code in set().union(*(set(m) for m in profit_maps.values())):
         total_mv = total_map.get(ts_code)
         if total_mv is None:
             continue
-        ttm = ttm_map.get(ts_code)
-        if ttm is not None:
-            profit_wan = ttm / 1e4
-            stock_pe[ts_code] = total_mv / profit_wan if profit_wan > 0 else None
-        deducted = ttm_deduct_map.get(ts_code)
-        if deducted is not None:
-            deducted_wan = deducted / 1e4
-            stock_pe_deducted[ts_code] = total_mv / deducted_wan if deducted_wan > 0 else None
+        for basis, profit_one_map in profit_maps.items():
+            profit = profit_one_map.get(ts_code)
+            if profit is not None:
+                profit_wan = profit / 1e4
+                stock_pe[basis][ts_code] = total_mv / profit_wan if profit_wan > 0 else None
         equity = equity_map.get(ts_code)
         if equity is not None:
             equity_wan = equity / 1e4
             stock_pb[ts_code] = total_mv / equity_wan if equity_wan > 0 else None
 
-    # 个股净利润TTM同比(与行业同一分类规则)双口径: 两期 TTM 对命中缓存零请求,
-    # 扣非与归母共用已拉报告期数据(前端随"净利润口径"下拉切换)
-    pair_map, _ = provider.get_ts_code_to_ttm_growth_pair(rank_date)
-    pair_map_deducted, _ = provider.get_ts_code_to_ttm_growth_pair(rank_date, profit_kind="deduct")
-    stock_growth: dict[str, float | str] = {
-        ts_code: classify_profit_growth(now_value, last_value)
-        for ts_code, (now_value, last_value) in pair_map.items()
+    # 个股净利润同比(与行业同一分类规则)四口径: 增长对命中缓存零请求(TTM 对与动态对各自
+    # 缓存), 动态口径的"去年同季"落在 TTM 同比基期预热窗口内零新增请求(前端随"净利润口径"下拉切换)
+    pair_maps: dict[str, dict[str, tuple[float, float]]] = {
+        "attr_ttm": provider.get_ts_code_to_ttm_growth_pair(rank_date)[0],
+        "attr_dynamic": provider.get_ts_code_to_dynamic_growth_pair(rank_date, "attr")[0],
+        "deduct_ttm": provider.get_ts_code_to_ttm_growth_pair(rank_date, profit_kind="deduct")[0],
+        "deduct_dynamic": provider.get_ts_code_to_dynamic_growth_pair(rank_date, "deduct")[0],
     }
-    stock_growth_deducted: dict[str, float | str] = {
-        ts_code: classify_profit_growth(now_value, last_value)
-        for ts_code, (now_value, last_value) in pair_map_deducted.items()
+    stock_growth: dict[str, dict[str, float | str]] = {
+        basis: {
+            ts_code: classify_profit_growth(now_value, last_value)
+            for ts_code, (now_value, last_value) in pair_map.items()
+        }
+        for basis, pair_map in pair_maps.items()
     }
 
     result = {
@@ -596,14 +600,18 @@ def _run_daily(
             fw_reinvest,
             tw,
             tw_reinvest,
-            pe_free=valuation["pe"]["free"],
-            pe_total=valuation["pe"]["total"],
-            pe_deducted_free=valuation["pe_deducted"]["free"],
-            pe_deducted_total=valuation["pe_deducted"]["total"],
+            pe_maps={
+                basis: {
+                    "free": valuation[f"pe_{basis}"]["free"],
+                    "total": valuation[f"pe_{basis}"]["total"],
+                }
+                for basis in PROFIT_BASES
+            },
             pb_free=valuation["pb"]["free"],
             pb_total=valuation["pb"]["total"],
-            growth_value=valuation["growth"]["value"],
-            growth_deducted_value=valuation["growth_deducted"]["value"],
+            growth_maps={
+                basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
+            },
         ),
     }
     context = {
@@ -616,10 +624,8 @@ def _run_daily(
         "total_mv": total_map,
         "amount": amount_map,
         "stock_pe": stock_pe,
-        "stock_pe_deducted": stock_pe_deducted,
         "stock_pb": stock_pb,
         "stock_growth": stock_growth,
-        "stock_growth_deducted": stock_growth_deducted,
     }
     api_calls = _diff_api_calls(before_calls, provider.snapshot_api_calls())
     return result, context, timings, api_calls
@@ -704,14 +710,10 @@ def _build_levels(
     fw_reinvest: tuple[list, list, list],
     tw: tuple[list, list, list],
     tw_reinvest: tuple[list, list, list],
-    pe_free: dict[str, dict[str, float | None]] | None = None,
-    pe_total: dict[str, dict[str, float | None]] | None = None,
-    pe_deducted_free: dict[str, dict[str, float | None]] | None = None,
-    pe_deducted_total: dict[str, dict[str, float | None]] | None = None,
+    pe_maps: dict[str, dict[str, dict[str, float | None]]] | None = None,
     pb_free: dict[str, dict[str, float | None]] | None = None,
     pb_total: dict[str, dict[str, float | None]] | None = None,
-    growth_value: dict[str, dict[str, float | str]] | None = None,
-    growth_deducted_value: dict[str, dict[str, float | str]] | None = None,
+    growth_maps: dict[str, dict[str, dict[str, float | str]]] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     levels: dict[str, list[dict[str, Any]]] = {}
     for level_name, ew_list, ew_tr_list, fw_list, fr_list, tw_list, tfr_list in zip(
@@ -759,24 +761,24 @@ def _build_levels(
                 "equal_tr_constituent_count": ewt_item[1],
             }
             # 财务指标列仅单日榜携带: 值 None = PE 亏损 / PB 资不抵债, 键缺失 = 未计算/失败降级(前端显示"—");
-            # PE 携带归母(pe_ttm_*)与扣非(pe_ttm_deducted_*)两套字段, 前端"净利润口径"下拉切换显示;
-            # 成功时对应 dict 必含 "1"/"2"/"3" 键(非空), 空 dict 视为计算失败(与区间榜同不携带)
-            if pe_free and pe_total:
-                row["pe_ttm_float"] = pe_free.get(level_name, {}).get(index_code)
-                row["pe_ttm_total"] = pe_total.get(level_name, {}).get(index_code)
-            if pe_deducted_free and pe_deducted_total:
-                row["pe_ttm_deducted_float"] = pe_deducted_free.get(level_name, {}).get(index_code)
-                row["pe_ttm_deducted_total"] = pe_deducted_total.get(level_name, {}).get(index_code)
+            # PE 携带四口径字段 pe_{basis}_float/total(basis ∈ 归母/扣非 × TTM/动态, 见 PROFIT_BASES),
+            # 前端"净利润口径"下拉切换显示; 成功时对应 dict 必含 "1"/"2"/"3" 键(非空), 空 dict 视为
+            # 计算失败(与区间榜同不携带)
+            for basis, basis_maps in (pe_maps or {}).items():
+                basis_free = basis_maps.get("free")
+                basis_total = basis_maps.get("total")
+                if basis_free and basis_total:
+                    row[f"pe_{basis}_float"] = basis_free.get(level_name, {}).get(index_code)
+                    row[f"pe_{basis}_total"] = basis_total.get(level_name, {}).get(index_code)
             if pb_free and pb_total:
                 row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
                 row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
-            # 净利润TTM同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"持续亏损",
-            # 归母(profit_growth)/扣非(profit_growth_deducted)双字段, 前端随"净利润口径"下拉切换;
+            # 净利润同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"持续亏损",
+            # 四口径字段 profit_growth_{basis}, 前端随"净利润口径"下拉切换;
             # 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
-            if growth_value:
-                row["profit_growth"] = growth_value.get(level_name, {}).get(index_code)
-            if growth_deducted_value:
-                row["profit_growth_deducted"] = growth_deducted_value.get(level_name, {}).get(index_code)
+            for basis, basis_value in (growth_maps or {}).items():
+                if basis_value:
+                    row[f"profit_growth_{basis}"] = basis_value.get(level_name, {}).get(index_code)
             rows.append(row)
         rows.sort(key=lambda item: item["float_weighted_pct"], reverse=True)
         levels[level_name] = rows
@@ -852,14 +854,15 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
             "total_mv": total_map.get(ts_code),
             "amount": amount_map.get(ts_code),
         }
-        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); PE 归母(pe_ttm)/扣非(pe_ttm_deducted)
-        # 两口径同带, 前端"净利润口径"切换; 键缺失 = 无数据, None = 亏损/资不抵债
+        # 个股估值列仅单日榜携带(区间榜不计算, 前端显示"—"); PE 四口径(pe_{basis})与净利润同比
+        # 四口径(profit_growth_{basis})一次全带, 前端"净利润口径"下拉切换; 键缺失 = 无数据,
+        # None = 亏损/资不抵债
         if "stock_pe" in context:
-            row["pe_ttm"] = context["stock_pe"].get(ts_code)
-            row["pe_ttm_deducted"] = context["stock_pe_deducted"].get(ts_code)
+            for basis, basis_pe in context["stock_pe"].items():
+                row[f"pe_{basis}"] = basis_pe.get(ts_code)
             row["pb"] = context["stock_pb"].get(ts_code)
-            row["profit_growth"] = context["stock_growth"].get(ts_code)
-            row["profit_growth_deducted"] = context["stock_growth_deducted"].get(ts_code)
+            for basis, basis_growth in context["stock_growth"].items():
+                row[f"profit_growth_{basis}"] = basis_growth.get(ts_code)
         rows.append(row)
     return rows
 
