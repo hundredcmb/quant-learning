@@ -145,7 +145,7 @@ if __name__ == "__main__":
             f"静态有值 {div_stats.get('stocks_static', 0)} 只(其中零分红 {div_stats.get('stocks_static_zero', 0)} 只、"
             f"7/31 推定 {div_stats.get('stocks_static_fallback', 0)} 只), "
             f"估算有值 {div_stats.get('stocks_est', 0)} 只(其中零分红 {div_stats.get('stocks_est_zero', 0)} 只、"
-            f"实绩接管 {div_stats.get('stocks_est_realized', 0)} 只), "
+            f"实绩接管 {div_stats.get('stocks_est_realized', 0)} 只、payout 封顶 {div_stats.get('stocks_est_payout_capped', 0)} 只), "
             f"无锚 {div_stats.get('stocks_no_anchor', 0)} 只, 无锚年利润 {div_stats.get('stocks_no_profit', 0)} 只, "
             f"池内无数据 {div_stats.get('pool_no_value', 0)} 只, 无市值/股本 {div_stats.get('pool_no_mv', 0)} 只"
         )

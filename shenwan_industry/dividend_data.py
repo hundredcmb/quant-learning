@@ -25,7 +25,8 @@
     年度分红尚未宣告的最近财年; 年报分红一宣告目标即滚到 N+1、payout 锚即切到 N, 全年无空档;
     利润源与 PIT 同 PE——归母TTM 含业绩快报双源合并, ann_date ≤ T): 基准 = payout(锚) ×
     归母TTM ÷ 当前总股本, payout(锚) = 锚财年分红总额 ÷ 锚财年归母净利润(年报值, 与分红
-    预案同日披露); N 的中期实绩/宣告(级联部分值)**超过估算时用实绩**(部分实绩防低估),
+    预案同日披露), **payout 超 95% 封顶**(锚年利润塌方/分红刚性/特别分红的异常锚防荒谬外推);
+    N 的中期实绩/宣告(级联部分值)**超过估算时用实绩**(部分实绩防低估),
     否则维持估算——"宣告优先、外推补位"
   * **完整性三态**: 年度事件有行(实施/预案/**含 0 金额预案行**=显式"不分配", 4 月年报季确立)
     → 齐备; 无任何行且过 7/31(Y+1, 年报法定披露截止 4/30 + 缓冲; 实测 FY2021~24 预案晚于
@@ -64,6 +65,10 @@ KEEP_PROCS = ("实施", "预案", "停止实施")
 # FY2021~2024 年度预案无一行晚于 5/31(最晚 5/11), 实施公告晚于 7/31 的约 0.3% 支付者
 # (8/1~8/22 落地, ≤3 周自愈); 年度分红另有"显式不分配"以 0 金额预案行在 4 月确立的多数路径
 FALLBACK_MONTH_DAY = "0731"
+# 估算分红率上限: payout(锚)>该值时按该值封顶——锚财年利润塌方/分红刚性/特别分红会造出
+# payout>100% 的异常锚(实测五粮液 FY2025 payout 223.5%: 分红 200 亿/归母 89.5 亿), 直接外推
+# 会得出比公司实付还高的荒谬估算; 封顶后估算回到"利润的 95% 折算"的保守上界
+EST_PAYOUT_CAP = 0.95
 # 首刷/增量重拉的并发线程数(请求开始时刻由节流器统一平摊, 与 fina 池同模式)
 FILL_WORKERS = 8
 # dividend 接口单股拉取字段: base_share 为实施/预案行基准股本(万股, 总额法分子必需;
@@ -391,7 +396,8 @@ def compute_dividend_dps(
     键缺失 = 无数据(未知/无锚且无实绩, 前端显示"—"); 值可为 0.0(齐备且零分红, 是数值参与合成)
 
     估算 = payout(锚财年) × 归母TTM ÷ 当前总股本: payout = 锚财年分红总额 ÷ 锚财年归母
-    净利润(年报值, 与分红预案同日披露, PIT 同批可见); 归母TTM 复用 PE 归母-TTM
+    净利润(年报值, 与分红预案同日披露, PIT 同批可见), **payout 超 EST_PAYOUT_CAP(95%) 时封顶**
+    (锚年利润塌方/分红刚性/特别分红的异常锚防荒谬外推); 归母TTM 复用 PE 归母-TTM
     (get_ts_code_to_ttm_attr_profit, 含业绩快报双源合并——估算利润源与 PE 完全同源同 PIT)。
     锚财年总额=0(停发)时估算恒 0(不猜复分红, 复分红由预案级联接管); 锚财年利润缺失/≤0 且
     总额>0 时估算无定义(交由实绩/无数据兜底)。
@@ -418,6 +424,7 @@ def compute_dividend_dps(
         "stocks_est": 0,
         "stocks_est_zero": 0,
         "stocks_est_realized": 0,  # 实绩接管(部分实绩>估算)只数
+        "stocks_est_payout_capped": 0,  # payout 超上限被封顶的只数
         "stocks_no_anchor": 0,
         "stocks_no_profit": 0,  # payout 无法计算(锚年利润缺失/≤0 且总额>0)
         "stocks_no_share": 0,  # 当前股本缺失, 总额法按每股退化
@@ -448,7 +455,7 @@ def compute_dividend_dps(
         else:
             stats["stocks_no_anchor"] += 1
 
-        # 估算: payout(锚) × 归母TTM ÷ 当前总股本
+        # 估算: payout(锚) × 归母TTM ÷ 当前总股本; payout 超过 EST_PAYOUT_CAP 时封顶
         estimate: float | None = None
         anchor = info["anchor"]
         if anchor is not None:
@@ -465,6 +472,9 @@ def compute_dividend_dps(
                 ttm = ttm_attr.get(ts_code)
                 if profit is not None and visible and profit > 0 and ttm is not None and info["static_total_wan"] > 0:
                     payout = info["static_total_wan"] / (profit / 1e4)  # 万元/万元无量纲
+                    if payout > EST_PAYOUT_CAP:
+                        payout = EST_PAYOUT_CAP
+                        stats["stocks_est_payout_capped"] += 1
                     estimate = _round6(payout * (ttm / 1e4) / share_wan) if share_wan else None
                     if estimate is not None and estimate < 0:
                         estimate = None
