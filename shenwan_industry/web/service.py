@@ -23,7 +23,13 @@ from ..industry_ranking import (
     rank_range_chain,
     classify_profit_growth,
     PROFIT_BASES,
+    SAMPLE_SPACES,
+    resolve_sample_segments,
+    sample_pool_at,
 )
+
+# Web 固定一次全算的样本档(全A/中证800/中证1800=800+1000, 三档嵌套; 前端下拉即时切换)
+WEB_SAMPLE_SPACES = ["full", "csi800", "csi1800"]
 from ..industry_tree import ShenWanIndustryTree
 from ..market_data import MarketDataProvider
 
@@ -625,13 +631,21 @@ def _run_daily(
     rank_date = datetime.combine(job.payload["date"], datetime_time.min)
     date_str = rank_date.strftime("%Y%m%d")
 
-    ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, valuation = run_daily_ranking(
+    orch = run_daily_ranking(
         tree,
         provider,
         rank_date,
         progress_callback=lambda pct, message, phase: progress(pct, message, phase),
         cancel_check=cancel_check,
+        sample_spaces=WEB_SAMPLE_SPACES,
     )
+    # 多档: ({key: 六序列}, timings, {key: valuation}); 单档(降级): 旧 8 元组
+    if isinstance(orch[0], dict):
+        six_by_key, timings, valuation_by_key = orch
+    else:
+        ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest, timings, valuation = orch
+        six_by_key = {"full": (ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest)}
+        valuation_by_key = {"full": valuation}
 
     progress(95.0, "整理结果", "整理结果")
     pct_map = provider.get_ts_code_to_pct_chg(rank_date)
@@ -643,10 +657,11 @@ def _run_daily(
     # 成分股子表个股指标(公共编排, 与区间链式榜共用; 见 _compute_stock_metrics docstring)
     stock_metrics = _compute_stock_metrics(provider, rank_date, close_map, total_map)
 
-    result = {
-        "mode": "daily",
-        "date": date_str,
-        "levels": _build_levels(
+    def _levels_for(key: str) -> dict[str, list[dict[str, Any]]]:
+        """组装单个样本档的主表行(六条涨幅 + 全部财务指标字段)"""
+        ew, ew_reinvest, fw, fw_reinvest, tw, tw_reinvest = six_by_key[key]
+        v = valuation_by_key[key]
+        return _build_levels(
             tree,
             ew,
             ew_reinvest,
@@ -656,26 +671,40 @@ def _run_daily(
             tw_reinvest,
             pe_maps={
                 basis: {
-                    "free": valuation[f"pe_{basis}"]["free"],
-                    "total": valuation[f"pe_{basis}"]["total"],
+                    "free": v[f"pe_{basis}"]["free"],
+                    "total": v[f"pe_{basis}"]["total"],
                 }
                 for basis in PROFIT_BASES
             },
-            pb_free=valuation["pb"]["free"],
-            pb_total=valuation["pb"]["total"],
-            growth_maps={
-                basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
-            },
-            roe_maps={
-                basis: valuation[f"roe_waa_{basis}"] for basis in PROFIT_BASES
-            },
-            dividend_levels=valuation["div_yield"],
-        ),
+            pb_free=v["pb"]["free"],
+            pb_total=v["pb"]["total"],
+            growth_maps={basis: v[f"growth_{basis}"]["value"] for basis in PROFIT_BASES},
+            roe_maps={basis: v[f"roe_waa_{basis}"] for basis in PROFIT_BASES},
+            dividend_levels=v["div_yield"],
+        )
+
+    result = {
+        "mode": "daily",
+        "date": date_str,
+        "samples": list(six_by_key),
+        "levels": {key: _levels_for(key) for key in six_by_key},
     }
+    # 各样本档的当日生效样本(子表过滤用; 编排已拉过月度快照, 此处命中缓存零请求)
+    sample_pools_ctx: dict[str, set[str] | None] = {key: None for key in six_by_key}
+    try:
+        _segs = resolve_sample_segments(provider, list(six_by_key), date_str, date_str)
+        sample_pools_ctx = {
+            key: (None if SAMPLE_SPACES.get(key) is None else sample_pool_at(_segs[key], date_str))
+            for key in six_by_key
+        }
+    except Exception as err:  # noqa: BLE001 - 子表过滤退化为全池
+        logger.warning(f"样本空间子表过滤解析失败, 子表显示全池: {err!r}")
+
     context = {
         "mode": "daily",
         "date": rank_date,
         "tree": tree,
+        "sample_pools": sample_pools_ctx,
         "pct_chg": pct_map,
         "close": close_map,
         "free_mv": free_map,
@@ -702,12 +731,16 @@ def _run_range(
     detail: dict[str, dict[str, float]] = {}
     chain_mode = bool(job.payload.get("chain", True))  # Web 默认官方逐日链式; 静态版仅显式 chain=false 或 CLI
 
+    levels_by_key: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    end_day_str = end_date.strftime("%Y%m%d")
+    sample_pools_ctx: dict[str, set[str] | None] = {"full": None}
     if chain_mode:
         # 官方逐日链式: 6 条序列(等权/自由流通/总市值 × 官方价格式/全收益式)逐日再平衡累计;
         # 财务指标(PE/PB/ROE/股息率/净利润同比)按**区间末交易日时点值**随链式一次算出
-        # (rank_range_chain 内启动预热并与逐日计算并行), 前端区间表同样展示、注明时点口径
-        valuation: dict[str, Any] = {}
-        ew_p, ew_r, fw_p, fw_r, tw_p, tw_r = rank_range_chain(
+        # (rank_range_chain 内启动预热并与逐日计算并行), 前端区间表同样展示、注明时点口径;
+        # 样本空间三档一次全算(涨幅单循环多桶、跨月快照分段换池)
+        valuation_out: dict[str, Any] = {}
+        orch = rank_range_chain(
             tree,
             provider,
             start_date,
@@ -716,27 +749,53 @@ def _run_range(
             progress_callback=lambda pct, message: progress(pct, message, "计算区间涨幅"),
             detail=detail,
             cancel_check=cancel_check,
-            valuation_out=valuation,
+            valuation_out=valuation_out,
+            sample_spaces=WEB_SAMPLE_SPACES,
         )
-        levels = _build_levels(
-            tree, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r,
-            pe_maps={
-                basis: {
-                    "free": valuation[f"pe_{basis}"]["free"],
-                    "total": valuation[f"pe_{basis}"]["total"],
-                }
-                for basis in PROFIT_BASES
-            },
-            pb_free=valuation["pb"]["free"],
-            pb_total=valuation["pb"]["total"],
-            growth_maps={
-                basis: valuation[f"growth_{basis}"]["value"] for basis in PROFIT_BASES
-            },
-            roe_maps={
-                basis: valuation[f"roe_waa_{basis}"] for basis in PROFIT_BASES
-            },
-            dividend_levels=valuation["div_yield"],
-        )
+
+        def _levels_for(key: str) -> dict[str, list[dict[str, Any]]]:
+            ew_p, ew_r, fw_p, fw_r, tw_p, tw_r = six_by_key[key]
+            v = valuation_by_key[key]
+            return _build_levels(
+                tree, ew_p, ew_r, fw_p, fw_r, tw_p, tw_r,
+                pe_maps={
+                    basis: {
+                        "free": v[f"pe_{basis}"]["free"],
+                        "total": v[f"pe_{basis}"]["total"],
+                    }
+                    for basis in PROFIT_BASES
+                },
+                pb_free=v["pb"]["free"],
+                pb_total=v["pb"]["total"],
+                growth_maps={basis: v[f"growth_{basis}"]["value"] for basis in PROFIT_BASES},
+                roe_maps={basis: v[f"roe_waa_{basis}"] for basis in PROFIT_BASES},
+                dividend_levels=v["div_yield"],
+            )
+
+        if isinstance(orch, dict):
+            # 多档: ({key: 六序列}); valuation_out 为 {key: valuation}(三档完整同构)
+            six_by_key = orch
+            valuation_by_key = valuation_out
+        else:
+            ew_p, ew_r, fw_p, fw_r, tw_p, tw_r = orch
+            six_by_key = {"full": (ew_p, ew_r, fw_p, fw_r, tw_p, tw_r)}
+            valuation_by_key = {"full": valuation_out}
+        levels_by_key = {key: _levels_for(key) for key in six_by_key}
+        # 子表过滤用的各档末日生效样本(编排已拉过月度快照, 命中缓存零请求)
+        try:
+            _segs = resolve_sample_segments(
+                provider, list(six_by_key), start_date.strftime("%Y%m%d"), end_day_str
+            )
+            _last_day = max(
+                (d for d in provider.get_trading_days(start_date.strftime("%Y%m%d"), end_day_str)),
+                default=end_day_str,
+            )
+            sample_pools_ctx = {
+                key: (None if SAMPLE_SPACES.get(key) is None else sample_pool_at(_segs[key], _last_day))
+                for key in six_by_key
+            }
+        except Exception as err:  # noqa: BLE001 - 子表过滤退化为全池
+            logger.warning(f"样本空间子表过滤解析失败, 子表显示全池: {err!r}")
     else:
         ew, fw, tw = rank_range(
             tree,
@@ -748,8 +807,9 @@ def _run_range(
             detail=detail,
             cancel_check=cancel_check,
         )
-        # 静态版目前仅全收益式, 价格式列与全收益式同值(链式才有真正的官方价格式差异)
-        levels = _build_levels(tree, ew, ew, fw, fw, tw, tw)
+        # 静态版目前仅全收益式, 价格式列与全收益式同值(链式才有真正的官方价格式差异);
+        # 样本空间仅链式版支持(静态版为对照模式), 恒为全 A 单档
+        levels_by_key = {"full": _build_levels(tree, ew, ew, fw, fw, tw, tw)}
     progress(99.0, "整理结果", "整理结果")
     # 成分股子表展示用的末日自由流通市值/总市值/成交额（区间权重锚定首日盘前，市值列需另行补拉末日）:
     # 链式版统一取**区间末交易日**(end_date 落在非交易日时 daily_basic 无数据, 与主表指标同一
@@ -775,13 +835,15 @@ def _run_range(
         "end_date": end_date.strftime("%Y%m%d"),
         "chain": chain_mode,
         "trading_days": timings.get("trading_days"),
-        "levels": levels,
+        "samples": list(levels_by_key),
+        "levels": levels_by_key,
     }
     context = {
         "mode": "range",
         "start_date": start_date,
         "end_date": end_date,
         "tree": tree,
+        "sample_pools": sample_pools_ctx,
         "stock_ret": detail["stock_ret"],
         "last_close": detail["last_close"],
         "ts_code_to_free_mv": detail["ts_code_to_free_mv"],
@@ -899,8 +961,8 @@ def _build_levels(
     return levels
 
 
-def build_constituents(job: Any, level: int, index_code: str, weight: str) -> dict[str, Any]:
-    """根据已完成任务的上下文生成某个行业的成分股子表。"""
+def build_constituents(job: Any, level: int, index_code: str, weight: str, sample: str = "full") -> dict[str, Any]:
+    """根据已完成任务的上下文生成某个行业的成分股子表(sample=样本空间档, 行集 = 行业∩该档样本)。"""
     if job.context is None:
         raise ValueError("任务上下文不存在")
 
@@ -908,11 +970,14 @@ def build_constituents(job: Any, level: int, index_code: str, weight: str) -> di
     node = tree.index_code_to_node.get(index_code)
     if node is None or node not in tree.level_to_nodes.get(level, []):
         raise ValueError(f"找不到层级 {level} 的行业节点: {index_code}")
+    if sample not in SAMPLE_SPACES:
+        raise ValueError(f"未知样本空间档: {sample}")
+    sample_set = (job.context.get("sample_pools") or {}).get(sample, None)
 
     if job.context["mode"] == "daily":
-        rows = _daily_constituents(job.context, level, index_code, weight)
+        rows = _daily_constituents(job.context, level, index_code, weight, sample_set)
     else:
-        rows = _range_constituents(job.context, level, index_code, weight)
+        rows = _range_constituents(job.context, level, index_code, weight, sample_set)
 
     rows.sort(key=lambda item: item["pct_chg"] if item["pct_chg"] is not None else -math.inf, reverse=True)
     return {
@@ -924,7 +989,9 @@ def build_constituents(job: Any, level: int, index_code: str, weight: str) -> di
     }
 
 
-def _daily_constituents(context: dict[str, Any], level: int, index_code: str, weight: str) -> list[dict[str, Any]]:
+def _daily_constituents(
+    context: dict[str, Any], level: int, index_code: str, weight: str, sample_set: set[str] | None = None,
+) -> list[dict[str, Any]]:
     tree: ShenWanIndustryTree = context["tree"]
     rank_date: datetime = context["date"]
     pct_map: dict[str, float | None] = context["pct_chg"]
@@ -942,6 +1009,8 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
 
     rows: list[dict[str, Any]] = []
     for ts_code in stock_pool:
+        if sample_set is not None and ts_code not in sample_set:
+            continue  # 样本空间档过滤(行业成分 = 样本 ∩ 当日申万归属)
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, rank_date)
         if not l1_node or not l2_node or not l3_node:
             continue
@@ -987,7 +1056,9 @@ def _daily_constituents(context: dict[str, Any], level: int, index_code: str, we
     return rows
 
 
-def _range_constituents(context: dict[str, Any], level: int, index_code: str, weight: str) -> list[dict[str, Any]]:
+def _range_constituents(
+    context: dict[str, Any], level: int, index_code: str, weight: str, sample_set: set[str] | None = None,
+) -> list[dict[str, Any]]:
     tree: ShenWanIndustryTree = context["tree"]
     stock_ret: dict[str, float] = context["stock_ret"]
     last_close: dict[str, float] = context["last_close"]
@@ -1003,6 +1074,8 @@ def _range_constituents(context: dict[str, Any], level: int, index_code: str, we
     rows: list[dict[str, Any]] = []
     start_date: datetime = context["start_date"]
     for ts_code, pct_chg in stock_ret.items():
+        if sample_set is not None and ts_code not in sample_set:
+            continue  # 样本空间档过滤(区间末生效样本 ∩ 起始日行业归属)
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, start_date)
         if not l1_node or not l2_node or not l3_node:
             continue

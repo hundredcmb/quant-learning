@@ -182,6 +182,7 @@ def get_constituents(
     level: int,
     index_code: str,
     weight: str = Query(default="float", pattern="^(total|total_tr|float|float_tr|equal|equal_tr)$"),
+    sample: str = Query(default="full", pattern="^(full|csi800|csi1800)$"),
 ) -> dict:
     job = job_manager.get(job_id)
     if job is None:
@@ -192,7 +193,7 @@ def get_constituents(
         raise HTTPException(status_code=422, detail="行业层级必须是 1、2 或 3")
 
     try:
-        return service.build_constituents(job, level, index_code, weight)
+        return service.build_constituents(job, level, index_code, weight, sample)
     except ValueError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
 

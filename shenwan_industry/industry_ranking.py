@@ -58,6 +58,59 @@ PROFIT_BASES: dict[str, tuple[str, bool]] = {
 # 默认净利润口径(CLI 打印、Web 下拉首项)
 DEFAULT_PROFIT_BASIS = "attr_ttm"
 
+# 样本空间档位(Web"样本空间"下拉, 三档嵌套 full ⊃ csi1800 ⊃ csi800 一次全算、前端切换显示):
+# key -> 底层指数代码元组; full=全A(现有申万全池, 无需拉取)。样本清单来自 index_weight 月度
+# 快照(忽略权重、只用 con_code 清单——行业加权用本模块自有市值权重); csi1800=中证800+中证1000
+# 并集(页面文案用业内常称"中证1800")
+SAMPLE_SPACES: dict[str, tuple[str, ...] | None] = {
+    "full": None,
+    "csi800": ("000906.SH",),
+    "csi1800": ("000906.SH", "000852.SH"),
+}
+# 默认样本空间(CLI 单档=旧行为)
+DEFAULT_SAMPLE_SPACE = "full"
+
+
+def resolve_sample_segments(
+    market_data: MarketDataProvider,
+    sample_spaces: list[str],
+    start_str: str,
+    end_str: str,
+    cancel_check: CancelCheck | None = None,
+) -> dict[str, list[tuple[str, set[str]]]]:
+    """各样本档的月度快照段: {key: [(快照日, 样本集)] 按快照日升序}(full 不拉取、不进返回)
+
+    拉取窗口 [start−45天, end]——覆盖"首日之前最近的月末快照"(首日样本 = 生效日 ≤ 首日的
+    最近一段); 区间内每个月末快照日切换样本池(中途调样生效, 与链式逐日过滤天然兼容)。
+    每指数 1 次请求(带翻页), csi1800 为两指数逐快照日并集
+    """
+    lookback_start = (datetime.strptime(start_str, "%Y%m%d") - timedelta(days=45)).strftime("%Y%m%d")
+    segments: dict[str, list[tuple[str, set[str]]]] = {}
+    for key in sample_spaces:
+        index_codes = SAMPLE_SPACES.get(key)
+        if not index_codes:
+            continue  # full 档无样本过滤
+        if cancel_check is not None:
+            cancel_check()
+        merged: dict[str, set[str]] = {}
+        for index_code in index_codes:
+            for snap_date, members in market_data.get_index_weight_snapshots(
+                index_code, lookback_start, end_str
+            ):
+                merged.setdefault(snap_date, set()).update(members)
+        segments[key] = sorted(merged.items())
+    return segments
+
+
+def sample_pool_at(segments: list[tuple[str, set[str]]], date_str: str) -> set[str]:
+    """当日生效的样本集: 生效日(快照日) ≤ date_str 的最近一段; 无任何可用快照返回空集"""
+    pool: set[str] | None = None
+    for snap_date, members in segments:
+        if snap_date > date_str:
+            break
+        pool = members
+    return pool if pool is not None else set()
+
 
 def _valuation_compute_key(prefix: str, profit_kind: str, dynamic: bool) -> str:
     """估值/增长各口径的 timings 计时键: pe/growth + [deduct_] + [dynamic_] + compute"""
@@ -97,11 +150,17 @@ def daily_rank_equal_weight(
     date: datetime,
     cancel_check: CancelCheck | None = None,
     div_kind: str = "price",
-) -> tuple[RankList, RankList, RankList]:
+    sample_pools: dict[str, set[str] | None] | None = None,
+) -> tuple[RankList, RankList, RankList] | dict[str, tuple[RankList, RankList, RankList]]:
     """获取指定日期的行业涨幅(等权)排名
 
     div_kind: "price"=官方价格式(除息计入下跌, 默认; 除息股涨幅改用实际市值比),
     "reinvest"=分红再投资/全收益式(除息中性, 原行为, 用 close/pre_close)
+    sample_pools: {key: 当日样本集|None}(None 值=不过滤全池)——多样本空间**单循环多桶**:
+    每股归属/涨幅只算一次、同时累计到各样本桶(嵌套样本集仅增加集合判定, 纳秒级, 三档
+    总耗时≈单档+10%), 返回 {key: (l1, l2, l3)}; 缺省 None 走单池路径返回 (l1, l2, l3)(旧行为)。
+    样本集 = index_weight 月度快照 ∩ 当日申万归属(池外股不计入该桶; 停牌按 0%、数据异常
+    跳过等规则各桶同享——同一股的处置与样本档无关)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -115,17 +174,15 @@ def daily_rank_equal_weight(
     if not ts_code_to_pct_chg:
         raise ValueError(f"没有获取到 {date_str} 交易日的行情数据")
 
-    # 行业index_code -> (行业index_code, 上涨百分比, 成分股数量)
-    l1_chg_map: dict[str, tuple[str, float, int]] = {}
-    l2_chg_map: dict[str, tuple[str, float, int]] = {}
-    l3_chg_map: dict[str, tuple[str, float, int]] = {}
-
-    for node_l1 in tree.level_to_nodes[1]:
-        l1_chg_map[node_l1.index_code] = (node_l1.index_code, 0, 0)
-    for node_l2 in tree.level_to_nodes[2]:
-        l2_chg_map[node_l2.index_code] = (node_l2.index_code, 0, 0)
-    for node_l3 in tree.level_to_nodes[3]:
-        l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
+    # 聚合容器: key(None=单池) -> (L1/L2/L3 增量平均 map)
+    multi = sample_pools is not None
+    pool_keys: list = list(sample_pools) if multi else [None]
+    chg_maps: dict = {}
+    for key in pool_keys:
+        chg_maps[key] = tuple(
+            {node.index_code: (node.index_code, 0, 0) for node in tree.level_to_nodes[level]}
+            for level in (1, 2, 3)
+        )
 
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
     tree.filter_stock_pool(
@@ -178,30 +235,30 @@ def daily_rank_equal_weight(
         if pct_chg is None:
             continue  # 数据异常(涨跌幅非有限值), 不计入
         pct_chg = ex_div_override.get(ts_code, pct_chg)  # 官方价格式除息股用实际市值比
-        for l_node, l_chg_map in [(l3_node, l3_chg_map), (l2_node, l2_chg_map), (l1_node, l1_chg_map)]:
-            l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
-            l_count_new = l_count + 1
-            l_pct_chg_new = (l_pct_chg * l_count + pct_chg) / l_count_new
-            l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
+        for key in pool_keys:
+            sample = sample_pools.get(key) if multi else None
+            if sample is not None and ts_code not in sample:
+                continue
+            l1_map, l2_map, l3_map = chg_maps[key]
+            for l_node, l_chg_map in [(l3_node, l3_map), (l2_node, l2_map), (l1_node, l1_map)]:
+                l_index_code, l_pct_chg, l_count = l_chg_map[l_node.index_code]
+                l_count_new = l_count + 1
+                l_pct_chg_new = (l_pct_chg * l_count + pct_chg) / l_count_new
+                l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
 
-    # 对行业涨幅由大到小排序
-    l1_rank_list = sorted(
-        [item for item in l1_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    l2_rank_list = sorted(
-        [item for item in l2_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    l3_rank_list = sorted(
-        [item for item in l3_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    def _sorted_ranks(chg_maps_one) -> tuple[RankList, RankList, RankList]:
+        return tuple(
+            sorted(
+                (item for item in maps.values() if item[2] > 0),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            for maps in chg_maps_one
+        )
 
-    return l1_rank_list, l2_rank_list, l3_rank_list
+    if multi:
+        return {key: _sorted_ranks(chg_maps[key]) for key in pool_keys}
+    return _sorted_ranks(chg_maps[None])
 
 
 def daily_rank_float_weight(
@@ -212,12 +269,16 @@ def daily_rank_float_weight(
     cancel_check: CancelCheck | None = None,
     mv_kind: str = "free",
     div_kind: str = "price",
-) -> tuple[RankList, RankList, RankList]:
+    sample_pools: dict[str, set[str] | None] | None = None,
+) -> tuple[RankList, RankList, RankList] | dict[str, tuple[RankList, RankList, RankList]]:
     """获取指定日期的行业涨幅(市值加权)排名
 
     mv_kind: "free"=自由流通市值加权, "total"=总市值加权
     div_kind: "price"=官方价格式(除息计入下跌, 默认; 除息日 M_pre 用昨日实际市值=官方 LV_{t-1}^{Adj},
     自由流通用昨日 free_mv、总市值用昨日 total_mv); "reinvest"=分红再投资/全收益式(除息中性, 原行为)
+    sample_pools: {key: 当日样本集|None}——多样本空间**单循环多桶**(见 daily_rank_equal_weight),
+    返回 {key: (l1, l2, l3)}; 缺省 None 走单池路径返回 (l1, l2, l3)(旧行为)。停牌回退/缺失股
+    点查与样本档无关(按全池参与股解析一次, 各桶共享该股的权重市值)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -242,25 +303,19 @@ def daily_rank_float_weight(
     if not ts_code_to_pct_chg:
         raise ValueError(f"没有获取到 {date_str} 交易日的行情数据")
 
-    # 行业index_code -> (行业index_code, 上涨百分比, 成分股数量)
-    l1_chg_map: dict[str, tuple[str, float, int]] = {}
-    l2_chg_map: dict[str, tuple[str, float, int]] = {}
-    l3_chg_map: dict[str, tuple[str, float, int]] = {}
-
-    # 行业index_code -> (当日收盘新增权重市值总和, 当日开盘前的权重市值总和)
-    l1_mv_map: dict[str, tuple[float, float]] = {}
-    l2_mv_map: dict[str, tuple[float, float]] = {}
-    l3_mv_map: dict[str, tuple[float, float]] = {}
-
-    for node_l1 in tree.level_to_nodes[1]:
-        l1_chg_map[node_l1.index_code] = (node_l1.index_code, 0, 0)
-        l1_mv_map[node_l1.index_code] = (0, 0)
-    for node_l2 in tree.level_to_nodes[2]:
-        l2_chg_map[node_l2.index_code] = (node_l2.index_code, 0, 0)
-        l2_mv_map[node_l2.index_code] = (0, 0)
-    for node_l3 in tree.level_to_nodes[3]:
-        l3_chg_map[node_l3.index_code] = (node_l3.index_code, 0, 0)
-        l3_mv_map[node_l3.index_code] = (0, 0)
+    # 聚合容器: key(None=单池) -> (L3/L2/L1 的 (涨幅map, mv map))——顺序与下方循环
+    # zip((l3_node, l2_node, l1_node), ...) 对齐
+    multi = sample_pools is not None
+    pool_keys: list = list(sample_pools) if multi else [None]
+    agg_maps: dict = {}
+    for key in pool_keys:
+        agg_maps[key] = tuple(
+            (
+                {node.index_code: (node.index_code, 0, 0) for node in tree.level_to_nodes[level]},
+                {node.index_code: (0, 0) for node in tree.level_to_nodes[level]},
+            )
+            for level in (3, 2, 1)
+        )
 
     stock_pool: set[str] = set(ts_code_to_pct_chg) | set(tree.all_member_codes)
     tree.filter_stock_pool(
@@ -315,12 +370,6 @@ def daily_rank_float_weight(
         if not l3_node or not l2_node or not l1_node:
             continue
 
-        data_list = [
-            (l3_node, l3_chg_map, l3_mv_map),
-            (l2_node, l2_chg_map, l2_mv_map),
-            (l1_node, l1_chg_map, l1_mv_map),
-        ]
-
         pct_chg = ts_code_to_pct_chg.get(ts_code, 0.0)  # 有交易数据则用实际涨幅, 停牌则按0%
         if pct_chg is None:
             continue  # 数据异常(涨跌幅非有限值), 不计入
@@ -343,24 +392,30 @@ def daily_rank_float_weight(
         # 官方价格式除息股的昨日实际市值(其余股票为空)
         y_mv = ex_div_override.get(ts_code)
 
-        for l_node, l_chg_map, l_mv_map in data_list:
-            l_index_code, l_pct_chg, l_count = l_chg_map.get(l_node.index_code)
-            l_mv1, l_mv2 = l_mv_map.get(l_node.index_code)
-            l_count_new = l_count + 1
+        for key in pool_keys:
+            sample = sample_pools.get(key) if multi else None
+            if sample is not None and ts_code not in sample:
+                continue
+            for l_node, (l_chg_map, l_mv_map) in zip(
+                (l3_node, l2_node, l1_node), agg_maps[key]
+            ):
+                l_index_code, l_pct_chg, l_count = l_chg_map[l_node.index_code]
+                l_mv1, l_mv2 = l_mv_map[l_node.index_code]
+                l_count_new = l_count + 1
 
-            if y_mv is not None:
-                # 除息日官方价格式: 新增市值 = 今日实际市值 − 昨日实际市值; 开盘前 = 昨日实际
-                l_mv1_new = (weight_mv - y_mv) + l_mv1
-                l_mv2_new = y_mv + l_mv2
-            else:
-                # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值(pre_close×q_t)
-                l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
-                # 当日开盘前的权重市值
-                l_mv2_new = weight_mv / (pct_chg / 100 + 1) + l_mv2
+                if y_mv is not None:
+                    # 除息日官方价格式: 新增市值 = 今日实际市值 − 昨日实际市值; 开盘前 = 昨日实际
+                    l_mv1_new = (weight_mv - y_mv) + l_mv1
+                    l_mv2_new = y_mv + l_mv2
+                else:
+                    # 当日收盘新增权重市值 = 收盘市值 - 开盘前市值(pre_close×q_t)
+                    l_mv1_new = weight_mv * pct_chg / (pct_chg + 100) + l_mv1
+                    # 当日开盘前的权重市值
+                    l_mv2_new = weight_mv / (pct_chg / 100 + 1) + l_mv2
 
-            l_pct_chg_new = l_mv1_new / l_mv2_new * 100
-            l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
-            l_mv_map[l_node.index_code] = (l_mv1_new, l_mv2_new)
+                l_pct_chg_new = l_mv1_new / l_mv2_new * 100
+                l_chg_map[l_node.index_code] = (l_index_code, l_pct_chg_new, l_count_new)
+                l_mv_map[l_node.index_code] = (l_mv1_new, l_mv2_new)
 
     if no_weight_stocks:
         samples = ", ".join(no_weight_stocks[:3])
@@ -369,24 +424,20 @@ def daily_rank_float_weight(
             f"(如 {samples}{'...' if len(no_weight_stocks) > 3 else ''}, 多为超长停牌/数据缺失), 仅参与等权榜"
         )
 
-    # 对行业涨幅由大到小排序
-    l1_rank_list = sorted(
-        [item for item in l1_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    l2_rank_list = sorted(
-        [item for item in l2_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-    l3_rank_list = sorted(
-        [item for item in l3_chg_map.values() if item[2] > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
+    def _sorted_ranks(agg_maps_one) -> tuple[RankList, RankList, RankList]:
+        # agg_maps_one 为 (L3, L2, L1) 顺序, 输出反转为 (l1, l2, l3)
+        return tuple(
+            sorted(
+                (item for item in chg_map.values() if item[2] > 0),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            for chg_map, _mv_map in reversed(agg_maps_one)
+        )
 
-    return l1_rank_list, l2_rank_list, l3_rank_list
+    if multi:
+        return {key: _sorted_ranks(agg_maps[key]) for key in pool_keys}
+    return _sorted_ranks(agg_maps[None])
 
 
 def daily_valuation_metric(
@@ -398,8 +449,12 @@ def daily_valuation_metric(
     cancel_check: CancelCheck | None = None,
     profit_kind: str = "attr",
     dynamic: bool = False,
+    sample_set: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
     """单日榜行业财务指标合成值(PE / PB, 项目自建口径): 返回 (free_map, total_map, stats)
+
+    sample_set: 样本空间过滤(多样本空间档各自调用; None=全池)——在归属解析前跳过非样本股,
+    csi 档循环量降至样本规模(嵌套档总成本≈1.5×单档)
 
     kind: "pe"=净利润(元) / "pb"=归母普通股股东权益(元, balancesheet_vip 权威绝对额)。
     profit_kind(仅 kind="pe" 生效): "attr"=归母净利润(profit_dedt+extra_item 行内合成,
@@ -486,6 +541,8 @@ def daily_valuation_metric(
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
+        if sample_set is not None and ts_code not in sample_set:
+            continue
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -558,10 +615,11 @@ def daily_pe(
     cancel_check: CancelCheck | None = None,
     profit_kind: str = "attr",
     dynamic: bool = False,
+    sample_set: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
     """单日榜行业 PE: profit_kind="attr"=归母(默认)/"deduct"=扣非 × dynamic=False=TTM(默认)/True=动态,
-    四口径(见 PROFIT_BASES)见 daily_valuation_metric"""
-    return daily_valuation_metric(tree, market_data, date, "pe", timings, cancel_check, profit_kind, dynamic)
+    四口径(见 PROFIT_BASES)见 daily_valuation_metric; sample_set=样本空间过滤(见其 docstring)"""
+    return daily_valuation_metric(tree, market_data, date, "pe", timings, cancel_check, profit_kind, dynamic, sample_set)
 
 
 def daily_pb(
@@ -570,9 +628,11 @@ def daily_pb(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
+    sample_set: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, float | None]], dict[str, dict[str, float | None]], dict[str, int]]:
-    """单日榜行业 PB(归母普通股股东权益, balancesheet_vip 权威绝对额): 见 daily_valuation_metric(kind="pb")"""
-    return daily_valuation_metric(tree, market_data, date, "pb", timings, cancel_check)
+    """单日榜行业 PB(归母普通股股东权益, balancesheet_vip 权威绝对额): 见 daily_valuation_metric(kind="pb");
+    sample_set=样本空间过滤(见其 docstring)"""
+    return daily_valuation_metric(tree, market_data, date, "pb", timings, cancel_check, None, False, sample_set)
 
 
 def classify_profit_growth(now_value: float, last_value: float) -> float | str:
@@ -599,8 +659,11 @@ def daily_profit_growth(
     cancel_check: CancelCheck | None = None,
     profit_kind: str = "attr",
     dynamic: bool = False,
+    sample_set: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, float | str]], dict[str, int]]:
     """单日榜行业净利润同比(与 PE 分子同源): 返回 (levels, stats)
+
+    sample_set: 样本空间过滤(多样本空间档各自调用; None=全池, 在归属解析前跳过非样本股)
 
     profit_kind: "attr"=归母(默认, 含快报双源合并) / "deduct"=扣非(无快报源, 年报季时效
     落后归母一档; 与归母共用已拉报告期数据零新增请求); 类别按各自口径独立判定(归母扭亏而
@@ -655,6 +718,8 @@ def daily_profit_growth(
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
+        if sample_set is not None and ts_code not in sample_set:
+            continue
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -689,12 +754,15 @@ def daily_roe(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
+    sample_set: set[str] | None = None,
 ) -> tuple[
     dict[str, dict[str, dict[str, float]]],
     dict[str, dict[str, dict[str, float]]],
     dict[str, int],
 ]:
     """单日榜行业 ROE(加权平均算法, 四口径一次算出): 返回 (levels_float, levels_total, stats)
+
+    sample_set: 样本空间过滤(多样本空间档各自调用; None=全池, 在归属解析前跳过非样本股)
 
     levels: {basis: {"1"|"2"|"3": {index_code: ROE%}}}——行业值 = **按当日市值权重的个股 ROE
     加权算术平均** Σ(市值ᵢ×ROEᵢ)÷Σ市值ᵢ×100(指数按什么权重分配成分股、指标就用什么权重:
@@ -753,6 +821,8 @@ def daily_roe(
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
+        if sample_set is not None and ts_code not in sample_set:
+            continue
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -804,8 +874,11 @@ def daily_dividend_yield(
     date: datetime,
     timings: dict[str, float] | None = None,
     cancel_check: CancelCheck | None = None,
+    sample_set: set[str] | None = None,
 ) -> tuple[dict[str, dict[str, dict[str, dict[str, float]]]], dict[str, int]]:
     """单日榜行业股息率(双口径一次算出): 返回 (levels_by_kind, stats)
+
+    sample_set: 样本空间过滤(多样本空间档各自调用; None=全池, 在归属解析前跳过非样本股)
 
     levels_by_kind: {"float"|"total": {basis("est"|"static"): {"1"|"2"|"3": {index_code: 股息率%}}}}
     ——行业值 = **按当日市值权重的个股股息率加权平均**(指数按什么权重分配成分股、指标就用
@@ -871,6 +944,8 @@ def daily_dividend_yield(
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
+        if sample_set is not None and ts_code not in sample_set:
+            continue
         l1_node, l2_node, l3_node = tree.get_stock_industry_nodes(ts_code, date)
         if not l3_node or not l2_node or not l1_node:
             continue
@@ -977,6 +1052,7 @@ def compute_fin_metric_suite(
     notify: Callable[[float, str, str | None], None] | None = None,
     progress_base: float = 93.5,
     progress_step: float = 0.3,
+    sample_sets: dict[str, set[str] | None] | None = None,
 ) -> dict[str, Any]:
     """单日时点财务指标全套一次算出(PE 四口径/PB/净利润同比四口径/ROE 四口径/股息率双口径)
 
@@ -984,12 +1060,15 @@ def compute_fin_metric_suite(
     避免两套实现漂移: 涨幅=区间累计、指标=区间末收盘快照(与指数公司估值表"最新收盘日"口径
     一致)。预热线程由 start_metric_prefetch 启动、各阶段 join 命中缓存(缺省不 join, 供测试
     直接调用); 各指标失败逐项降级为空数据(前端/CLI 显示"—"), 不影响涨幅榜主结果。
+    sample_sets: {key: 当日样本集|None}——多样本空间档逐档调用底层聚合(sample_set 在归属
+    解析前跳过非样本股, 嵌套档总成本≈1.5×单档); 缺省 None 走单档(全池)路径。
+    返回: 单档 valuation dict(键结构见 run_daily_ranking); sample_sets 提供时返回
+    {key: valuation}(各档完整同构, 降级也写入空结构, 调用方可硬下标)。
     末段取消兜底: 股息率为本套最后阶段, 其降级 except 会连 JobCancelled 一并吞掉(任务误报
     success), 函数返回前再查一次 cancel_check 把取消状态补抛(未请求取消时零副作用)。
-    notify(percent, message, phase): 进度回调; progress_base/progress_step 控制刻度
-    (单日 93.5/0.3, 区间链式 97.0/0.08——11 个指标段不越过"计算完成"刻度)。
-    返回 valuation dict, 键结构与 run_daily_ranking 的 valuation 完全一致(pe_{basis}/pb/
-    growth_{basis}/roe_waa_{basis}/div_yield, 降级也写入空结构, 调用方可硬下标)。
+    notify(percent, message, phase): 进度回调(按指标段通知一次、不逐档重复);
+    progress_base/progress_step 控制刻度(单日 93.5/0.3, 区间链式 97.0/0.08——11 个指标段
+    不越过"计算完成"刻度)。
     """
     def _notify_stage(mode: float, message: str) -> None:
         if notify is not None:
@@ -1001,14 +1080,19 @@ def compute_fin_metric_suite(
         if timings is not None and "fina_fetch" not in timings and fina_wall and "secs" in fina_wall:
             timings["fina_fetch"] = fina_wall["secs"]
 
-    valuation: dict[str, Any] = {}
+    multi = sample_sets is not None
+    keys: list = list(sample_sets) if multi else [None]
+    valuation_by_key: dict = {key: {} for key in keys}
+
+    def _set_for(key) -> set[str] | None:
+        return None if key is None else sample_sets.get(key)
 
     def _run_valuation(
-        kind: str, label: str, mode: float, compute_key: str,
+        valuation: dict, sample_set: set[str] | None,
+        kind: str, label: str, compute_key: str,
         profit_kind: str = "attr", dynamic: bool = False,
-    ) -> dict[str, Any]:
+    ) -> None:
         """财务指标阶段(pe/pb): 失败时报错降级, 不影响涨幅榜主结果(口径见 daily_valuation_metric)"""
-        _notify_stage(mode, f"计算行业{label}")
         v_timings: dict[str, float] = {}
         metric_free: dict[str, dict[str, float | None]] = {}
         metric_total: dict[str, dict[str, float | None]] = {}
@@ -1018,29 +1102,37 @@ def compute_fin_metric_suite(
             if kind == "pe":
                 metric_free, metric_total, metric_stats = daily_pe(
                     tree, market_data, date, timings=v_timings, cancel_check=cancel_check,
-                    profit_kind=profit_kind, dynamic=dynamic,
+                    profit_kind=profit_kind, dynamic=dynamic, sample_set=sample_set,
                 )
             else:
                 metric_free, metric_total, metric_stats = daily_pb(
-                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check
+                    tree, market_data, date, timings=v_timings, cancel_check=cancel_check,
+                    sample_set=sample_set,
                 )
         except Exception as err:
             logger.warning(f"{label} 计算失败, 本次无该列: {err!r}")
         if timings is not None:
             timings[compute_key] = v_timings.get("compute", 0.0)
-        return {"free": metric_free, "total": metric_total, "stats": metric_stats}
+        valuation.update({"free": metric_free, "total": metric_total, "stats": metric_stats})
 
     # PE 四口径(PROFIT_BASES)**一次全部算出**: 共享同一批报告期财务数据与市值缓存, 动态口径
-    # 仅本地重算零新增请求, Web 端"净利润口径"下拉切换显示; valuation 键 = "pe_"+basis
+    # 仅本地重算零新增请求, Web 端"净利润口径"下拉切换显示; 进度按段通知一次、段内逐档算
     _mode = progress_base
     for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
         basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
-        valuation[f"pe_{basis}"] = _run_valuation(
-            "pe", f"PE({basis_label})", _mode, _valuation_compute_key("pe_", profit_kind, dynamic),
-            profit_kind=profit_kind, dynamic=dynamic,
-        )
+        _notify_stage(_mode, f"计算行业PE({basis_label})")
+        for key in keys:
+            valuation_by_key[key][f"pe_{basis}"] = {}
+            _run_valuation(
+                valuation_by_key[key][f"pe_{basis}"], _set_for(key),
+                "pe", f"PE({basis_label})", _valuation_compute_key("pe_", profit_kind, dynamic),
+                profit_kind=profit_kind, dynamic=dynamic,
+            )
         _mode += progress_step
-    valuation["pb"] = _run_valuation("pb", "PB", _mode, "pb_compute")
+    _notify_stage(_mode, "计算行业PB")
+    for key in keys:
+        valuation_by_key[key]["pb"] = {}
+        _run_valuation(valuation_by_key[key]["pb"], _set_for(key), "pb", "PB", "pb_compute")
     _mode += progress_step
 
     # 净利润同比(无市值维度)四口径一次算出: 与 PE 共用已拉报告期数据, 动态/扣非口径仅本地
@@ -1048,46 +1140,49 @@ def compute_fin_metric_suite(
     for basis, (profit_kind, dynamic) in PROFIT_BASES.items():
         basis_label = ("归母" if profit_kind == "attr" else "扣非") + ("动态" if dynamic else "-TTM")
         _notify_stage(_mode, f"计算行业净利润同比({basis_label})")
-        g_timings: dict[str, float] = {}
-        levels_one: dict[str, dict[str, float | str]] = {}
-        stats_one: dict[str, int] = {}
-        try:
-            _join_fina()
-            levels_one, stats_one = daily_profit_growth(
-                tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
-                profit_kind=profit_kind, dynamic=dynamic,
-            )
-        except Exception as err:
-            logger.warning(f"净利润同比({basis}) 计算失败, 本次无该列: {err!r}")
-        if timings is not None:
-            timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
-        valuation[f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
+        for key in keys:
+            g_timings: dict[str, float] = {}
+            levels_one: dict[str, dict[str, float | str]] = {}
+            stats_one: dict[str, int] = {}
+            try:
+                _join_fina()
+                levels_one, stats_one = daily_profit_growth(
+                    tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
+                    profit_kind=profit_kind, dynamic=dynamic, sample_set=_set_for(key),
+                )
+            except Exception as err:
+                logger.warning(f"净利润同比({basis}) 计算失败, 本次无该列: {err!r}")
+            if timings is not None:
+                timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
+            valuation_by_key[key][f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
         _mode += progress_step
 
     # ROE(加权平均算法)四口径一次算出: **按当日市值权重的加权算术平均**(随加权方式切换
     # free/total 两口径、等权显示"—", 与 PE/PB 一致); 披露值 roe_waa 锚定、**全链不接业绩
     # 快报**(快报窗口内时效落后 PE/同比一档)、roe_waa 缺失四口径全部降级; 失败时报错降级
     _notify_stage(_mode, "计算行业ROE(加权平均)")
-    r_timings: dict[str, float] = {}
-    roe_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
-    roe_stats: dict[str, int] = {}
-    try:
-        _join_fina()
-        roe_float, roe_total, roe_stats = daily_roe(
-            tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
-        )
-        roe_levels = {"float": roe_float, "total": roe_total}
-    except Exception as err:
-        logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
-        roe_levels, roe_stats = {"float": {}, "total": {}}, {}
-    if timings is not None:
-        timings["roe_compute"] = r_timings.get("compute", 0.0)
-    for basis in PROFIT_BASES:
-        valuation[f"roe_waa_{basis}"] = {
-            "float": roe_levels["float"].get(basis, {}),
-            "total": roe_levels["total"].get(basis, {}),
-            "stats": roe_stats,
-        }
+    for key in keys:
+        r_timings: dict[str, float] = {}
+        roe_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
+        roe_stats: dict[str, int] = {}
+        try:
+            _join_fina()
+            roe_float, roe_total, roe_stats = daily_roe(
+                tree, market_data, date, timings=r_timings, cancel_check=cancel_check,
+                sample_set=_set_for(key),
+            )
+            roe_levels = {"float": roe_float, "total": roe_total}
+        except Exception as err:
+            logger.warning(f"ROE(加权平均) 计算失败, 本次无该列: {err!r}")
+            roe_levels, roe_stats = {"float": {}, "total": {}}, {}
+        if timings is not None:
+            timings["roe_compute"] = r_timings.get("compute", 0.0)
+        for basis in PROFIT_BASES:
+            valuation_by_key[key][f"roe_waa_{basis}"] = {
+                "float": roe_levels["float"].get(basis, {}),
+                "total": roe_levels["total"].get(basis, {}),
+                "stats": roe_stats,
+            }
     _mode += progress_step
 
     # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): **按当日市值
@@ -1095,34 +1190,38 @@ def compute_fin_metric_suite(
     # levels; 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
     # 经下方 return 前的末段兜底补抛)
     _notify_stage(_mode, "计算行业股息率")
-    d_timings: dict[str, float] = {}
-    div_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
-    div_stats: dict[str, int] = {}
-    try:
-        _join_fina()
-        if dividend_thread is not None:
-            dividend_thread.join()
-        if div_exc:
-            raise div_exc[0]
-        div_levels, div_stats = daily_dividend_yield(
-            tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
-        )
-    except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
-        logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
-        div_levels, div_stats = {"float": {}, "total": {}}, {}
-    if timings is not None:
-        timings["div_yield_compute"] = d_timings.get("compute", 0.0)
-    valuation["div_yield"] = {
-        "float": div_levels.get("float", {}),
-        "total": div_levels.get("total", {}),
-        "stats": div_stats,
-    }
+    for key in keys:
+        d_timings: dict[str, float] = {}
+        div_levels: dict[str, dict[str, dict[str, dict[str, float]]]] = {"float": {}, "total": {}}
+        div_stats: dict[str, int] = {}
+        try:
+            _join_fina()
+            if dividend_thread is not None:
+                dividend_thread.join()
+            if div_exc:
+                raise div_exc[0]
+            div_levels, div_stats = daily_dividend_yield(
+                tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
+                sample_set=_set_for(key),
+            )
+        except Exception as err:  # noqa: BLE001 - 股息率列降级不影响涨幅榜主结果
+            logger.warning(f"股息率 计算失败, 本次无该列: {err!r}")
+            div_levels, div_stats = {"float": {}, "total": {}}, {}
+        if timings is not None:
+            timings["div_yield_compute"] = d_timings.get("compute", 0.0)
+        valuation_by_key[key]["div_yield"] = {
+            "float": div_levels.get("float", {}),
+            "total": div_levels.get("total", {}),
+            "stats": div_stats,
+        }
 
     # 末段取消兜底(股息率为全套最后阶段, 其降级 except 吞掉的取消信号在此补抛给上层)
     if cancel_check is not None:
         cancel_check()
 
-    return valuation
+    if multi:
+        return valuation_by_key
+    return valuation_by_key[None]
 
 
 def run_daily_ranking(
@@ -1131,6 +1230,7 @@ def run_daily_ranking(
     date: datetime,
     progress_callback: DailyProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
+    sample_spaces: list[str] | None = None,
 ) -> tuple[
     tuple[RankList, RankList, RankList],
     tuple[RankList, RankList, RankList],
@@ -1204,14 +1304,30 @@ def run_daily_ranking(
     market_data.get_ts_code_to_free_mv(date)  # 同一次请求同时缓存自由流通市值/总市值
     timings["mv_fetch"] = time.perf_counter() - t0
 
+    # 样本空间(多样本档一次全算, Web 用): 快照拉取失败降级为仅全 A 档(涨幅榜不受影响)
+    sample_spaces = list(sample_spaces or [])
+    multi_sample = bool(sample_spaces and sample_spaces != ["full"])
+    sample_pools: dict[str, set[str] | None] | None = None
+    if multi_sample:
+        try:
+            segments = resolve_sample_segments(market_data, sample_spaces, date_str, date_str, cancel_check)
+            sample_pools = {
+                key: (None if SAMPLE_SPACES.get(key) is None else sample_pool_at(segments[key], date_str))
+                for key in sample_spaces
+            }
+        except Exception as err:  # noqa: BLE001 - index_weight 失败降级全 A
+            logger.warning(f"样本空间快照拉取失败, 本次仅计算全A档: {err!r}")
+            multi_sample = False
+            sample_spaces = ["full"]
+
     _notify(68.0, "计算等权涨幅(官方价格式)", "计算排行榜")
     t0 = time.perf_counter()
-    ew = daily_rank_equal_weight(tree, market_data, date, cancel_check, div_kind="price")
+    ew = daily_rank_equal_weight(tree, market_data, date, cancel_check, div_kind="price", sample_pools=sample_pools)
     timings["equal_compute"] = time.perf_counter() - t0
 
     _notify(72.0, "计算等权涨幅(分红再投资式)", "计算排行榜")
     t0 = time.perf_counter()
-    ew_reinvest = daily_rank_equal_weight(tree, market_data, date, cancel_check, div_kind="reinvest")
+    ew_reinvest = daily_rank_equal_weight(tree, market_data, date, cancel_check, div_kind="reinvest", sample_pools=sample_pools)
     timings["equal_tr_compute"] = time.perf_counter() - t0
 
     _notify(78.0, "计算自由流通市值加权涨幅(官方价格式)", "计算排行榜")
@@ -1225,6 +1341,7 @@ def run_daily_ranking(
         cancel_check=cancel_check,
         mv_kind="free",
         div_kind="price",
+        sample_pools=sample_pools,
     )
     timings["float_compute"] = time.perf_counter() - t0
     timings["float_fallback"] = fw_timings.get("mv_fallback", 0.0)
@@ -1241,6 +1358,7 @@ def run_daily_ranking(
         cancel_check=cancel_check,
         mv_kind="free",
         div_kind="reinvest",
+        sample_pools=sample_pools,
     )
     timings["float_tr_compute"] = time.perf_counter() - t0
     timings["float_tr_fallback"] = fr_timings.get("mv_fallback", 0.0)
@@ -1257,6 +1375,7 @@ def run_daily_ranking(
         cancel_check=cancel_check,
         mv_kind="total",
         div_kind="price",
+        sample_pools=sample_pools,
     )
     timings["total_compute"] = time.perf_counter() - t0
     timings["total_fallback"] = tw_timings.get("mv_fallback", 0.0)
@@ -1273,6 +1392,7 @@ def run_daily_ranking(
         cancel_check=cancel_check,
         mv_kind="total",
         div_kind="reinvest",
+        sample_pools=sample_pools,
     )
     timings["total_tr_compute"] = time.perf_counter() - t0
     timings["total_tr_fallback"] = tw_tr_timings.get("mv_fallback", 0.0)
@@ -1293,7 +1413,16 @@ def run_daily_ranking(
         notify=_notify,
         progress_base=93.5,
         progress_step=0.3,
+        sample_sets=sample_pools,
     )
+
+    if multi_sample:
+        # ({key: (六序列)}, timings, {key: valuation}): 三档完整同构, Web 前端切档即时显示
+        return (
+            {key: (ew[key], ew_reinvest[key], fw[key], fw_reinvest[key], tw[key], tw_reinvest[key]) for key in sample_spaces},
+            timings,
+            valuation,
+        )
 
     return (
         ew,
@@ -1644,6 +1773,7 @@ def rank_range_chain(
     detail: dict[str, dict[str, float]] | None = None,
     cancel_check: CancelCheck | None = None,
     valuation_out: dict[str, Any] | None = None,
+    sample_spaces: list[str] | None = None,
 ) -> tuple[
     tuple[RankList, RankList, RankList],
     tuple[RankList, RankList, RankList],
@@ -1717,6 +1847,20 @@ def rank_range_chain(
         fina_thread, fina_wall, dividend_thread, div_exc = start_metric_prefetch(
             market_data, last_day_dt, set(tree.all_member_codes), cancel_check=cancel_check
         )
+
+    # 样本空间(多样本档一次全算, Web 用): 各档月度快照段, 快照拉取失败降级为仅全 A 档
+    sample_spaces = list(sample_spaces or [])
+    multi_sample = bool(sample_spaces and sample_spaces != ["full"])
+    sample_segments: dict[str, list[tuple[str, set[str]]]] = {}
+    if multi_sample:
+        try:
+            sample_segments = resolve_sample_segments(
+                market_data, sample_spaces, start_str, end_str, cancel_check
+            )
+        except Exception as err:  # noqa: BLE001 - index_weight 失败降级全 A
+            logger.warning(f"样本空间快照拉取失败, 本次仅计算全A档: {err!r}")
+            multi_sample = False
+            sample_spaces = ["full"]
 
     # 行情/市值/除息**三池并行**预取(Tushare 每接口限额互相独立, 各自 7.5/s 节流, 接口间不互相等待):
     # 进度按份额加权合并(行情 20% + 市值 18% + 除息 18%, 完成度单调 => 合并进度单调),
@@ -1800,13 +1944,16 @@ def rank_range_chain(
     if timings is not None:
         timings["accumulate"] = time.perf_counter() - _t0
 
-    # 6 条序列的连乘容器: series -> 层级"1/2/3" -> index_code -> 累计因子
+    # 6 条序列的连乘容器: series -> [样本档key(None=单档)] -> 层级"1/2/3" -> index_code -> 累计因子
     series_names = ("ew_p", "ew_r", "fw_p", "fw_r", "tw_p", "tw_r")
-    chain_prod: dict[str, dict[str, dict[str, float]]] = {
-        series: {"1": {}, "2": {}, "3": {}} for series in series_names
+    pool_keys: list = list(sample_spaces) if multi_sample else [None]
+    chain_prod: dict[str, dict[str, dict[str, dict[str, float]]]] = {
+        series: {key: {"1": {}, "2": {}, "3": {}} for key in pool_keys} for series in series_names
     }
     # 末次已知成分股数量(各序列同日一致, 以最后一天的榜单为准)
-    last_counts: dict[str, dict[str, int]] = {"1": {}, "2": {}, "3": {}}
+    last_counts: dict[str, dict[str, dict[str, int]]] = {
+        key: {"1": {}, "2": {}, "3": {}} for key in pool_keys
+    }
 
     # 停牌市值跨日复用: ts_code -> (自由流通市值, 总市值); 当日活跃时刷新为全市场数据,
     # 当日缺失(=停牌/未上市)时沿用最近一次已知值, 零重复点查; 复牌/新上市日自动刷新
@@ -1872,49 +2019,77 @@ def rank_range_chain(
         if timings is not None:
             timings["mv_resolve"] = timings.get("mv_resolve", 0.0) + (time.perf_counter() - _t0)
 
-        # 当日 6 条序列(与单日榜同一套函数/口径)
+        # 当日各样本档的生效样本(月度快照分段: 跨月在快照日切换, 中途调样生效)
+        day_pools: dict[str, set[str] | None] | None = None
+        if multi_sample:
+            day_pools = {
+                key: (
+                    None if SAMPLE_SPACES.get(key) is None
+                    else sample_pool_at(sample_segments[key], day_str)
+                )
+                for key in sample_spaces
+            }
+
+        # 当日 6 条序列(与单日榜同一套函数/口径; 多样本档单循环多桶)
         if timings is not None:
             _t0 = time.perf_counter()
-        series_ranks = {
-            "ew_p": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="price"),
-            "ew_r": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="reinvest"),
-            "fw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="price"),
-            "fw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="reinvest"),
-            "tw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="price"),
-            "tw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="reinvest"),
+        day_results: dict[str, tuple | dict] = {
+            "ew_p": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="price", sample_pools=day_pools),
+            "ew_r": daily_rank_equal_weight(tree, market_data, day_dt, cancel_check, div_kind="reinvest", sample_pools=day_pools),
+            "fw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="price", sample_pools=day_pools),
+            "fw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="free", div_kind="reinvest", sample_pools=day_pools),
+            "tw_p": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="price", sample_pools=day_pools),
+            "tw_r": daily_rank_float_weight(tree, market_data, day_dt, cancel_check=cancel_check, mv_kind="total", div_kind="reinvest", sample_pools=day_pools),
         }
         if timings is not None:
             timings["compute"] = timings.get("compute", 0.0) + (time.perf_counter() - _t0)
 
-        for series, (l1, l2, l3) in series_ranks.items():
-            for lv, rank_list in (("1", l1), ("2", l2), ("3", l3)):
-                target = chain_prod[series][lv]
-                count_target = last_counts[lv]
-                for code, pct, count in rank_list:
-                    target[code] = target.get(code, 1.0) * (1.0 + pct / 100.0)
-                    count_target[code] = count
+        for series, ranks in day_results.items():
+            per_key = ranks if multi_sample else {None: ranks}
+            for key, (l1, l2, l3) in per_key.items():
+                for lv, rank_list in (("1", l1), ("2", l2), ("3", l3)):
+                    target = chain_prod[series][key][lv]
+                    count_target = last_counts[key][lv]
+                    for code, pct, count in rank_list:
+                        target[code] = target.get(code, 1.0) * (1.0 + pct / 100.0)
+                        count_target[code] = count
 
         _notify(72.0 + (day_idx + 1) / total_days * 25.0,
                 f"逐日链式计算中 {day_idx + 1}/{total_days} 个交易日")
 
     # 结果: 连乘因子转累计涨幅, 按涨幅降序
-    def _make_rank(series: str, lv: str) -> RankList:
-        factored = chain_prod[series][lv]
+    def _make_rank(series: str, key, lv: str) -> RankList:
+        factored = chain_prod[series][key][lv]
         return sorted(
             (
-                (code, (factor - 1.0) * 100.0, last_counts[lv].get(code, 0))
+                (code, (factor - 1.0) * 100.0, last_counts[key][lv].get(code, 0))
                 for code, factor in factored.items()
             ),
             key=lambda x: x[1],
             reverse=True,
         )
 
-    levels = {series: tuple(_make_rank(series, lv) for lv in ("1", "2", "3")) for series in series_names}
+    levels = {
+        (series, key): tuple(_make_rank(series, key, lv) for lv in ("1", "2", "3"))
+        for series in series_names
+        for key in pool_keys
+    }
 
     # 区间末交易日时点财务指标全套(仅 valuation_out 场景): 与单日榜同一公共编排(键结构/降级/
     # 末段取消兜底一致), 进度刻度 97.0~97.9(不越过 98"计算完成"段)
     if valuation_out is not None:
         _notify(97.0, "计算区间末财务指标")
+        end_pools = (
+            {
+                key: (
+                    None if SAMPLE_SPACES.get(key) is None
+                    else sample_pool_at(sample_segments[key], trading_days[-1])
+                )
+                for key in sample_spaces
+            }
+            if multi_sample
+            else None
+        )
         valuation_out.update(
             compute_fin_metric_suite(
                 tree,
@@ -1930,6 +2105,7 @@ def rank_range_chain(
                 notify=lambda pct, message, _phase: _notify(pct, message),
                 progress_base=97.0,
                 progress_step=0.08,
+                sample_sets=end_pools,
             )
         )
 
@@ -1960,6 +2136,16 @@ def rank_range_chain(
         detail["ts_code_to_total_mv"] = {c: _to_pre_mv(c, mv) for c, mv in first_total.items()}
 
     _notify(98.0, "计算完成")
+    if multi_sample:
+        return {
+            key: (
+                levels[("ew_p", key)], levels[("ew_r", key)],
+                levels[("fw_p", key)], levels[("fw_r", key)],
+                levels[("tw_p", key)], levels[("tw_r", key)],
+            )
+            for key in pool_keys
+        }
     return (
-        levels["ew_p"], levels["ew_r"], levels["fw_p"], levels["fw_r"], levels["tw_p"], levels["tw_r"]
+        levels[("ew_p", None)], levels[("ew_r", None)], levels[("fw_p", None)],
+        levels[("fw_r", None)], levels[("tw_p", None)], levels[("tw_r", None)]
     )

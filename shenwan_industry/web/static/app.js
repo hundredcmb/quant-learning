@@ -13,6 +13,7 @@ const state = {
   mode: "daily",
   weight: "float_tr",
   level: 1,
+  sampleSpace: "full", // 样本空间: full=全A(默认) / csi1800=中证1800(800+1000) / csi800=中证800, 三档一次全算、前端即时切换
   profitBasis: "attr_ttm", // 净利润口径: attr_ttm=归母-TTM(默认) / attr_dynamic=归母-动态 / deduct_ttm=扣非-TTM / deduct_dynamic=扣非-动态, 后端一次算四口径、此处仅切换显示(列头固定"PE"/"净利润同比")
   roeAlgo: "waa", // ROE算法: waa=加权平均(当前唯一档), 字段名带算法段 roe_waa_{basis}, ROE 分子随"净利润口径"联动
   divBasis: "est", // 股息率口径: est=TTM估算值(默认) / static=静态, 字段 div_{basis}
@@ -195,6 +196,13 @@ function bindEvents() {
 
   $("#level").addEventListener("change", (event) => {
     state.level = Number(event.target.value);
+    if (state.result) {
+      renderMainTable();
+    }
+  });
+
+  $("#sample-space").addEventListener("change", (event) => {
+    state.sampleSpace = event.target.value;
     if (state.result) {
       renderMainTable();
     }
@@ -417,7 +425,9 @@ function renderMainTable() {
   }
 
   const level = String(state.level);
-  const sourceRows = state.result.levels[level] || [];
+  // 样本空间档(三档一次全算, 切换即时显示; 档缺失=该次任务未算(如快照拉取失败降级)显示空表)
+  const levelsForSample = (state.result.levels || {})[state.sampleSpace];
+  const sourceRows = (levelsForSample || {})[level] || [];
   const pctField = { total: "total_weighted_pct", total_tr: "total_tr_weighted_pct", float: "float_weighted_pct", float_tr: "float_tr_weighted_pct", equal: "equal_weighted_pct", equal_tr: "equal_tr_weighted_pct" }[state.weight] || "float_weighted_pct";
   const countField = { total: "total_constituent_count", total_tr: "total_tr_constituent_count", float: "float_constituent_count", float_tr: "float_tr_constituent_count", equal: "equal_constituent_count", equal_tr: "equal_tr_constituent_count" }[state.weight] || "float_constituent_count";
   // 财务指标单列随加权方式切换市值口径(free/total)、随"净利润口径"下拉切换利润口径
@@ -552,7 +562,7 @@ function openSubPanel(indexCode, industryName) {
   showElement("#sub-panel");
   updateSortArrows("#sub-table", state.subSort);
 
-  fetch(`/api/jobs/${state.jobId}/constituents/${state.level}/${encodeURIComponent(indexCode)}?weight=${state.weight}`)
+  fetch(`/api/jobs/${state.jobId}/constituents/${state.level}/${encodeURIComponent(indexCode)}?weight=${state.weight}&sample=${state.sampleSpace}`)
     .then(handleFetchError)
     .then((data) => {
       state.subRows = data.rows || [];

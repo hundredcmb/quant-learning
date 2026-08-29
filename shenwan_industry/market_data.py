@@ -200,6 +200,7 @@ class MarketDataProvider:
         self._rate_slots: dict[str, list] = {}  # 接口名 -> [锁, 下一请求开始时刻]; 每接口独立 7.5/s 节流
         self._dividend_history: DividendHistory | None = None  # 分红事件持久缓存(惰性单例, 文件落盘)
         self._div_dps_cache: dict[datetime, tuple[dict[str, float], dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM估算DPS, 静态DPS, 统计)——股息率双口径
+        self._index_weight_month_cache: dict[tuple[str, str], dict[str, set[str]]] = {}  # (index_code, YYYYMM) -> {快照日: 样本集}——样本空间月度快照缓存
 
     def _acquire_rate_slot(self, api_name: str) -> None:
         """按**接口独立**的请求开始速率节制: 每接口开始时刻按 MAX_DAILY_FETCH_RATE 平摊
@@ -1297,6 +1298,53 @@ class MarketDataProvider:
 
         self._equity_cache[date] = (equity_map, stats)
         return equity_map, stats
+
+    def get_index_weight_snapshots(
+        self, index_code: str, start_str: str, end_str: str
+    ) -> list[tuple[str, set[str]]]:
+        """拉取指数月度成分快照(样本空间功能): 返回 [(快照日, {con_code})] 按快照日升序
+
+        index_weight 为**月度数据**(每月末一期, 官方建议按月查询)——按**自然月**逐月拉取并
+        做 (index_code, 月) 内存缓存(同窗口二次调用零请求, 供编排与子表共用); **忽略权重字段
+        只用样本清单**(行业加权用本模块自有市值权重, 与中证官方权重无关); con_code 与申万/
+        行情代码同格式可直接交集; 历史区间回看天然 PIT 正确(快照即当时成分)
+        """
+        snapshots: dict[str, set[str]] = {}
+        # 窗口覆盖的自然月(含 start 所在月, 不早于 start)
+        cur = datetime.strptime(start_str[:6] + "01", "%Y%m%d")
+        end_month = end_str[:6]
+        while cur.strftime("%Y%m") <= end_month:
+            month_key = cur.strftime("%Y%m")
+            month_start = month_key + "01"
+            month_end = month_key + "31"  # 超出部分接口按窗口自动裁剪(31 日为窗口上界)
+            cached = self._index_weight_month_cache.get((index_code, month_key))
+            if cached is None:
+                per_month: dict[str, set[str]] = {}
+                offset = 0
+                while True:
+                    self._acquire_rate_slot("index_weight")
+                    df = self.pro.index_weight(
+                        index_code=index_code, start_date=month_start, end_date=month_end,
+                        offset=offset, limit=9999,
+                    )
+                    if df is None or df.empty:
+                        break
+                    for row in df.itertuples(index=False):
+                        trade_date = str(getattr(row, "trade_date", "") or "")
+                        con_code = str(getattr(row, "con_code", "") or "")
+                        if trade_date and con_code:
+                            per_month.setdefault(trade_date, set()).add(con_code)
+                    if len(df) < 9999:
+                        break
+                    offset += len(df)
+                cached = per_month
+                self._index_weight_month_cache[(index_code, month_key)] = cached
+            snapshots.update(cached)
+            # 下一自然月
+            cur = datetime(month=1 if cur.month == 12 else cur.month + 1, year=cur.year + (1 if cur.month == 12 else 0), day=1)
+        return sorted(
+            (d, s) for d, s in snapshots.items() if start_str <= d <= end_str
+        )
 
     @property
     def dividend_history(self) -> DividendHistory:
