@@ -137,7 +137,7 @@ if __name__ == "__main__":
         print(
             f"净利润同比(归母-TTM)统计: 参与 {growth_stats.get('stocks_pair', 0)} 只, "
             f"扭亏 {growth_stats.get('stocks_turnaround', 0)} 只, 转亏 {growth_stats.get('stocks_turnloss', 0)} 只, "
-            f"持续亏损 {growth_stats.get('stocks_continued_loss', 0)} 只, "
+            f"加大亏损 {growth_stats.get('stocks_widen_loss', 0)} 只, 减少亏损 {growth_stats.get('stocks_narrow_loss', 0)} 只, "
             f"无基期 {growth_stats.get('stocks_no_base', 0)} 只, "
             f"池内无数据 {growth_stats.get('pool_no_value', 0)} 只"
         )
@@ -190,7 +190,7 @@ if __name__ == "__main__":
                 raise ValueError(f"没有获取到总市值·分红再投资涨幅数据: index_code={index_ts_code}")
 
             # 指标列: 键缺失 -> "—"(无数据/计算失败); PE/PB 值为 None -> "亏损"/"资不抵债";
-            # 净利润同比值为 数值%/类别文本("扭亏"/"转亏"/"持续亏损")
+            # 净利润同比值为 数值%/类别文本("扭亏"/"转亏"/"加大亏损"/"减少亏损")
             def _fmt_metric(metric_for_level: dict[str, float | None], code: str, none_label: str) -> str:
                 if code not in metric_for_level:
                     return "—"

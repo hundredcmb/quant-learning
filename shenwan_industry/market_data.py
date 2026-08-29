@@ -910,12 +910,13 @@ class MarketDataProvider:
 
     @staticmethod
     def _growth_pair_category_stats(pairs: dict[str, tuple[float, float]]) -> dict[str, int]:
-        """增长对类别统计(参与/扭亏/转亏/持续亏损)——TTM 同比与动态同比共用同一判定规则"""
+        """增长对类别统计(参与/扭亏/转亏/加大亏损/减少亏损)——TTM 同比与动态同比共用同一判定规则"""
         stats = {
             "stocks_pair": len(pairs),
             "stocks_turnaround": 0,
             "stocks_turnloss": 0,
-            "stocks_continued_loss": 0,
+            "stocks_widen_loss": 0,
+            "stocks_narrow_loss": 0,
         }
         for now_value, last_value in pairs.values():
             if now_value > 0 and last_value > 0:
@@ -924,8 +925,10 @@ class MarketDataProvider:
                 stats["stocks_turnaround"] += 1
             elif last_value > 0:
                 stats["stocks_turnloss"] += 1
+            elif now_value < last_value:
+                stats["stocks_widen_loss"] += 1
             else:
-                stats["stocks_continued_loss"] += 1
+                stats["stocks_narrow_loss"] += 1
         return stats
 
     def get_ts_code_to_ttm_growth_pair(
@@ -935,7 +938,7 @@ class MarketDataProvider:
 
         profit_kind: "attr"=归母(默认, 含 express 快报双源合并) / "deduct"=扣非
         (get_ts_code_to_ttm_deducted_profit, 无快报源——年报季时效落后归母一档)。
-        两口径共用同一批已拉报告期数据, 扣非仅本地重算零新增请求; 类别(扭亏/转亏/持续亏损)
+        两口径共用同一批已拉报告期数据, 扣非仅本地重算零新增请求; 类别(扭亏/转亏/加大亏损/减少亏损)
         按各自口径独立判定(归母扭亏而扣非仍亏真实存在——非经常性收益保壳情形)。
         pairs: ts_code -> (当期 TTM, 基期 TTM)(元)——**两期 TTM 均有才入**(both-or-neither:
         缺基期的新股不进行业 Σ 分子也不进分母, 避免只进分子抬高增速)。基期 = growth_base_date(D-1年),
@@ -943,9 +946,11 @@ class MarketDataProvider:
         预热由 prefetch_fina_indicators(growth_base_date=...) 串行补拉)。
         注意基期为"当前快照回看"(含此后发布的更正, 与既有 PE 历史回看口径一致, 见 known_issues 第 39 条)。
         stats: {"stocks_pair"(参与), "stocks_turnaround"(扭亏: 基期≤0 当期>0),
-        "stocks_turnloss"(转亏: 基期>0 当期≤0), "stocks_continued_loss"(持续亏损: 两期均≤0),
+        "stocks_turnloss"(转亏: 基期>0 当期≤0), "stocks_widen_loss"(加大亏损: 两期均≤0 且当期更深),
+        "stocks_narrow_loss"(减少亏损: 两期均≤0 且当期持平原或收窄),
         "stocks_no_base"(当期有 TTM 而基期无)} 全市场口径。
-        个股/行业的数值与四类显示("扭亏"/"转亏"/"持续亏损")由 industry_ranking.classify_profit_growth 统一判定。
+        个股/行业的数值与四类显示("扭亏"/"转亏"/"加大亏损"/"减少亏损")由
+        industry_ranking.classify_profit_growth 统一判定。
         结果按 (计算日, 口径) 缓存(_growth_pair_cache)
         """
         if profit_kind not in ("attr", "deduct"):

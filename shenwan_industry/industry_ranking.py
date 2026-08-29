@@ -638,8 +638,10 @@ def daily_pb(
 def classify_profit_growth(now_value: float, last_value: float) -> float | str:
     """净利润同比分类(TTM/动态两口径、个股与行业 Σ 同一规则): 返回 数值%(如 23.45) 或 类别文本
 
-    排序位(低→高): "持续亏损"(两期均≤0) < "转亏"(基期>0 当期≤0) < 数值[−100%,∞) < "扭亏"(基期≤0 当期>0);
-    数值 = (now/last − 1)×100; now=0 按当期≤0 处理(浮点 TTM 恰为 0 实际遇不到, 规则写死)。
+    排序位(低→高): "加大亏损"(两期均≤0 且 当期<基期) < "减少亏损"(两期均≤0 且 当期≥基期)
+    < "转亏"(基期>0 当期≤0) < 数值[−100%,∞) < "扭亏"(基期≤0 当期>0);
+    数值 = (now/last − 1)×100; now=0 按当期≤0 处理(浮点 TTM 恰为 0 实际遇不到, 规则写死);
+    两期均≤0 时按 |当期亏损| 与 |基期亏损| 比较分档(当期更深→加大亏损、持平和收窄→减少亏损)。
     无数据(缺基期等)不入本函数、由键缺失表示(显示"—"、排序恒置底)
     """
     if now_value > 0 and last_value > 0:
@@ -648,7 +650,7 @@ def classify_profit_growth(now_value: float, last_value: float) -> float | str:
         return "扭亏"
     if last_value > 0:
         return "转亏"
-    return "持续亏损"
+    return "加大亏损" if now_value < last_value else "减少亏损"
 
 
 def daily_profit_growth(
@@ -671,14 +673,16 @@ def daily_profit_growth(
     dynamic: False=TTM 口径(默认, TTM(D)/TTM(D-1年)) / True=动态口径(最新期累计/去年同季累计,
     同相位对比、与"动态值/去年同期动态值"数学等价)。
 
-    levels: {"1"|"2"|"3": {index_code: 数值% | "扭亏" | "转亏" | "持续亏损"}}, 键缺失 = 无数据(显示"—")。
+    levels: {"1"|"2"|"3": {index_code: 数值% | "扭亏" | "转亏" | "加大亏损" | "减少亏损"}},
+    键缺失 = 无数据(显示"—")。
     公式: 行业增长 = Σ 当期 / Σ 基期 − 1(与 PE 的 Σ市值/Σ股东值 同构, 亏损股不剔除、
     负值参与合计); 参与股票 = 两期值均有的成分股(both-or-neither, 缺基期的新股不进分子分母);
-    类别由 Σ 的符号按 classify_profit_growth 判定(行业整体 Σ两期≤0 → "持续亏损"、
-    Σ 去年>0 Σ 今年≤0 → "转亏"、Σ 去年≤0 Σ 今年>0 → "扭亏")。
+    类别由 Σ 两期的符号与大小按 classify_profit_growth 判定(行业整体 Σ两期≤0 → 按 Σ 变化
+    分"加大亏损"[Σ 当期更深]/"减少亏损"[Σ 当期持平原或收窄]、Σ 去年>0 Σ 今年≤0 → "转亏"、
+    Σ 去年≤0 Σ 今年>0 → "扭亏")。
     **无市值维度**: 纯基本面比值, 不依赖加权方式(等权模式也显示), 单列无 free/total 口径。
-    stats: 数据层五键(stocks_pair/turnaround/turnloss/continued_loss/no_base, 全市场口径) 叠加
-    pool_no_value(池内无增长对的股票数)
+    stats: 数据层六键(stocks_pair/turnaround/turnloss/widen_loss/narrow_loss/no_base, 全市场口径)
+    叠加 pool_no_value(池内无增长对的股票数)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -1251,7 +1255,7 @@ def run_daily_ranking(
     "stats": {...}}——PE 的四口径(basis ∈ PROFIT_BASES: 归母/扣非 × TTM/动态)**一次全部算出**
     (共享同一批财务数据与市值缓存, 动态与扣非口径仅本地重算零新增请求), 供 Web"净利润口径"
     下拉切换显示; **"growth_{basis}" 为 {"value": {"1"|"2"|"3": {index_code: 数值%|"扭亏"/"转亏"/
-    "持续亏损"}}, "stats": {...}}**(净利润同比四口径一次算出, 无市值维度、等权模式也显示、
+    "加大亏损"/"减少亏损"}}, "stats": {...}}**(净利润同比四口径一次算出, 无市值维度、等权模式也显示、
     随"净利润口径"下拉切换, 键缺失=无数据/降级); **"roe_waa_{basis}" 为 {"value":
     {"1"|"2"|"3": {index_code: ROE%}}, "stats": {...}}**(ROE 加权平均算法四口径一次算出
     (daily_roe), 无市值维度、等权模式也显示、随"净利润口径"下拉切换, 键缺失=无数据/降级/

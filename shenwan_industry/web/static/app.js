@@ -961,7 +961,7 @@ function sortRows(rows, sortState) {
     let aValue = a[key];
     let bValue = b[key];
     if (key === "growth" || key === "profit_growth") {
-      // 净利润同比列: 四级序(持续亏损<转亏<数值<扭亏), 类别文本映射为哨兵数值后参与比较
+      // 净利润同比列: 五级序(加大亏损<减少亏损<转亏<数值<扭亏), 类别文本映射为哨兵数值后参与比较
       aValue = growthSortValue(aValue);
       bValue = growthSortValue(bValue);
     }
@@ -1084,7 +1084,7 @@ function formatDividend(value) {
 function formatGrowth(value) {
   // 净利润同比: 数值分档显示(≥100% 用 +x.xx倍、否则带符号两位小数%) | 类别文本 | "—"(键缺失=无数据/降级);
   // 排序仍按真实数值(growthSortValue), 此处仅显示格式
-  if (value === "持续亏损" || value === "转亏" || value === "扭亏") {
+  if (value === "加大亏损" || value === "减少亏损" || value === "转亏" || value === "扭亏") {
     return value;
   }
   if (value == null || Number.isNaN(Number(value))) {
@@ -1098,13 +1098,16 @@ function formatGrowth(value) {
 }
 
 function growthSortValue(value) {
-  // 四级排序位(低→高): 持续亏损 < 转亏 < 数值[−100,∞) < 扭亏; 哨兵取远离数值域的量级,
+  // 五级排序位(低→高): 加大亏损 < 减少亏损 < 转亏 < 数值[−100,∞) < 扭亏; 哨兵取远离数值域的量级,
   // 数值恒 >= −100(%); 无数据恒置底——null(子表后端对无数据股票下发 null)与 undefined
   // 一并归一为 undefined, 走 sortRows 既有恒置底分支(否则 null 会落入"按最大值"分支, 降序置顶)
   if (value == null) {
     return undefined;
   }
-  if (value === "持续亏损") {
+  if (value === "加大亏损") {
+    return -3e12;
+  }
+  if (value === "减少亏损") {
     return -2e12;
   }
   if (value === "转亏") {
@@ -1187,7 +1190,7 @@ function pctClass(value) {
   }
   return "zero";
 }
-// 净利润同比着色: 仅数值走红涨绿跌(同涨幅列), 类别文本("扭亏"/"转亏"/"持续亏损")与
+// 净利润同比着色: 仅数值走红涨绿跌(同涨幅列), 类别文本("扭亏"/"转亏"/"加大亏损"/"减少亏损")与
 // 无数据不着色——字符串经 pctClass 数值化为 NaN 自然落入 zero 中性类
 function growthClass(value) {
   return pctClass(value);

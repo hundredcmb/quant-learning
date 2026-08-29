@@ -930,7 +930,7 @@ def _build_levels(
             if pb_free and pb_total:
                 row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
                 row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
-            # 净利润同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"持续亏损",
+            # 净利润同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"加大亏损"/"减少亏损",
             # 四口径字段 profit_growth_{basis}, 前端随"净利润口径"下拉切换;
             # 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
             for basis, basis_value in (growth_maps or {}).items():
