@@ -188,6 +188,17 @@ select {
   background: #fff;
 }
 
+/* 控件行换行控制: "行业层级"与"样本空间"选项文本短, 收窄宽度使第一行容纳
+"加权方式 | 行业层级 | 样本空间"、第二行为"净利润口径 | ROE算法 | 股息率口径"
+(样本空间保持在行业层级右侧、ROE算法上侧) */
+#level {
+  min-width: 96px;
+}
+
+#sample-space {
+  min-width: 118px;
+}
+
 button {
   border: 0;
   border-radius: 8px;
@@ -383,6 +394,12 @@ tbody tr:hover {
 
 .index-link:hover {
   text-decoration: underline;
+}
+
+/* 弹窗打开期间锁定页面滚动(阻断滚轮穿透到下层主表——子表内容少、自身无滚动条时
+   overscroll-behavior 不生效, 滚动会直接冒泡到页面; 由 JS 在开/关弹窗时切换该类) */
+body.modal-open {
+  overflow: hidden;
 }
 
 .modal-mask {

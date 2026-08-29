@@ -560,6 +560,7 @@ function openSubPanel(indexCode, industryName) {
   hideElement("#sub-error");
   showElement("#sub-loading");
   showElement("#sub-panel");
+  updateModalScrollLock();
   updateSortArrows("#sub-table", state.subSort);
 
   fetch(`/api/jobs/${state.jobId}/constituents/${state.level}/${encodeURIComponent(indexCode)}?weight=${state.weight}&sample=${state.sampleSpace}`)
@@ -616,6 +617,7 @@ function renderSubTable() {
 
 function closeSubPanel() {
   hideElement("#sub-panel");
+  updateModalScrollLock();
   state.currentIndustry = null;
   state.subRows = [];
 }
@@ -637,6 +639,7 @@ function openKlinePanel(indexCode, industryName, isStock = false) {
   hideElement("#kline-error");
   showElement("#kline-loading");
   showElement("#kline-panel");
+  updateModalScrollLock();
 
   const url = isStock
     ? `/api/stock/${encodeURIComponent(indexCode)}/kline`
@@ -657,6 +660,7 @@ function openKlinePanel(indexCode, industryName, isStock = false) {
 
 function closeKlinePanel() {
   hideElement("#kline-panel");
+  updateModalScrollLock();
   state.klineData = null;
   if (state.klineChart) {
     state.klineChart.dispose();
@@ -1006,6 +1010,12 @@ function showError(message) {
 
 function showElement(element) {
   resolveElement(element).classList.remove("hidden");
+}
+
+function updateModalScrollLock() {
+  // 任一弹窗(成分股子表/K线)打开即锁定页面滚动, 防止滚轮穿透到下层主表
+  const open = ["#sub-panel", "#kline-panel"].some(sel => !$(sel).classList.contains("hidden"));
+  document.body.classList.toggle("modal-open", open);
 }
 
 function hideElement(element) {
