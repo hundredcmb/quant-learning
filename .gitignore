@@ -18,3 +18,6 @@ holders/etf/*.xlsx
 
 # 本地配置（申万模块 Tushare token 等，不随仓库提交）
 .quant-learning/
+
+# 申万估值走势序列缓存（K 线副图 PE/PB，本地运行产物，不随仓库提交）
+shenwan_industry/data/valuation_history.json

@@ -136,6 +136,24 @@ def get_index_kline(
         raise HTTPException(status_code=404, detail=str(err)) from err
 
 
+@app.get("/api/index/{index_code}/valuation")
+def get_index_valuation(index_code: str) -> dict:
+    """查询行业指数估值走势(PE/PB)序列状态；ready 时携带序列数据"""
+    try:
+        return service.get_index_valuation(index_code)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
+@app.post("/api/index/{index_code}/valuation")
+def start_index_valuation(index_code: str) -> dict:
+    """启动(或并入)行业指数估值走势后台计算(同指数幂等)"""
+    try:
+        return service.start_index_valuation(index_code)
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
 @app.get("/api/stock/{ts_code}/kline")
 def get_stock_kline(
     ts_code: str,

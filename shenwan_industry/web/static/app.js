@@ -30,6 +30,8 @@ const state = {
   klineChart: null,
   klineIsStock: false, // 当前 K 线来源：true=个股(daily)，false=行业指数(sw_daily)
   availableIndexes: null, // Set|null: 可查看 K 线的行业指数代码；null 表示未加载/失败（回退仅 L1 可点击）
+  klineValuation: null, // 当前弹窗的估值序列缓存 {indexCode, series:{pe:{日期:值|null}, pb:{...}}}; 弹窗关闭清空
+  klineValuationTimer: null, // 估值计算状态轮询句柄(setInterval)
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -254,7 +256,14 @@ function bindEvents() {
     if (state.klineData && state.klineChart) {
       updateKlineSubchart();
     }
+    if (isValuationMode()) {
+      syncKlineValuation();
+    } else {
+      stopValuationPoll();
+      hideValuationOverlay();
+    }
   });
+  $("#kline-valuation-btn").addEventListener("click", startValuationQuery);
 
   window.addEventListener("resize", () => {
     if (state.klineChart) {
@@ -627,10 +636,17 @@ function openKlinePanel(indexCode, industryName, isStock = false) {
   state.klineData = null;
   state.klineIsStock = isStock;
   state.klineSubchart = "amount";
+  state.klineValuation = null;
+  stopValuationPoll();
+  hideValuationOverlay();
   const subchartSelect = $("#kline-subchart");
   if (subchartSelect) {
     subchartSelect.value = "amount";
   }
+  // 估值走势(PE/PB)仅行业指数支持——个股 K 线隐藏这两个选项
+  $$("#kline-subchart option.valuation-opt").forEach((opt) => {
+    opt.hidden = isStock;
+  });
   $("#kline-title").textContent = industryName;
   $("#kline-subtitle").textContent = indexCode;
   if (state.klineChart) {
@@ -663,6 +679,9 @@ function closeKlinePanel() {
   hideElement("#kline-panel");
   updateModalScrollLock();
   state.klineData = null;
+  state.klineValuation = null;
+  stopValuationPoll();
+  hideValuationOverlay();
   if (state.klineChart) {
     state.klineChart.dispose();
     state.klineChart = null;
@@ -696,28 +715,15 @@ function renderKlineChart() {
 
   const dates = bars.map((bar) => formatDateText(bar.date));
   const candleData = bars.map((bar) => [bar.open, bar.close, bar.low, bar.high]);
-  const isAmount = state.klineSubchart === "amount";
-  const subValues = bars.map((bar) => {
-    const raw = isAmount ? bar.amount : bar.vol;
-    // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
-    const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
-    return raw == null ? null : raw * scale;
-  });
-  const subColors = bars.map((bar) => {
-    if (bar.close >= bar.open) {
-      return "#d92d20";
-    }
-    return "#12995b";
-  });
-  const validSubValues = subValues.filter((value) => value != null && Number.isFinite(Number(value)));
-  const subMax = validSubValues.length ? Math.max(...validSubValues) : null;
+  // 副图指标(成交额/成交量=柱状, PE/PB=估值走势线)统一由 buildSubchartSpec 构建
+  const subSpec = buildSubchartSpec(bars);
 
   chart.setOption({
     animation: false,
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross" },
-      formatter: buildKlineTooltipFormatter(bars, isAmount),
+      formatter: buildKlineTooltipFormatter(bars, subSpec.kind),
     },
     axisPointer: {
       link: [{ xAxisIndex: "all" }],
@@ -764,7 +770,7 @@ function renderKlineChart() {
         left: 76,
         top: "68.5%",
         style: {
-          text: formatAxisMax(subMax),
+          text: subSpec.maxText == null ? "—" : subSpec.maxText,
           fill: "#64748b",
           font: "12px sans-serif",
         },
@@ -798,14 +804,7 @@ function renderKlineChart() {
           borderColor0: "#12995b",
         },
       },
-      {
-        name: isAmount ? "成交额" : "成交量",
-        type: "bar",
-        xAxisIndex: 1,
-        yAxisIndex: 1,
-        data: subValues,
-        itemStyle: { color: (params) => subColors[params.dataIndex] },
-      },
+      subSpec.series,
     ],
   });
 }
@@ -843,21 +842,63 @@ function positionKlineSubchart(chart) {
   } catch (err) {
     // 布局未就绪时保留 CSS 默认位置（左上角），不阻塞渲染
   }
+  positionKlineValuationOverlay(chart);
 }
 
-function buildKlineTooltipFormatter(bars, isAmount) {  return (params) => {
+function positionKlineValuationOverlay(chart) {
+  // 估值查询覆盖层定位到**副图栅格(index=1)中心**（CSS 默认 79% 仅作布局未就绪时的近似兜底）
+  const overlay = $("#kline-valuation-overlay");
+  if (!overlay || !chart || overlay.classList.contains("hidden")) {
+    return;
+  }
+  try {
+    const grid = chart.getModel().getComponent("grid", 1);
+    const chartEl = document.getElementById("kline-chart");
+    const bodyEl = document.querySelector(".kline-body");
+    if (grid && grid.coordinateSystem && chartEl && bodyEl) {
+      const rect = grid.coordinateSystem.getRect();
+      const chartRect = chartEl.getBoundingClientRect();
+      const bodyRect = bodyEl.getBoundingClientRect();
+      overlay.style.top = `${chartRect.top - bodyRect.top + rect.y + rect.height / 2}px`;
+      overlay.style.left = `${chartRect.left - bodyRect.left + rect.x + rect.width / 2}px`;
+    }
+  } catch (err) {
+    // 布局未就绪时保留 CSS 默认位置，不阻塞渲染
+  }
+}
+
+function buildKlineTooltipFormatter(bars, kind) {
+  return (params) => {
     const candle = params.find((item) => item.seriesType === "candlestick");
     if (!candle) {
       return "";
     }
     const index = candle.dataIndex;
     const bar = bars[index];
-    const subLabel = isAmount ? "成交额" : "成交量";
-    const raw = isAmount ? bar.amount : bar.vol;
-    // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
-    const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
-    const scaled = raw == null ? null : raw * scale;
-    const subText = isAmount ? formatAmount(scaled) : formatVolume(scaled);
+    // 副图行: 成交额/成交量=当日量额; PE/PB=估值走势(键缺失=窗口外/未算"—"、null=亏损/资不抵债)
+    let subLabel;
+    let subText;
+    if (kind === "pe" || kind === "pb") {
+      const map = valuationMapFor(kind);
+      subLabel = kind.toUpperCase();
+      const raw = Object.prototype.hasOwnProperty.call(map, bar.date) ? map[bar.date] : undefined;
+      subText =
+        raw === undefined
+          ? "—"
+          : raw === null
+            ? kind === "pe"
+              ? "亏损"
+              : "资不抵债"
+            : Number(raw).toFixed(2);
+    } else {
+      const isAmount = kind === "amount";
+      subLabel = isAmount ? "成交额" : "成交量";
+      const raw = isAmount ? bar.amount : bar.vol;
+      // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
+      const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
+      const scaled = raw == null ? null : raw * scale;
+      subText = isAmount ? formatAmount(scaled) : formatVolume(scaled);
+    }
     // pre_close 缺失/为 0 时涨幅显示 "—"（除零保护）
     const pct =
       bar.pre_close && bar.close != null
@@ -875,44 +916,226 @@ function buildKlineTooltipFormatter(bars, isAmount) {  return (params) => {
   };
 }
 
-function updateKlineSubchart() {
-  if (!state.klineData || !state.klineChart) {
-    return;
+function buildSubchartSpec(bars) {
+  // 副图指标统一构建(renderKlineChart 全量与 updateKlineSubchart 增量共用):
+  // amount/vol = 红涨绿跌柱状; pe/pb = 估值走势折线(窗口外/未算=null 断线, 亏损日 null 断线)
+  const kind = state.klineSubchart;
+  if (kind === "pe" || kind === "pb") {
+    const map = valuationMapFor(kind);
+    const values = bars.map((bar) =>
+      Object.prototype.hasOwnProperty.call(map, bar.date) ? map[bar.date] : null
+    );
+    const valid = values.filter((value) => value != null && Number.isFinite(Number(value)));
+    return {
+      kind,
+      maxText: valid.length ? Math.max(...valid).toFixed(2) : null,
+      series: {
+        name: kind === "pe" ? "PE(自由流通·归母TTM)" : "PB(自由流通)",
+        type: "line",
+        xAxisIndex: 1,
+        yAxisIndex: 1,
+        data: values,
+        connectNulls: false,
+        showSymbol: false,
+        lineStyle: { width: 1.5, color: "#2563eb" },
+        itemStyle: { color: "#2563eb" },
+      },
+    };
   }
-  const bars = state.klineData.bars || [];
-  const isAmount = state.klineSubchart === "amount";
-  const subValues = bars.map((bar) => {
+  const isAmount = kind === "amount";
+  const values = bars.map((bar) => {
     const raw = isAmount ? bar.amount : bar.vol;
     // 个股 daily: amount 千元→万元(/10)、vol 手→万股(/100)；行业 sw_daily 已是万元/万股
     const scale = state.klineIsStock ? (isAmount ? 0.1 : 0.01) : 1;
     return raw == null ? null : raw * scale;
   });
-  const subColors = bars.map((bar) => {
+  const colors = bars.map((bar) => {
     if (bar.close >= bar.open) {
       return "#d92d20";
     }
     return "#12995b";
   });
-  const validSubValues = subValues.filter((value) => value != null && Number.isFinite(Number(value)));
-  const subMax = validSubValues.length ? Math.max(...validSubValues) : null;
+  const valid = values.filter((value) => value != null && Number.isFinite(Number(value)));
+  return {
+    kind,
+    maxText: valid.length ? formatAxisMax(Math.max(...valid)) : null,
+    series: {
+      name: isAmount ? "成交额" : "成交量",
+      type: "bar",
+      xAxisIndex: 1,
+      yAxisIndex: 1,
+      data: values,
+      itemStyle: { color: (params) => colors[params.dataIndex] },
+    },
+  };
+}
 
+function updateKlineSubchart() {
+  if (!state.klineData || !state.klineChart) {
+    return;
+  }
+  const bars = state.klineData.bars || [];
+  const spec = buildSubchartSpec(bars);
+  // 副图 series 完整对象下发(含 xAxisIndex/yAxisIndex/type): bar→line 类型切换时 ECharts
+  // 按新选项重建组件, 漏写轴索引会回退默认 0 画进主图
   state.klineChart.setOption({
     tooltip: {
-      formatter: buildKlineTooltipFormatter(bars, isAmount),
+      formatter: buildKlineTooltipFormatter(bars, spec.kind),
     },
-    series: [
-      {},
-      {
-        name: isAmount ? "成交额" : "成交量",
-        data: subValues,
-        itemStyle: { color: (params) => subColors[params.dataIndex] },
-      },
-    ],
+    series: [{}, spec.series],
     graphic: {
       id: "sub-max",
-      style: { text: formatAxisMax(subMax) },
+      style: { text: spec.maxText == null ? "—" : spec.maxText },
     },
   });
+}
+
+// ---------- 估值走势(PE/PB 副图指标): 后台计算 + 进度轮询 + 覆盖层 ----------
+
+function isValuationMode() {
+  // PE/PB 副图模式(仅行业指数; 个股 K 线已隐藏选项且切回 amount)
+  return state.klineSubchart === "pe" || state.klineSubchart === "pb";
+}
+
+function valuationMapFor(kind) {
+  // 当前缓存序列 {日期: 值|null}(null=亏损/资不抵债); 未就绪返回空对象(全 null 断线)
+  if (kind !== "pe" && kind !== "pb") {
+    return {};
+  }
+  return (state.klineValuation && state.klineValuation.series && state.klineValuation.series[kind]) || {};
+}
+
+function syncKlineValuation() {
+  // 切到 PE/PB(或数据就位)时同步状态: 已就绪直接画, 否则按后端状态驱动覆盖层
+  if (state.klineIsStock || !state.klineData) {
+    return;
+  }
+  const indexCode = state.klineData.index_code;
+  if (
+    state.klineValuation &&
+    state.klineValuation.indexCode === indexCode &&
+    isValuationMode()
+  ) {
+    // 弹窗内切换指标复用同一份序列, 不重复请求
+    hideValuationOverlay();
+    return;
+  }
+  fetch(`/api/index/${encodeURIComponent(indexCode)}/valuation`)
+    .then(handleFetchError)
+    .then((data) => {
+      if (state.klineData && state.klineData.index_code === indexCode && isValuationMode()) {
+        applyValuationStatus(data);
+      }
+    })
+    .catch((error) => showValuationButton(error.message));
+}
+
+function applyValuationStatus(data) {
+  const indexCode = state.klineData ? state.klineData.index_code : null;
+  if (!indexCode || !isValuationMode()) {
+    return;
+  }
+  if (data.state === "ready") {
+    state.klineValuation = { indexCode, series: data.series || {} };
+    stopValuationPoll();
+    hideValuationOverlay();
+    updateKlineSubchart();
+    return;
+  }
+  if (data.state === "computing") {
+    state.klineValuation = null; // 未就绪不缓存, 副图保持空线
+    showValuationProgress(data);
+    ensureValuationPoll();
+    return;
+  }
+  // need_query(无缓存/有缺失) 或 error(上次失败, message 带原因) → 按钮入口
+  state.klineValuation = null;
+  stopValuationPoll();
+  showValuationButton(data.state === "error" ? data.message : null);
+}
+
+function startValuationQuery() {
+  if (!state.klineData || state.klineIsStock || !isValuationMode()) {
+    return;
+  }
+  const indexCode = state.klineData.index_code;
+  const btn = $("#kline-valuation-btn");
+  btn.disabled = true;
+  fetch(`/api/index/${encodeURIComponent(indexCode)}/valuation`, { method: "POST" })
+    .then(handleFetchError)
+    .then((data) => {
+      btn.disabled = false;
+      if (state.klineData && state.klineData.index_code === indexCode && isValuationMode()) {
+        applyValuationStatus(data);
+      }
+    })
+    .catch((error) => {
+      btn.disabled = false;
+      showValuationButton(error.message);
+    });
+}
+
+function ensureValuationPoll() {
+  if (state.klineValuationTimer) {
+    return;
+  }
+  state.klineValuationTimer = setInterval(() => {
+    if (!state.klineData || state.klineIsStock || !isValuationMode()) {
+      stopValuationPoll();
+      return;
+    }
+    const indexCode = state.klineData.index_code;
+    fetch(`/api/index/${encodeURIComponent(indexCode)}/valuation`)
+      .then(handleFetchError)
+      .then((data) => {
+        if (state.klineData && state.klineData.index_code === indexCode && isValuationMode()) {
+          applyValuationStatus(data);
+        }
+      })
+      .catch(() => {
+        // 瞬时失败静默继续轮询(下个周期自愈)
+      });
+  }, 1200);
+}
+
+function stopValuationPoll() {
+  if (state.klineValuationTimer) {
+    clearInterval(state.klineValuationTimer);
+    state.klineValuationTimer = null;
+  }
+}
+
+function showValuationButton(errorMessage) {
+  // 无缓存/失败时的入口按钮; errorMessage 非空时上方展示失败原因、按钮变"重试"
+  const errEl = $("#kline-valuation-error");
+  const btn = $("#kline-valuation-btn");
+  if (errorMessage) {
+    errEl.textContent = errorMessage;
+    showElement(errEl);
+  } else {
+    errEl.textContent = "";
+    hideElement(errEl);
+  }
+  btn.textContent = errorMessage ? "重试" : "查询估值";
+  showElement(btn);
+  showElement("#kline-valuation-overlay");
+  positionKlineValuationOverlay(state.klineChart);
+}
+
+function showValuationProgress(data) {
+  // 计算中: 文本区显示进度(任务在服务端后台, 关闭弹窗不中断)
+  const errEl = $("#kline-valuation-error");
+  const btn = $("#kline-valuation-btn");
+  const pct = Math.round(data.progress || 0);
+  errEl.textContent = `正在计算估值 ${pct}%（首次约需数分钟，可关闭窗口，后台会继续计算）`;
+  showElement(errEl);
+  hideElement(btn);
+  showElement("#kline-valuation-overlay");
+  positionKlineValuationOverlay(state.klineChart);
+}
+
+function hideValuationOverlay() {
+  hideElement("#kline-valuation-overlay");
 }
 
 function backToQuery() {

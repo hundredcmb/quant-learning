@@ -27,6 +27,7 @@ from ..industry_ranking import (
     resolve_sample_segments,
     sample_pool_at,
 )
+from ..valuation_series import ValuationSeriesManager
 
 # Web 固定一次全算的样本档(全A/中证800/中证1800=800+1000, 三档嵌套; 前端下拉即时切换)
 WEB_SAMPLE_SPACES = ["full", "csi800", "csi1800"]
@@ -402,6 +403,36 @@ def get_stock_kline(
     }
 
 
+# 估值走势序列(PE/PB 历史序列, K 线副图)后台管理器: 全局串行后台线程, 不走单 worker 任务队列
+# (分钟级计算会堵死榜单查询); 上下文经 PreparedContext 惰性获取(status 用 peek 不触发构建)
+_VALUATION_MANAGER = ValuationSeriesManager(
+    context_fn=lambda build: _CONTEXT.ensure() if build else _CONTEXT.peek()
+)
+
+
+def _check_valuation_index(index_code: str) -> str:
+    """估值序列入口校验: 与 K 线同一"官方行情指数"白名单(L1 全覆盖 + 有官方日线的 L2/L3)"""
+    index_code = index_code.strip()
+    if index_code not in _INDEX_NAMES:
+        raise ValueError(f"不是申万行业指数代码: {index_code}")
+    allowed = get_sw_daily_available()
+    if allowed is None:
+        allowed = set(_L1_INDEXES)  # 探测失败时回退为仅一级
+    if index_code not in allowed:
+        raise ValueError(f"该指数无官方行情, 不支持估值走势: {index_code}")
+    return index_code
+
+
+def get_index_valuation(index_code: str) -> dict[str, Any]:
+    """查询指数估值序列状态(不触发计算): need_query / computing / ready(含序列) / error"""
+    return _VALUATION_MANAGER.status(_check_valuation_index(index_code))
+
+
+def start_index_valuation(index_code: str) -> dict[str, Any]:
+    """启动(或并入)指数估值序列后台计算; 同指数计算中幂等返回 computing"""
+    return _VALUATION_MANAGER.start(_check_valuation_index(index_code))
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -496,6 +527,13 @@ class PreparedContext:
 
     def is_ready(self) -> bool:
         return self._tree is not None
+
+    def peek(self) -> tuple[ShenWanIndustryTree, MarketDataProvider] | None:
+        """就绪则返回 (tree, provider)，未就绪返回 None（不触发构建）"""
+        with self._cond:
+            if self._tree is not None and self._provider is not None:
+                return self._tree, self._provider
+            return None
 
 
 _CONTEXT = PreparedContext()

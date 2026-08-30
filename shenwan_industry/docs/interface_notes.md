@@ -9,7 +9,8 @@
 | `index_classify` | 行业树（备用） | `src='SW2021'` | 一次全量 | 默认用本地 `data/SW2021.json`，仅备用 |
 | `stock_basic` | 股票池状态过滤 | `list_status='L'/'D'/'P'`，D 带 `delist_date` | 每次调用不分页 | 上市+退市+暂停全部进 `stock_basic`；D 的 `delist_date` 进 `ts_code_to_delist_date` |
 | `index_member_all` | 行业成分股 | `offset, limit=1999` | 循环直到不足一批 | 按 `l3_code` 挂到三级节点 |
-| `trade_cal` | 区间交易日列表 | `exchange='SSE', start_date, end_date, is_open='1', fields='cal_date'` | 一次 | 区间榜取交易日用 |
+| `trade_cal` | 区间交易日列表 | `exchange='SSE', start_date, end_date, is_open='1', fields='cal_date'` | 一次 | 区间榜取交易日用；估值走势序列（K 线副图 PE/PB）窗口交易日列表同源（跨度缓存切片命中） |
+| `sw_daily` | 行业指数官方日 K 线（Web K 线弹窗）与官方日线可用性探测 | 单只 `ts_code, start_date, end_date`（全历史）；探测 `trade_date=交易日` 一次全市场 | 不分页（单只全历史与全市场单日均单页返回） | L1 全覆盖、L2/L3 覆盖以启动探测（`(probed & L2/L3) \| L1`，内存缓存无文件）为准；**估值走势序列（2026-08-31 新增）沿用该白名单**（`web/service._check_valuation_index`）；无 `pre_close` 字段，前收由 `close − change` 反推 |
 | `daily` | 全市场单日行情 | `trade_date, offset, limit=5999` | 循环直到不足一批 | 涨跌幅自行从 `close/pre_close` 重算 |
 | `daily_basic`（全市场） | 单日自由流通市值/总市值/总股本 | `ts_code='', trade_date, fields='ts_code,close,total_mv,free_share,float_share,total_share', offset, limit=5999` | 循环直到不足一批 | 官方单次上限 6000，5999 留余量；自由流通市值 = `free_share × close`（三者同行取值，等价于 `circ_mv × free_share / float_share`）；`total_share`（万股）随请求缓存（PB 已改用 balancesheet_vip 权威净资产、不再用股本折算，字段保留） |
 | `repurchase`（按月） | 回购公告缓存（注销台阶 vol 交叉验证） | `start_date=YYYYMM01, end_date=YYYYMM31, fields='ts_code,ann_date,end_date,proc,vol,amount'`（按日历月全市场） | 每月 1 次 | 接口不支持按 ts_code 过滤、单月 200~700 行单页即回（单次上限 2000）；只保留 proc∈{完成,实施}；`RepurchaseHistory` 首刷 24 个月约 25 请求、增量=未拉月份+当月重拉（幂等去重）；对赌/激励类指纹=vol 与台阶量精确匹配而 amount=0/1 元 |

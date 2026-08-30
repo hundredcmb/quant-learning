@@ -199,7 +199,14 @@
         <select id="kline-subchart">
           <option value="amount" selected>成交额</option>
           <option value="vol">成交量</option>
+          <option value="pe" class="valuation-opt">PE</option>
+          <option value="pb" class="valuation-opt">PB</option>
         </select>
+        <!-- 估值走势(PE/PB)查询入口: 仅行业指数可选; 无缓存时显示按钮, 计算中显示进度 -->
+        <div id="kline-valuation-overlay" class="kline-valuation hidden">
+          <div id="kline-valuation-error" class="kline-valuation-error hidden"></div>
+          <button id="kline-valuation-btn" class="btn">查询估值</button>
+        </div>
       </div>
     </div>
   </div>

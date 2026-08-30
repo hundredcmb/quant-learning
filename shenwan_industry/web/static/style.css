@@ -523,6 +523,36 @@ body.modal-open {
   z-index: 3;
 }
 
+/* 估值走势(PE/PB)查询入口覆盖层: 居中浮在**副图**区域(CSS 默认 79%≈副图中心近似值,
+   渲染后由 positionKlineValuationOverlay 按副图栅格实际矩形精确定位覆盖),
+   无缓存=按钮 / 计算中=进度文本 / 失败=错误文本+重试按钮 */
+.kline-valuation {
+  position: absolute;
+  top: 79%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 18px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 70%;
+}
+
+.kline-valuation-error {
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  word-break: break-all;
+}
+
 .loading {
   padding: 20px;
   color: var(--muted);
