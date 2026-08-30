@@ -591,9 +591,10 @@ def _compute_stock_metrics(
         for basis, pair_map in roe_pair_maps.items()
     }
 
-    # 个股股息率(双口径, 总额法 DPS ÷ 当日收盘价 × 100): DPS 命中分红缓存零请求; 键缺失 =
-    # 无数据(显示"—"), 值 0.0 = 齐备零分红(是数值); 收盘价缺失/非正的股票无该列值。
-    # 失败降级为空(分红缓存刷新失败等不波及其他指标)
+    # 个股股息率/回报率(三口径, 总额法 DPS ÷ 当日收盘价 × 100): DPS 命中分红缓存零请求;
+    # est_bb = est + TTM 窗口注销分量折每股(见 share_change_data, 台阶缓存未就绪时该口径
+    # 缺失前端显示"—")。键缺失 = 无数据(显示"—"), 值 0.0 = 齐备零分红(是数值);
+    # 收盘价缺失/非正的股票无该列值。失败降级为空(分红缓存刷新失败等不波及其他指标)
     stock_div: dict[str, dict[str, float]] = {"est": {}, "static": {}}
     try:
         est_dps, static_dps, _ = provider.get_ts_code_to_dividend_dps(rank_date)
@@ -607,6 +608,21 @@ def _compute_stock_metrics(
             return result_map
 
         stock_div = {"est": _dps_to_yield(est_dps), "static": _dps_to_yield(static_dps)}
+        # est_bb(股息+注销): TTM 窗口台阶法注销金额(万元)÷总股本(万股)=元/股, 与 DPS 相加同除
+        # close; 总股本由 total_mv/close 回折(万元÷元=万股, 与 daily_basic 股本一致性足够)。
+        # 嵌套 try: 仅该口径降级(台阶缓存未就绪等), est/static 不连坐
+        try:
+            bb_map, _ = provider.get_ts_code_to_buyback_amount(rank_date)
+            est_bb_map: dict[str, float] = {}
+            for ts_code, dps in est_dps.items():
+                close = close_map.get(ts_code)
+                total_mv = total_map.get(ts_code)
+                if close is not None and close > 0 and total_mv is not None:
+                    share_wan = total_mv / close
+                    est_bb_map[ts_code] = (dps + bb_map.get(ts_code, 0.0) / share_wan) / close * 100.0
+            stock_div["est_bb"] = est_bb_map
+        except Exception as err:  # noqa: BLE001 - est_bb 子表口径降级
+            logger.warning(f"个股注销分量(est_bb) 计算失败, 子表该口径全'—': {err!r}")
     except Exception as err:  # noqa: BLE001 - 股息率子表列降级
         logger.warning(f"个股股息率 计算失败, 子表该列全'—': {err!r}")
 
@@ -945,7 +961,7 @@ def _build_levels(
                     if kind_levels:
                         row[f"roe_waa_{basis}_{kind}"] = kind_levels.get(level_name, {}).get(index_code)
             # 股息率列(仅单日/区间链式榜携带, 市值加权平均): **双市值口径字段 div_{basis}_float/
-            # total 随加权方式切换**(等权显示"—"), 前端另随"股息率口径"下拉切换 est/static;
+            # total 随加权方式切换**(等权显示"—"), 前端另随"回报率口径"下拉切换 est/static;
             # dividend_levels 结构 = {市值口径: {est/static: levels}}(与 roe_maps 的 {basis: {市值口径}}
             # 不同构——basis 维度在内层); 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
             for kind in ("float", "total"):

@@ -884,11 +884,14 @@ def daily_dividend_yield(
 
     sample_set: 样本空间过滤(多样本空间档各自调用; None=全池, 在归属解析前跳过非样本股)
 
-    levels_by_kind: {"float"|"total": {basis("est"|"static"): {"1"|"2"|"3": {index_code: 股息率%}}}}
-    ——行业值 = **按当日市值权重的个股股息率加权平均**(指数按什么权重分配成分股、指标就用
+    levels_by_kind: {"float"|"total": {basis("est"|"static"|"est_bb"): {"1"|"2"|"3": {index_code: 回报率%}}}}
+    ——行业值 = **按当日市值权重的加权平均**(指数按什么权重分配成分股、指标就用
     什么权重): total = Σ(DPS×总股本)÷Σ总市值(数学上恒等于个股总市值股息率的市值加权平均,
     即原整体法)、float = Σ(DPS×自由流通股本)÷Σ自由流通市值(自由流通盘的现金回报, 系统性
     高于 total 口径); 等权模式无市值权重、前端与 PE/PB 一致显示"—"。
+    **est_bb = est + TTM 窗口注销分量**(折每股后与 DPS 同量纲, 金额层相加再除同一分母;
+    窗口/台阶法见 market_data.get_ts_code_to_buyback_amount, 台阶缓存未就绪时该口径整体
+    降级不产出)。
     与子表每股口径(DPS/close)自洽(加权平均的权重与分母同源)。
     DPS 见 market_data.get_ts_code_to_dividend_dps(总额法/锚定/完整性三态/兜底规则);
     DPS 键缺失(无数据)的股票剔除并计入 pool_no_value——**DPS=0(齐备零分红)是数值, 正常参与
@@ -907,7 +910,7 @@ def daily_dividend_yield(
     if timings is not None:
         _t0 = time.perf_counter()
     est_map, static_map, stats = market_data.get_ts_code_to_dividend_dps(date)
-    dps_maps = {"est": est_map, "static": static_map}
+    dps_maps: dict[str, dict[str, float]] = {"est": est_map, "static": static_map}
     if timings is not None:
         timings["fetch"] = time.perf_counter() - _t0
 
@@ -917,6 +920,20 @@ def daily_dividend_yield(
     free_mv_map = market_data.get_ts_code_to_free_mv(date)
     close_map = market_data.get_ts_code_to_close(date)
     share_map = market_data.get_ts_code_to_total_share(date)  # 万股(总股本, total 口径分子)
+
+    # 注销分量 → est_bb("TTM估算股息+注销率"): TTM 窗口台阶法注销金额(万元)÷当前总股本(万股)
+    # = 元/股, 与 DPS 同量纲、聚合公式零特例; est 缺失(unknown)的股票不产出 est_bb(unknown≠zero,
+    # 与股息率三态一致), 窗口内无注销(金额 0)是数值(= 股息率本身); 台阶缓存未就绪/计算失败 →
+    # 本次无该口径(仅 est/static, 前端 est_bb 显示"—"), 不连坐两基础口径
+    try:
+        bb_map, bb_stats = market_data.get_ts_code_to_buyback_amount(date)
+        dps_maps["est_bb"] = {
+            ts_code: dps + (bb_map.get(ts_code, 0.0) / share_wan if (share_wan := share_map.get(ts_code)) else 0.0)
+            for ts_code, dps in est_map.items()
+        }
+        stats = {**stats, **bb_stats}
+    except Exception as err:  # noqa: BLE001 - est_bb 口径降级不影响 est/static
+        logger.warning(f"注销分量(est_bb) 计算失败, 本次无该口径: {err!r}")
     pct_map = market_data.get_ts_code_to_pct_chg(date)
     stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(
@@ -1013,15 +1030,18 @@ def start_metric_prefetch(
     universe: set[str],
     cancel_check: CancelCheck | None = None,
 ) -> tuple[threading.Thread, dict[str, float], threading.Thread, list[Exception]]:
-    """启动财务/分红后台预热(单日榜与区间链式榜共用, 调用方在编排最开始调用)
+    """启动财务/分红/股本台阶后台预热(单日榜与区间链式榜共用, 调用方在编排最开始调用)
 
-    fina 三池(含增长基期 D-1年 串行补拉)与 dividend 缓存刷新各一线程、接口限流独立, 与
-    行情/市值拉取及涨幅计算全程并行、只写各自缓存; 指标计算阶段(compute_fin_metric_suite)
-    join 命中。返回 (fina 线程, fina 墙时 dict[键 "secs"], 分红线程, 分红异常转存列表)——
-    分红线程异常不直接抛(存列表, 由 suite 的股息率阶段 join 处重抛走该列降级)。
+    fina 三池(含增长基期 D-1年 串行补拉)、dividend 缓存刷新、股本台阶缓存刷新各一线程、
+    接口限流独立, 与行情/市值拉取及涨幅计算全程并行、只写各自缓存; 指标计算阶段
+    (compute_fin_metric_suite) join 命中。返回 (fina 线程, fina 墙时 dict[键 "secs"],
+    分红线程, 分红异常转存列表, 台阶线程, 台阶异常转存列表)——分红/台阶线程异常不直接抛
+    (存列表, 由 suite 的股息率阶段 join 处理: 分红异常重抛走股息率整列降级, 台阶异常仅
+    est_bb 口径降级、est/static 不连坐)
     """
     fina_wall: dict[str, float] = {}
     div_exc: list[Exception] = []
+    share_exc: list[Exception] = []
 
     def _warm_fina() -> None:
         _w0 = time.perf_counter()
@@ -1036,11 +1056,28 @@ def start_metric_prefetch(
         except Exception as err:  # noqa: BLE001 - 线程异常转存, suite 的股息率阶段重抛
             div_exc.append(err)
 
+    def _warm_share_change() -> None:
+        _w0 = time.perf_counter()
+        try:
+            action = market_data.share_change_history.ensure_refresh(cancel_check=cancel_check)
+            # 回购公告缓存(对赌 1 元/0 元注销的 vol 交叉验证)同线程串行刷新: 按月拉取请求量
+            # 极小(首刷 24 个月 24 次/增量 1~2 次); 失败独立捕获——交叉验证是增强而非前置,
+            # 仅跳过验证(est_bb 维持台阶口径), 不连坐台阶缓存
+            try:
+                action += "; 回购公告 " + market_data.repurchase_history.ensure_refresh(cancel_check=cancel_check)
+            except Exception as rep_err:  # noqa: BLE001 - 交叉验证降级, 台阶不受影响
+                logger.warning(f"回购公告缓存刷新失败(跳过对赌交叉验证): {rep_err!r}")
+            logger.info(f"股本台阶缓存刷新: {action} ({time.perf_counter() - _w0:.1f}s)")
+        except Exception as err:  # noqa: BLE001 - 线程异常转存, suite 的 est_bb 阶段降级
+            share_exc.append(err)
+
     fina_thread = threading.Thread(target=_warm_fina, daemon=True)
     dividend_thread = threading.Thread(target=_warm_dividend, daemon=True)
+    share_thread = threading.Thread(target=_warm_share_change, daemon=True)
     fina_thread.start()
     dividend_thread.start()
-    return fina_thread, fina_wall, dividend_thread, div_exc
+    share_thread.start()
+    return fina_thread, fina_wall, dividend_thread, div_exc, share_thread, share_exc
 
 
 def compute_fin_metric_suite(
@@ -1053,6 +1090,7 @@ def compute_fin_metric_suite(
     fina_wall: dict[str, float] | None = None,
     dividend_thread: threading.Thread | None = None,
     div_exc: list[Exception] | None = None,
+    share_thread: threading.Thread | None = None,
     notify: Callable[[float, str, str | None], None] | None = None,
     progress_base: float = 93.5,
     progress_step: float = 0.3,
@@ -1189,10 +1227,11 @@ def compute_fin_metric_suite(
             }
     _mode += progress_step
 
-    # 股息率(总额法 DPS, 双口径一次算出: est=TTM估算值/Web 默认 + static=静态): **按当日市值
-    # 权重的加权平均**(free/total 两口径随加权方式切换、等权显示"—"); 失败时报错降级为空
-    # levels; 分红刷新线程异常在此重抛(首刷失败/网络错误走本列降级; JobCancelled
-    # 经下方 return 前的末段兜底补抛)
+    # 股息率/回报率(总额法 DPS 三口径一次算出: est=TTM估算股息率/Web 默认 + static=静态股息率 +
+    # est_bb=TTM估算股息+注销率[台阶法注销分量]): **按当日市值权重的加权平均**(free/total 两口径
+    # 随加权方式切换、等权显示"—"); 失败时报错降级为空 levels; 分红刷新线程异常在此重抛(首刷失败/
+    # 网络错误走股息率整列降级; JobCancelled 经下方 return 前的末段兜底补抛); 台阶刷新线程仅 join
+    # (异常由 daily_dividend_yield 内的 est_bb try 捕获降级该口径, est/static 不连坐)
     _notify_stage(_mode, "计算行业股息率")
     for key in keys:
         d_timings: dict[str, float] = {}
@@ -1204,6 +1243,8 @@ def compute_fin_metric_suite(
                 dividend_thread.join()
             if div_exc:
                 raise div_exc[0]
+            if share_thread is not None:
+                share_thread.join()
             div_levels, div_stats = daily_dividend_yield(
                 tree, market_data, date, timings=d_timings, cancel_check=cancel_check,
                 sample_set=_set_for(key),
@@ -1260,8 +1301,8 @@ def run_daily_ranking(
     {"1"|"2"|"3": {index_code: ROE%}}, "stats": {...}}**(ROE 加权平均算法四口径一次算出
     (daily_roe), 无市值维度、等权模式也显示、随"净利润口径"下拉切换, 键缺失=无数据/降级/
     无参与股票); **"div_yield" 为 {"value": {"est"|"static": {"1"|"2"|"3": {index_code:
-    股息率%}}}, "stats": {...}}**(股息率双口径一次算出(daily_dividend_yield), est=TTM估算值
-    [Web 默认]/static=静态, 无 free/total 双市值维度、等权模式也显示、随"股息率口径"下拉
+    股息率%}}}, "stats": {...}}**(股息率双口径一次算出(daily_dividend_yield), est=TTM估算股息率
+    [Web 默认]/static=静态股息率, 无 free/total 双市值维度、等权模式也显示、随"回报率口径"下拉
     切换, 键缺失=无数据/降级/无参与股票); None=亏损/资不抵债(仅 PE/PB)、键缺失=无数据/降级;
     口径见 daily_valuation_metric / daily_pe / daily_pb / daily_profit_growth / daily_roe /
     daily_dividend_yield;
@@ -1292,7 +1333,7 @@ def run_daily_ranking(
     # ~3.1s——早启动才能整体藏进 行情+市值+涨幅计算 ~3.3s 的窗口内) + dividend 缓存刷新
     # (首次运行需全市场逐股首刷 ~12 分钟一次性, 日常增量秒级); PE/PB/增长阶段 join 命中预热
     # 缓存; 线程失败在 join 处抛出、走既有"指标降级告警"路径
-    fina_thread, fina_wall, dividend_thread, div_exc = start_metric_prefetch(
+    fina_thread, fina_wall, dividend_thread, div_exc, share_thread, _share_exc = start_metric_prefetch(
         market_data, date, set(tree.all_member_codes), cancel_check=cancel_check
     )
 
@@ -1414,6 +1455,7 @@ def run_daily_ranking(
         fina_wall=fina_wall,
         dividend_thread=dividend_thread,
         div_exc=div_exc,
+        share_thread=share_thread,
         notify=_notify,
         progress_base=93.5,
         progress_step=0.3,
@@ -1848,7 +1890,7 @@ def rank_range_chain(
     div_exc: list[Exception] | None = None
     if valuation_out is not None:
         last_day_dt = datetime.strptime(trading_days[-1], "%Y%m%d")
-        fina_thread, fina_wall, dividend_thread, div_exc = start_metric_prefetch(
+        fina_thread, fina_wall, dividend_thread, div_exc, share_thread, _share_exc = start_metric_prefetch(
             market_data, last_day_dt, set(tree.all_member_codes), cancel_check=cancel_check
         )
 
@@ -2105,6 +2147,7 @@ def rank_range_chain(
                 fina_wall=fina_wall,
                 dividend_thread=dividend_thread,
                 div_exc=div_exc,
+                share_thread=share_thread,
                 # 链式版 _notify 为 2 参(无阶段名), 套件按单日榜 3 参调用——包一层丢弃阶段名
                 notify=lambda pct, message, _phase: _notify(pct, message),
                 progress_base=97.0,

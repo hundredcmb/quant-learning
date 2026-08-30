@@ -104,7 +104,7 @@ if __name__ == "__main__":
     if RANGE_CHAIN:
         chain_timings: dict[str, float] = {}
         # 区间末交易日时点财务指标全套(PE 四口径/PB/ROE/股息率/净利润同比, 与单日榜同一编排);
-        # CLI 打印默认口径(归母-TTM + 股息率 TTM估算值)
+        # CLI 打印默认口径(归母-TTM + 回报率列 TTM估算股息率)
         chain_valuation: dict = {}
         (l1_ew_p, l2_ew_p, l3_ew_p), (l1_ew_r, l2_ew_r, l3_ew_r), \
             (l1_fw_p, l2_fw_p, l3_fw_p), (l1_fw_r, l2_fw_r, l3_fw_r), \
@@ -154,7 +154,7 @@ if __name__ == "__main__":
             div_for_level = div_levels["float"].get(str(level), {})
             div_total_for_level = div_levels["total"].get(str(level), {})
             print(f"\n\n{RANGE_START.strftime('%Y-%m-%d')} ~ {RANGE_END.strftime('%Y-%m-%d')} 申万{level}级行业区间涨幅榜(官方逐日链)")
-            print("总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE(自由流通)|ROE(总市值)|股息率(TTM估算·自由流通)|股息率(TTM估算·总市值)|净利润同比|行业名称|成分股数量")
+            print("总市值加权涨幅(官方价格)|总市值·分红再投资涨幅|自由流通市值加权涨幅(官方价格)|自由流通·分红再投资涨幅|等权涨幅(官方价格)|等权·分红再投资涨幅|PE(自由流通)|PE(总市值)|PB(自由流通)|PB(总市值)|ROE(自由流通)|ROE(总市值)|回报率(TTM估算股息率·自由流通)|回报率(TTM估算股息率·总市值)|净利润同比|行业名称|成分股数量")
 
             def _fmt_metric(metric_for_level, code, label):
                 if code not in metric_for_level or metric_for_level[code] is None:

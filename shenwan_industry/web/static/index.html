@@ -90,10 +90,11 @@
             </select>
           </label>
           <label class="field" id="div-basis-field">
-            <span>股息率口径</span>
+            <span>回报率口径</span>
             <select id="div-basis">
-              <option value="est" selected>TTM估算值</option>
-              <option value="static">静态</option>
+              <option value="est" selected>TTM估算股息率</option>
+              <option value="est_bb">TTM估算股息+注销率</option>
+              <option value="static">静态股息率</option>
             </select>
           </label>
         </div>
@@ -136,7 +137,7 @@
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
               <th data-sort="roe">ROE</th>
-              <th data-sort="div">股息率</th>
+              <th data-sort="div">回报率</th>
               <th data-sort="growth">净利润同比</th>
               <th data-sort="count">成分股数量</th>
             </tr>
@@ -172,7 +173,7 @@
               <th data-sort="pe">PE</th>
               <th data-sort="pb">PB</th>
               <th data-sort="roe">ROE</th>
-              <th data-sort="div">股息率</th>
+              <th data-sort="div">回报率</th>
               <th data-sort="growth">净利润同比</th>
             </tr>
           </thead>

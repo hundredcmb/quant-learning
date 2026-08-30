@@ -16,7 +16,7 @@ const state = {
   sampleSpace: "full", // 样本空间: full=全A(默认) / csi1800=中证1800(800+1000) / csi800=中证800, 三档一次全算、前端即时切换
   profitBasis: "attr_ttm", // 净利润口径: attr_ttm=归母-TTM(默认) / attr_dynamic=归母-动态 / deduct_ttm=扣非-TTM / deduct_dynamic=扣非-动态, 后端一次算四口径、此处仅切换显示(列头固定"PE"/"净利润同比")
   roeAlgo: "waa", // ROE算法: waa=加权平均(当前唯一档), 字段名带算法段 roe_waa_{basis}, ROE 分子随"净利润口径"联动
-  divBasis: "est", // 股息率口径: est=TTM估算值(默认) / static=静态, 字段 div_{basis}
+  divBasis: "est", // 回报率口径: est=TTM估算股息率(默认) / est_bb=TTM估算股息+注销率(台阶法注销分量, 缓存未就绪时该口径无值) / static=静态股息率, 字段 div_{basis}
   jobId: null,
   pollTimer: null,
   result: null,
@@ -274,7 +274,7 @@ function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
   $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
-  // 净利润口径/ROE算法/股息率口径: 单日与区间榜均有财务指标列(区间=末交易日时点值), 始终显示
+  // 净利润口径/ROE算法/回报率口径: 单日与区间榜均有财务指标列(区间=末交易日时点值), 始终显示
 }
 
 function submit() {
@@ -451,7 +451,7 @@ function renderMainTable() {
     pb: pbField ? row[pbField] : undefined,
     growth: row[`profit_growth_${state.profitBasis}`], // 净利润同比随"净利润口径"下拉切换
     roe: mvKind ? row[`roe_${state.roeAlgo}_${state.profitBasis}_${mvKind}`] : undefined, // ROE 随加权方式切换市值口径 + "ROE算法"/"净利润口径"两下拉(等权无值)
-    div: mvKind ? row[`div_${state.divBasis}_${mvKind}`] : undefined, // 股息率随加权方式切换市值口径 + "股息率口径"下拉(等权无值)
+    div: mvKind ? row[`div_${state.divBasis}_${mvKind}`] : undefined, // 回报率(股息率分量)随加权方式切换市值口径 + "回报率口径"下拉(等权无值)
   }));
   sortRows(rows, state.mainSort);
   rows.forEach((row, index) => {
@@ -966,7 +966,7 @@ function sortRows(rows, sortState) {
       bValue = growthSortValue(bValue);
     }
     if (key === "roe" || key === "div") {
-      // ROE/股息率列: 子表后端对无数据股票下发 null(主表为键缺失 undefined)——null 归一为
+      // ROE/回报率列: 子表后端对无数据股票下发 null(主表为键缺失 undefined)——null 归一为
       // undefined 走恒置底分支, 否则 null 落入"按最大值"分支、降序时"—"会置顶
       if (aValue == null) {
         aValue = undefined;
@@ -1073,7 +1073,7 @@ function formatRoe(value) {
 }
 
 function formatDividend(value) {
-  // 股息率: 两位小数%不带+号不着色 | "—"(键缺失=无数据/降级); 无 null 语义(无负值、无亏损类别)。
+  // 回报率(当前为股息率分量): 两位小数%不带+号不着色 | "—"(键缺失=无数据/降级); 无 null 语义(无负值、无亏损类别)。
   // 值 0.00% 是事实(齐备零分红), 与 "—"(未知) 严格区分(排序按数值, "—"经 sortRows 恒置底)
   if (value === undefined || value === null || Number.isNaN(Number(value))) {
     return "—";

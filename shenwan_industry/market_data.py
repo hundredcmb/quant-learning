@@ -49,8 +49,10 @@ import pandas as pd
 
 try:
     from .dividend_data import DividendHistory, compute_dividend_dps
+    from .share_change_data import RepurchaseHistory, ShareChangeHistory, compute_buyback_amount
 except ImportError:  # 直接运行本文件时
     from dividend_data import DividendHistory, compute_dividend_dps
+    from share_change_data import RepurchaseHistory, ShareChangeHistory, compute_buyback_amount
 
 logger = logging.getLogger("shenwan_industry.market_data")
 
@@ -200,6 +202,10 @@ class MarketDataProvider:
         self._rate_slots: dict[str, list] = {}  # 接口名 -> [锁, 下一请求开始时刻]; 每接口独立 7.5/s 节流
         self._dividend_history: DividendHistory | None = None  # 分红事件持久缓存(惰性单例, 文件落盘)
         self._div_dps_cache: dict[datetime, tuple[dict[str, float], dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM估算DPS, 静态DPS, 统计)——股息率双口径
+        self._share_change_history: ShareChangeHistory | None = None  # 股本台阶事件持久缓存(惰性单例, 文件落盘)
+        self._repurchase_history: RepurchaseHistory | None = None  # 回购公告持久缓存(惰性单例, 台阶 vol 交叉验证用)
+        self._ttm_window_cache: dict[datetime, tuple[dict[str, tuple[str, str]], dict[str, int]]] = {}  # 计算日 -> ({ts_code: (左开端, 右闭端)}, 统计)——每股归母TTM覆盖窗口(注销分量窗口用)
+        self._bb_amount_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM窗口注销金额万元, 统计)——est_bb 口径分子
         self._index_weight_month_cache: dict[tuple[str, str], dict[str, set[str]]] = {}  # (index_code, YYYYMM) -> {快照日: 样本集}——样本空间月度快照缓存
 
     def _acquire_rate_slot(self, api_name: str) -> None:
@@ -1368,12 +1374,91 @@ class MarketDataProvider:
         """获取各股票股息率分子 DPS(元/股, 总额法÷当前总股本) 双口径: (est_map, static_map, stats)
 
         委托 dividend_data.compute_dividend_dps(规则栈/单位/兜底见其 docstring 与
-        docs/financial_indicators.md 第 7 节): est=TTM估算值(Web 默认, 进行中财年宣告优先/
-        外推补位)、static=静态(最近完整分红年度); 键缺失=无数据, 0.0=齐备零分红(是数值)。
+        docs/financial_indicators.md 第 7 节): est=TTM估算股息率(Web 默认, 进行中财年宣告优先/
+        外推补位)、static=静态股息率(最近完整分红年度); 键缺失=无数据, 0.0=齐备零分红(是数值)。
         结果按计算日缓存; 依赖分红缓存已刷新(run_daily_ranking 的分红外预热线程保证)与
         fina 窗口/归母TTM 已预热(与 PE 同批, 零新增请求)
         """
         return compute_dividend_dps(self, date)
+
+    @property
+    def share_change_history(self) -> ShareChangeHistory:
+        """股本台阶事件持久缓存单例(惰性创建): 首刷/增量经 ensure_refresh, 读取经 events()
+
+        缓存文件 data/share_change_events.json 跨进程复用; 快照拉取走 daily_basic 独立节流锁
+        (与市值同接口、请求排队不冲突), 与行情/财务/分红可并行(见 run_daily_ranking 的
+        台阶外预热线程); 供"TTM估算股息+注销率"的注销分量(share_change_data 台阶法)
+        """
+        if self._share_change_history is None:
+            self._share_change_history = ShareChangeHistory(self)
+        return self._share_change_history
+
+    @property
+    def repurchase_history(self) -> RepurchaseHistory:
+        """回购公告持久缓存单例(惰性创建): repurchase 按月全市场拉取(接口不支持按股过滤)
+
+        供注销台阶的 vol 交叉验证(对赌 1 元/0 元注销识别, share_change_data.
+        _find_zero_price_buyback); 刷新走 repurchase 独立节流锁, 与台阶刷新同线程串行
+        (预热线程); 未就绪时交叉验证跳过、不降级 est_bb
+        """
+        if self._repurchase_history is None:
+            self._repurchase_history = RepurchaseHistory(self)
+        return self._repurchase_history
+
+    def get_ts_code_to_ttm_window(
+        self, date: datetime
+    ) -> tuple[dict[str, tuple[str, str]], dict[str, int]]:
+        """获取各股票归母TTM净利润的覆盖窗口(YYYYMMDD): ({ts_code: (左开端, 右闭端)}, stats)
+
+        **与 get_ts_code_to_ttm_attr_profit 完全同期同源**(归母双源合并视图、含业绩快报提前):
+        标准式窗口 = (去年同季期末, 最新报告期期末]——长度恒 12 个月、逐股 PIT、随报告期披露
+        整体右移(与 TTM 利润同呼吸); 年化兜底(次新股, 去年年报/去年同季利润缺失)左端为空串
+        = 不限(上市以来)。供注销分量的统计窗口("TTM估算股息+注销率", 窗口一致性是设计核心:
+        注销与估算所用的 TTM 利润对应同一收益产生期)。stats: {"standard", "annualized"}
+        """
+        cached = self._ttm_window_cache.get(date)
+        if cached is not None:
+            return cached
+        date_str = date.strftime("%Y%m%d")
+        merged, _ = self._attr_merged_view(date)
+        windows: dict[str, tuple[str, str]] = {}
+        stats = {"standard": 0, "annualized": 0}
+        for ts_code, rows in merged.items():
+            latest = self._fina_latest_period(rows, date_str)
+            if latest is None:
+                continue
+            prev_year = str(int(latest[:4]) - 1)
+            prev_annual = rows.get(f"{prev_year}1231")
+            prev_same = rows.get(f"{prev_year}{latest[4:]}")
+            if (
+                prev_annual is not None and prev_annual[1] is not None
+                and prev_same is not None and prev_same[1] is not None
+            ):
+                windows[ts_code] = (f"{prev_year}{latest[4:]}", latest)
+                stats["standard"] += 1
+            else:
+                windows[ts_code] = ("", latest)
+                stats["annualized"] += 1
+        result = (windows, stats)
+        self._ttm_window_cache[date] = result
+        return result
+
+    def get_ts_code_to_buyback_amount(
+        self, date: datetime
+    ) -> tuple[dict[str, float], dict[str, int]]:
+        """获取各股票 TTM 窗口内的回购注销金额(万元): (amount_map, stats)——est_bb 口径分子
+
+        委托 share_change_data.compute_buyback_amount(台阶法/窗口/对冲剔除见其 docstring 与
+        docs/financial_indicators.md 第 7.5 节): 窗口 = 该股归母 TTM 覆盖时段(零新增请求),
+        金额 = Σ(负台阶量 × 台阶日收盘); 含 0.0(窗口内无注销是数值), 无 TTM 窗口(无财报)
+        的股票不产出。结果按计算日缓存; 依赖台阶缓存已刷新(编排的台阶预热线程保证)
+        """
+        cached = self._bb_amount_cache.get(date)
+        if cached is not None:
+            return cached
+        result = compute_buyback_amount(self, date)
+        self._bb_amount_cache[date] = result
+        return result
 
     def _fetch_ex_div_records(self, date: datetime) -> list[dict]:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表

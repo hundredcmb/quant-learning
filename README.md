@@ -4,7 +4,7 @@ A 股复盘与投研辅助项目（量化为辅），主要用于辅助每日复
 
 本项目是一套可直接运行的 Python 脚本，分为**互不依赖的两部分**：
 
-- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 样本空间三档（全A/中证800/中证1800，一次全算、Web 即时切换、默认全A）+ 行业财务指标（单日榜为当日时点、区间榜（官方逐日链式）为**区间末交易日时点值**：**PE**、**净利润同比** 与 **ROE**（净利润口径四选一：归母/扣非 × TTM/动态，Web 下拉切换、默认归母-TTM；同比扭亏/转亏/加大亏损/减少亏损类别化（加大亏损 < 减少亏损 < 转亏排序）；ROE 为加权平均算法、随"ROE算法"下拉选择）、**PB** 归母普通股股东权益、**股息率**（总额法 DPS 双口径：TTM估算值/静态），PE/PB 各自由流通 / 总市值两种合成口径，计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
+- **申万行业分析**（`shenwan_industry/`）：申万 2021 三级行业分类树 + 单日/区间行业涨幅榜（等权 / 流通市值加权）+ 样本空间三档（全A/中证800/中证1800，一次全算、Web 即时切换、默认全A）+ 行业财务指标（单日榜为当日时点、区间榜（官方逐日链式）为**区间末交易日时点值**：**PE**、**净利润同比** 与 **ROE**（净利润口径四选一：归母/扣非 × TTM/动态，Web 下拉切换、默认归母-TTM；同比扭亏/转亏/加大亏损/减少亏损类别化（加大亏损 < 减少亏损 < 转亏排序）；ROE 为加权平均算法、随"ROE算法"下拉选择）、**PB** 归母普通股股东权益、**股息率**（Web 列名"回报率"，总额法 DPS 双口径 TTM估算股息率/静态股息率 + **TTM估算股息+注销率**[est_bb：股息 + 回购注销分量，台阶法、窗口与 TTM 净利润一致，2026-08-30 新增]），PE/PB 各自由流通 / 总市值两种合成口径，计算方法见 `shenwan_industry/docs/financial_indicators.md`），Web 可视化界面。**已彻底脱离 vnpy**，任意 Python 3.10+ 环境即可运行
 - **十大股东席位关键词分析**（`holders/`）：A 股股票十大股东 + ETF 十大持有人（国家队、社保、险资等席位筛选，含持仓市值、变动对比与区间收益）。同样**不依赖 vnpy**，与申万行业分析共用 `.venv` 环境，token 也共用同一份配置
 - **vnpy 入门示例**（`vnpy_examples/`）：K 线入库、图表、指标、回测。**必须依赖 vnpy 客户端（veighna studio）环境**
 
@@ -56,7 +56,7 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 
 浏览器访问 <http://127.0.0.1:9010/>，支持：
 
-- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级；两榜均含行业 PE/PB/ROE/股息率/净利润同比列——单日榜为当日时点、区间榜（官方逐日链式，Web 默认）为**区间末交易日时点值**（表头注明），PE/ROE/股息率随加权方式显示对应市值口径（等权为空）、PE/ROE 另随"净利润口径"下拉切换四档，股息率随"股息率口径"下拉切换，净利润同比无市值维度等权也显示）
+- 单日排行 / 区间排行（等权 / 流通市值加权，L1/L2/L3 三级；两榜均含行业 PE/PB/ROE/股息率/净利润同比列——单日榜为当日时点、区间榜（官方逐日链式，Web 默认）为**区间末交易日时点值**（表头注明），PE/ROE/股息率随加权方式显示对应市值口径（等权为空）、PE/ROE 另随"净利润口径"下拉切换四档，回报率列（股息率/股息+注销率）随"回报率口径"下拉切换三档，净利润同比无市值维度等权也显示）
 - 行业成分股子表
 - 一级行业官方指数 K 线（成交额/成交量切换）
 - 任务进度条与取消
@@ -79,13 +79,15 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 .venv/bin/python -m shenwan_industry.dividend_cache             # 分红缓存增量刷新+体检（股息率列日常自动增量，无需手动跑）
 .venv/bin/python -m shenwan_industry.dividend_cache --full      # 强制全量重建分红缓存（首刷约12分钟）
 .venv/bin/python -m shenwan_industry.dividend_cache --check 600036.SH 600519.SH   # 抽查个股分红事件与双口径股息率
+.venv/bin/python -m shenwan_industry.share_change_cache           # 股本台阶缓存增量刷新+体检（est_bb 注销分量日常自动增量，无需手动跑）
+.venv/bin/python -m shenwan_industry.share_change_cache --check 600519.SH 000333.SZ   # 抽查个股台阶事件与 TTM 窗口注销金额
 ```
 
 CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出耗时分析与 API 调用次数。
 
 ## 5. 功能说明
 
-行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值；股息率用 `dividend` 接口每股全历史持久缓存（首刷约12分钟一次性，之后自动增量），财年锚定+总额法自算（官方 dv_ratio/dv_ttm 为滚动窗口口径不采用），双口径「TTM估算值（默认，进行中财年宣告优先/外推补位）/静态（最近完整分红年度）」，详见 `shenwan_industry/docs/financial_indicators.md` 第 7 节。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值；股息率用 `dividend` 接口每股全历史持久缓存（首刷约12分钟一次性，之后自动增量），财年锚定+总额法自算（官方 dv_ratio/dv_ttm 为滚动窗口口径不采用），双口径「TTM估算股息率（默认，进行中财年宣告优先/外推补位）/静态股息率（最近完整分红年度）」与合并口径「TTM估算股息+注销率」（注销分量 = 总股本逐日台阶法，窗口与 TTM 净利润一致，含数量级守卫与 repurchase 交叉验证（对赌/激励类 0 元注销剔除）；台阶缓存 `data/share_change_events.json` + 回购公告缓存 `data/repurchase_records.json` 首刷约 2~3 分钟一次性、之后自动增量），详见 `shenwan_industry/docs/financial_indicators.md` 第 7 节。
 
 ## 6. 十大股东席位分析（holders）
 
