@@ -694,7 +694,7 @@ def _run_daily(
             },
             pb_free=v["pb"]["free"],
             pb_total=v["pb"]["total"],
-            growth_maps={basis: v[f"growth_{basis}"]["value"] for basis in PROFIT_BASES},
+            growth_maps={basis: v[f"growth_{basis}"] for basis in PROFIT_BASES},
             roe_maps={basis: v[f"roe_waa_{basis}"] for basis in PROFIT_BASES},
             dividend_levels=v["div_yield"],
         )
@@ -783,7 +783,7 @@ def _run_range(
                 },
                 pb_free=v["pb"]["free"],
                 pb_total=v["pb"]["total"],
-                growth_maps={basis: v[f"growth_{basis}"]["value"] for basis in PROFIT_BASES},
+                growth_maps={basis: v[f"growth_{basis}"] for basis in PROFIT_BASES},
                 roe_maps={basis: v[f"roe_waa_{basis}"] for basis in PROFIT_BASES},
                 dividend_levels=v["div_yield"],
             )
@@ -946,12 +946,15 @@ def _build_levels(
             if pb_free and pb_total:
                 row["pb_float"] = pb_free.get(level_name, {}).get(index_code)
                 row["pb_total"] = pb_total.get(level_name, {}).get(index_code)
-            # 净利润同比列仅单日榜携带(无市值维度): 数值% | "扭亏"/"转亏"/"加大亏损"/"减少亏损",
-            # 四口径字段 profit_growth_{basis}, 前端随"净利润口径"下拉切换;
-            # 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
-            for basis, basis_value in (growth_maps or {}).items():
-                if basis_value:
-                    row[f"profit_growth_{basis}"] = basis_value.get(level_name, {}).get(index_code)
+            # 净利润同比列仅单日/区间链式榜携带: 数值% | "扭亏"/"转亏"/"加大亏损"/"减少亏损",
+            # 四口径 × 双市值口径字段 profit_growth_{basis}_{float|total}(2026-08-30 改双口径:
+            # float=当日 ratio 分摊、total=全值, 随加权方式切换, 等权无值前端显示"—"), 另随
+            # "净利润口径"下拉切换; 键缺失 = 未计算/失败降级/无参与股票(前端显示"—")
+            for basis, basis_kinds in (growth_maps or {}).items():
+                for kind in ("float", "total"):
+                    kind_levels = (basis_kinds or {}).get(kind)
+                    if kind_levels:
+                        row[f"profit_growth_{basis}_{kind}"] = kind_levels.get(level_name, {}).get(index_code)
             # ROE 列(仅单日/区间链式榜携带, 市值加权算术平均; "ROE算法"下拉当前仅一档, 字段名带
             # 算法段 roe_waa_ 供将来扩展): **双市值口径字段 roe_waa_{basis}_float/total 随加权
             # 方式切换**(等权无市值权重, 前端显示"—"); 数值%, 键缺失 = 未计算/失败降级/无参与股票

@@ -148,7 +148,7 @@ if __name__ == "__main__":
             pe_total = pe_data["total"].get(str(level), {})
             pb_free = pb_data["free"].get(str(level), {})
             pb_total = pb_data["total"].get(str(level), {})
-            growth_for_level = growth_data["value"].get(str(level), {})
+            growth_for_level = growth_data["total"].get(str(level), {})  # CLI 固定 total 视角(全值=原口径)
             roe_for_level = roe_data["float"].get(str(level), {})
             roe_total_for_level = roe_data["total"].get(str(level), {})
             div_for_level = div_levels["float"].get(str(level), {})

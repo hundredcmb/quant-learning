@@ -76,7 +76,7 @@ if __name__ == "__main__":
     pb_free = pb_data["free"]
     pb_total = pb_data["total"]
     pb_stats = pb_data["stats"]
-    growth_levels = growth_data["value"]
+    growth_levels = growth_data["total"]  # CLI 固定 total 视角(全值=原口径); float 分摊口径见 Web
     growth_stats = growth_data["stats"]
     roe_levels = {kind: roe_data[kind] for kind in ("float", "total")}  # 市值权重加权, 两口径
     roe_stats = roe_data["stats"]

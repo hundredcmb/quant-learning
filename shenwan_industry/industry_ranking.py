@@ -662,8 +662,8 @@ def daily_profit_growth(
     profit_kind: str = "attr",
     dynamic: bool = False,
     sample_set: set[str] | None = None,
-) -> tuple[dict[str, dict[str, float | str]], dict[str, int]]:
-    """单日榜行业净利润同比(与 PE 分子同源): 返回 (levels, stats)
+) -> tuple[dict[str, dict[str, float | str]], dict[str, dict[str, float | str]], dict[str, int]]:
+    """单日榜行业净利润同比(与 PE 分子同源): 返回 (float_levels, total_levels, stats)
 
     sample_set: 样本空间过滤(多样本空间档各自调用; None=全池, 在归属解析前跳过非样本股)
 
@@ -673,16 +673,21 @@ def daily_profit_growth(
     dynamic: False=TTM 口径(默认, TTM(D)/TTM(D-1年)) / True=动态口径(最新期累计/去年同季累计,
     同相位对比、与"动态值/去年同期动态值"数学等价)。
 
+    **双口径(2026-08-30 改, 原无市值维度单列)**: 随加权方式切换, 与 PE/ROE/回报率同一把尺:
+    - total = Σ 当期 / Σ 基期 − 1(全值, 与原实现完全相同——ratio≡1 的退化);
+    - float = Σ(当期×ratio) / Σ(基期×ratio) − 1, **ratio = 当日 free_mv/total_mv 固定快照**
+      (分子分母同权重, 同比纯粹反映利润变化; 自由流通股东视角的盈利同比, 与 PE(free) 的
+      分摊公式同一结构——"PE 亏损 + 同比数值"的呈现违和由此消除, 实测农林牧渔 csi800 档
+      free 口径由 -92.5% 数值变为"转亏"与 PE(free) 亏损自洽);
+    - 两口径类别各自独立判定(类别可能不同: 全公司数值型而自由流通盘"转亏"——盈利与自由
+      流通结构错位的信号); ratio 无效(缺失/越界>1)的股票仅从 float 口径剔除(不连坐 total);
+    - **等权模式显示"—"**(与 PE/PB/ROE/回报率一致, 2026-08-30 定稿; 原等权显示全值)。
     levels: {"1"|"2"|"3": {index_code: 数值% | "扭亏" | "转亏" | "加大亏损" | "减少亏损"}},
     键缺失 = 无数据(显示"—")。
-    公式: 行业增长 = Σ 当期 / Σ 基期 − 1(与 PE 的 Σ市值/Σ股东值 同构, 亏损股不剔除、
-    负值参与合计); 参与股票 = 两期值均有的成分股(both-or-neither, 缺基期的新股不进分子分母);
-    类别由 Σ 两期的符号与大小按 classify_profit_growth 判定(行业整体 Σ两期≤0 → 按 Σ 变化
-    分"加大亏损"[Σ 当期更深]/"减少亏损"[Σ 当期持平原或收窄]、Σ 去年>0 Σ 今年≤0 → "转亏"、
-    Σ 去年≤0 Σ 今年>0 → "扭亏")。
-    **无市值维度**: 纯基本面比值, 不依赖加权方式(等权模式也显示), 单列无 free/total 口径。
+    参与股票 = 两期值均有的成分股(both-or-neither, 缺基期的新股不进分子分母); 亏损股不
+    剔除、负值参与合计; 类别由 Σ 两期的符号与大小按 classify_profit_growth 判定。
     stats: 数据层六键(stocks_pair/turnaround/turnloss/widen_loss/narrow_loss/no_base, 全市场口径)
-    叠加 pool_no_value(池内无增长对的股票数)
+    叠加 pool_no_value(池内无增长对的股票数) / pool_ratio_invalid(自由流通占比越界, 仅 float 口径剔除)
     """
     if not tree.root.children:
         raise RuntimeError("请先构建行业树结构")
@@ -703,6 +708,8 @@ def daily_profit_growth(
     if timings is not None:
         _t0 = time.perf_counter()
     pct_map = market_data.get_ts_code_to_pct_chg(date)
+    free_mv_map = market_data.get_ts_code_to_free_mv(date)
+    total_mv_map = market_data.get_ts_code_to_total_mv(date)
     stock_pool: set[str] = set(pct_map) | set(tree.all_member_codes)
     tree.filter_stock_pool(
         stock_pool,
@@ -712,13 +719,14 @@ def daily_profit_growth(
         restructure_excluded=market_data.get_restructure_excluded(date),
     )
 
-    # 聚合容器: 层级键 -> index_code -> [Σ当期TTM, Σ基期TTM, 数量]
+    # 聚合容器: 层级键 -> index_code -> [Σ当期, Σ基期, Σ当期×ratio, Σ基期×ratio, total 数量, float 数量]
     agg: dict[str, dict[str, list[float]]] = {}
     for level_idx, level_key in ((1, "1"), (2, "2"), (3, "3")):
-        agg[level_key] = {node.index_code: [0.0, 0.0, 0.0] for node in tree.level_to_nodes[level_idx]}
+        agg[level_key] = {node.index_code: [0.0] * 6 for node in tree.level_to_nodes[level_idx]}
     level_key_map = {"L1": "1", "L2": "2", "L3": "3"}
 
     pool_no_value = 0
+    pool_ratio_invalid = 0
     for idx, ts_code in enumerate(stock_pool):
         if cancel_check is not None and idx % 500 == 0:
             cancel_check()
@@ -732,24 +740,44 @@ def daily_profit_growth(
             pool_no_value += 1
             continue
         now_value, last_value = pair
+        free_mv = free_mv_map.get(ts_code)
+        total_mv = total_mv_map.get(ts_code)
+        ratio = None
+        if (
+            free_mv is not None and total_mv is not None
+            and not pd.isna(free_mv) and not pd.isna(total_mv) and total_mv > 0
+            and 0.0 < free_mv / total_mv <= 1.0
+        ):
+            ratio = free_mv / total_mv
+        else:
+            pool_ratio_invalid += 1
         for l_node in (l3_node, l2_node, l1_node):
             entry = agg[level_key_map[l_node.level]][l_node.index_code]
             entry[0] += now_value
             entry[1] += last_value
-            entry[2] += 1
+            entry[4] += 1
+            if ratio is not None:
+                entry[2] += now_value * ratio
+                entry[3] += last_value * ratio
+                entry[5] += 1
 
-    levels: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
+    total_levels: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
+    float_levels: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
     for level_key, per_node in agg.items():
-        for code, (sum_now, sum_last, count) in per_node.items():
+        for code, (sum_now, sum_last, sum_now_f, sum_last_f, count, count_f) in per_node.items():
             if count == 0:
                 continue  # 无参与股票不记键位, 前端显示 "—"
-            levels[level_key][code] = classify_profit_growth(sum_now, sum_last)
+            total_levels[level_key][code] = classify_profit_growth(sum_now, sum_last)
+            if count_f > 0:
+                float_levels[level_key][code] = classify_profit_growth(sum_now_f, sum_last_f)
     if timings is not None:
         timings["compute"] = time.perf_counter() - _t0
 
     if pool_no_value:
         logger.warning(f"{date_str} 净利润同比剔除 {pool_no_value} 只(无两期数据, 多为缺基期的新股), 不计入行业合成")
-    return levels, {**stats, "pool_no_value": pool_no_value}
+    if pool_ratio_invalid:
+        logger.warning(f"{date_str} 净利润同比 float 口径剔除 {pool_ratio_invalid} 只(自由流通占比缺失/越界)")
+    return float_levels, total_levels, {**stats, "pool_no_value": pool_no_value, "pool_ratio_invalid": pool_ratio_invalid}
 
 
 def daily_roe(
@@ -1184,11 +1212,12 @@ def compute_fin_metric_suite(
         _notify_stage(_mode, f"计算行业净利润同比({basis_label})")
         for key in keys:
             g_timings: dict[str, float] = {}
-            levels_one: dict[str, dict[str, float | str]] = {}
+            growth_float: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
+            growth_total: dict[str, dict[str, float | str]] = {"1": {}, "2": {}, "3": {}}
             stats_one: dict[str, int] = {}
             try:
                 _join_fina()
-                levels_one, stats_one = daily_profit_growth(
+                growth_float, growth_total, stats_one = daily_profit_growth(
                     tree, market_data, date, timings=g_timings, cancel_check=cancel_check,
                     profit_kind=profit_kind, dynamic=dynamic, sample_set=_set_for(key),
                 )
@@ -1196,7 +1225,9 @@ def compute_fin_metric_suite(
                 logger.warning(f"净利润同比({basis}) 计算失败, 本次无该列: {err!r}")
             if timings is not None:
                 timings[_valuation_compute_key("growth_", profit_kind, dynamic)] = g_timings.get("compute", 0.0)
-            valuation_by_key[key][f"growth_{basis}"] = {"value": levels_one, "stats": stats_one}
+            valuation_by_key[key][f"growth_{basis}"] = {
+                "float": growth_float, "total": growth_total, "stats": stats_one,
+            }
         _mode += progress_step
 
     # ROE(加权平均算法)四口径一次算出: **按当日市值权重的加权算术平均**(随加权方式切换

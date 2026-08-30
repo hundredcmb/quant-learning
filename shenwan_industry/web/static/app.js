@@ -274,7 +274,8 @@ function setMode() {
   const isDaily = state.mode === "daily";
   $("#daily-field").classList.toggle("hidden", !isDaily);
   $$(".range-field").forEach((el) => el.classList.toggle("hidden", isDaily));
-  // 净利润口径/ROE算法/回报率口径: 单日与区间榜均有财务指标列(区间=末交易日时点值), 始终显示
+  // 净利润口径/ROE算法/回报率口径: 单日与区间榜均有财务指标列(区间=末交易日时点值); PE/PB/ROE/回报率/
+  // 净利润同比均随加权方式切换市值口径(等权显示"—", 同比 2026-08-30 起加入此列)
 }
 
 function submit() {
@@ -449,7 +450,7 @@ function renderMainTable() {
     count: row[countField],
     pe: peField ? row[peField] : undefined,
     pb: pbField ? row[pbField] : undefined,
-    growth: row[`profit_growth_${state.profitBasis}`], // 净利润同比随"净利润口径"下拉切换
+    growth: mvKind ? row[`profit_growth_${state.profitBasis}_${mvKind}`] : undefined, // 净利润同比随"净利润口径"下拉 + 加权方式双口径(2026-08-30: float=分摊/total=全值, 等权与 PE/PB 一致显示"—")
     roe: mvKind ? row[`roe_${state.roeAlgo}_${state.profitBasis}_${mvKind}`] : undefined, // ROE 随加权方式切换市值口径 + "ROE算法"/"净利润口径"两下拉(等权无值)
     div: mvKind ? row[`div_${state.divBasis}_${mvKind}`] : undefined, // 回报率(股息率分量)随加权方式切换市值口径 + "回报率口径"下拉(等权无值)
   }));
