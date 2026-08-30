@@ -81,6 +81,8 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 .venv/bin/python -m shenwan_industry.dividend_cache --check 600036.SH 600519.SH   # 抽查个股分红事件与双口径股息率
 .venv/bin/python -m shenwan_industry.share_change_cache           # 股本台阶缓存增量刷新+体检（est_bb 注销分量日常自动增量，无需手动跑）
 .venv/bin/python -m shenwan_industry.share_change_cache --check 600519.SH 000333.SZ   # 抽查个股台阶事件与 TTM 窗口注销金额
+.venv/bin/python -m shenwan_industry.cache_commit_guard               # 数据缓存提交前检查：无变化/纯时间戳刷新/有实质变化
+.venv/bin/python -m shenwan_industry.cache_commit_guard --revert-pure # 顺带把纯时间戳刷新恢复为 HEAD（水位下次运行自动重放，数据无损）
 .venv/bin/python shenwan_industry/valuation_series.py 801010.SI                # 行业指数估值走势序列（K 线副图 PE/PB）首查/增量
 .venv/bin/python shenwan_industry/valuation_series.py 801010.SI --force        # 忽略该指数缓存整段重算
 ```

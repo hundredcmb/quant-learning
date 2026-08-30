@@ -80,6 +80,7 @@ quant-learning 是一个 A 股复盘与投研辅助项目（量化为辅），�
 
 ### 环境与 Git
 - **提交规则（重要）**：AI 编码代理默认**不得自行执行 `git add` / `git commit` / `git push`**；只有用户明确要求提交时才可执行。代码/文档改动完成后保持未提交状态，等待用户指示。
+- **数据缓存提交前处理（shenwan_industry）**：`dividend_history.json` / `share_change_events.json` / `repurchase_records.json` 三个数据缓存每次跑单日榜都会自动增量刷新，多数日子只是水位/时间戳推进（零信息增量；每个版本约 0.2~1MB 压缩历史，提交即永久累积）。**提交前先跑 `.venv/bin/python -m shenwan_industry.cache_commit_guard`**：判定各文件"无变化 / 纯时间戳刷新 / 有实质变化"；纯时间戳刷新加 `--revert-pure` 丢弃（恢复为 HEAD 版本，被丢的只是水位，下次运行自动重放探测、数据无损）；有实质变化（真实分红/股本/回购事件）才随代码提交或攒着低频提交。估值序列缓存 `valuation_history.json` 已 gitignore，不在检查范围。
 - **Git 与 GitHub 操作**：GitHub 操作统一走 `gh` CLI（确保已安装并完成一次 `gh auth login` 认证）；涉及 GitHub 的操作（提交、PR、Issue、Gist、Release、仓库浏览等）按运行环境分两种方式，**底层都是 `gh`**：
   - **ZCode 环境**：使用 ZCode 内置 GitHub 插件技能（`github:*`：`/setup`、`/commit`、`/pr`、`/issue`、`/repo`、`/gist` 等斜杠命令，或直接自然语言触发）
   - **非 ZCode 环境（其他 AI 代理）**：直接使用 `gh` CLI 完成

@@ -13,6 +13,7 @@
   - `dividend_cache.py`：分红缓存构建与体检入口脚本（首刷 `--full` / 增量 / `--check` 个股抽查；日常无需运行，单日榜自动增量）
   - `share_change_data.py`：股本台阶数据层与注销金额计算（`ShareChangeHistory` 全市场总股本台阶事件持久缓存[data/share_change_events.json，daily_basic 按日全市场快照逐日 diff 只落盘变化行，首刷回填 560 自然日约 370 请求一次性、增量=(快照日,今天]逐交易日链式 diff、--full=全量重建] + `RepurchaseHistory` 回购公告按月缓存[data/repurchase_records.json，vol 交叉验证用] + `compute_buyback_amount` TTM 窗口注销金额——**窗口与归母 TTM 净利润严格一致**((去年同季期末, 最新报告期期末]，get_ts_code_to_ttm_window)、只取负台阶(正台阶不归因)；**三层决策=价格证据>对冲>守卫**(匹配且均价≈0 的 0/1 元注销剔除、匹配且价格正常的用公告 amount 并豁免对冲/守卫、无证据才对冲[90 天±2%]与守卫[>6% 兜底])，规则见第 5.1 节与 `docs/financial_indicators.md` 第 7.6 节）
   - `share_change_cache.py`：股本台阶缓存构建与体检入口脚本（首刷 `--full` / 增量 / `--check` 个股台阶与窗口金额抽查；日常无需运行，单日榜自动增量）
+  - `cache_commit_guard.py`：数据缓存提交前检查入口（只读判定三个持久缓存相对 HEAD 是"无变化/纯时间戳刷新/有实质变化"——剥离水位字段 `last_refresh`/逐股 `updated`/`snapshot_date`/`months_done` 后深度比对；`--revert-pure` 把纯时间戳刷新恢复为 HEAD；背景与提交约定见仓库根 AGENTS.md「环境与 Git」节）
   - `valuation_series.py`：行业指数估值走势序列数据层（K 线副图 PE/PB 历史序列：`ValuationSeriesManager` 后台计算管理 + `data/valuation_history.json` 持久缓存 + CLI 首查/增量/体检入口；逐日复用 `daily_valuation_metric` 与单日榜同一实现，口径/窗口/缓存版本约定见第 5.2 节与 `docs/financial_indicators.md` 第 11 节）
   - `daily_ranking.py` / `range_ranking.py`：单日 / 区间榜入口脚本（含耗时分析输出）
   - `data/`：数据/缓存子目录——需提交：`SW2021.json`（申万 2021 行业分类本地数据，推荐数据源，勿删）、`dividend_history.json`（每股分红事件持久缓存，供股息率，勿删）；**不提交（已 gitignore，本地运行产物）**：`valuation_history.json`（估值走势序列持久缓存，供 K 线副图 PE/PB，勿删——删了重算即可）；官方指数日线可用性由服务启动后台探测（`sw_daily` 一次全市场拉取，内存缓存、无文件，见 `web/service.py` `prebuild_sw_daily_available`）
