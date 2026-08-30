@@ -388,7 +388,7 @@ E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
     估算 10.20% 比公司实付 5.16 元还高 41%；封顶后估算 4.34%，回到"利润的 95% 折算"的保守上界，
     静态对照 7.25%）；**TTM ≤ 0 按 0 利润估算**——某季度大亏把 TTM 拖负时估算 DPS = 0，
     个股按 0.00% 参与行业合成而非"—"（"分红率稳定"假设下亏损期分红为零的正确推论，
-    2026-08-28 定稿；TTM 缺失[无财报新股]仍无定义）；**宣告替换外推而非取大**——公司预案是权威宣言，
+    2026-08-28 定稿；TTM 缺失[无财报新股]仍无定义；**锚年亏损但仍在分红（profit ≤ 0 且总额 > 0）按 payout=0 估算 → 0.00% 参与合成**——2026-08-30 定稿，实测城建发展/华发股份 FY2025 亏损仍派现触发，实绩接管自动生效；**宣告替换外推而非取大**——公司预案是权威宣言，
     利润暴涨使外推更高时也以公司预案为准
   - **部分实绩防低估**：N 的中期实绩/宣告（级联部分值）**超过估算时用实绩**，否则维持估算
     （原"已实施超过才替换"规则）
@@ -426,7 +426,7 @@ E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
 - stats（CLI 统计行）：`stocks_total` / `stocks_static`（静态有值）/ `stocks_static_zero` /
   `stocks_static_fallback`（7/31 推定）/ `stocks_est` / `stocks_est_zero` / `stocks_est_realized`
   （实绩接管）/ `stocks_est_payout_capped`（payout 封顶）/ `stocks_est_zero_profit`
-  （TTM≤0 按 0 利润估算）/ `stocks_no_anchor` / `stocks_no_profit` / `stocks_no_share`
+  （TTM≤0 按 0 利润估算）/ `stocks_est_zero_payout`（锚年亏损按 payout=0 估算）/ `stocks_no_anchor` / `stocks_no_profit`（利润缺失/未披露）/ `stocks_no_share`
   （当前股本缺失，DPS 按每股退化）/ `pool_no_value` / `pool_no_mv`
 - 分红缓存刷新或财务接口失败整体降级（该列全"—"），涨幅榜不受影响
 

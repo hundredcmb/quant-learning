@@ -30,6 +30,7 @@
     归母TTM ÷ 当前总股本, payout(锚) = 锚财年分红总额 ÷ 锚财年归母净利润(年报值, 与分红
     预案同日披露), **payout 超 95% 封顶**(锚年利润塌方/分红刚性/特别分红的异常锚防荒谬外推);
     **归母TTM ≤ 0(某季度大亏)按 0 利润估算 → 0.00% 参与合成而非"—"**;
+    **锚年亏损但仍在分红按 payout=0 估算 → 0.00%**(实测城建发展/华发股份 FY2025 亏损仍派现);
     N 的中期实绩/宣告(级联部分值)**超过估算时用实绩**(部分实绩防低估),
     否则维持估算——"宣告优先、外推补位"
   * **完整性三态**: 年度事件有行(实施/预案/**含 0 金额预案行**=显式"不分配", 4 月年报季确立)
@@ -442,7 +443,9 @@ def compute_dividend_dps(
     (get_ts_code_to_ttm_attr_profit, 含业绩快报双源合并——估算利润源与 PE 完全同源同 PIT)。
     锚财年总额=0(停发)时估算恒 0(不猜复分红, 复分红由预案级联接管); **归母TTM ≤ 0(某季度
     大亏)按 0 利润估算 → 0.00% 参与合成而非"—"**(分红率稳定假设下亏损期分红为零的正确推论);
-    TTM 缺失(无财报新股)/锚年利润缺失或 ≤0 时估算无定义(交由实绩/无数据兜底)。
+    **锚年亏损但仍在分红(profit ≤ 0 且总额 > 0)按 payout=0 处理 → 0.00% 参与合成**(2026-08-30
+    定稿, 实测城建发展/华发股份 FY2025 亏损仍派现触发; 实绩 target_dps > 0 时仍由宣告值接管);
+    TTM 缺失(无财报新股)/锚年利润缺失或未披露时估算无定义(交由实绩/无数据兜底)。
     目标财年实绩超过估算时用实绩(部分实绩防低估), 否则维持估算。
     总额法分子: 事件级 每股派现×base_share(缺失按当前股本退化); **当前股本缺失的股票
     退化为每股金额直接相加(忽略 base_share——'每股×万股'与每股口径混合无意义, 且 payout
@@ -469,6 +472,7 @@ def compute_dividend_dps(
         "stocks_est_realized": 0,  # 实绩接管(部分实绩>估算)只数
         "stocks_est_payout_capped": 0,  # payout 超上限被封顶的只数
         "stocks_est_zero_profit": 0,  # TTM≤0 按 0 利润估算(0.00% 参与合成)的只数
+        "stocks_est_zero_payout": 0,  # 锚年亏损但仍在分红、按 payout=0 估算(0.00% 参与合成)的只数
         "stocks_no_anchor": 0,
         "stocks_no_profit": 0,  # payout 无法计算(锚年利润缺失/≤0 且总额>0)
         "stocks_no_share": 0,  # 当前股本缺失, 总额法按每股退化
@@ -530,6 +534,16 @@ def compute_dividend_dps(
                         estimate = _round6(payout * (ttm / 1e4) / share_wan)
                         if estimate < 0:
                             estimate = None
+                elif (
+                    profit is not None and visible and profit <= 0
+                    and info["static_total_wan"] > 0
+                ):
+                    # 锚年亏损但仍在分红(实测城建发展/华发股份 FY2025: 亏损仍派现): payout 分母
+                    # ≤0 无定义 → **按 payout=0 处理**(估算 0.00% 参与合成而非"—", 2026-08-30
+                    # 定稿; 与 TTM≤0 的 0 利润分支同语义——锚年亏损即视作当年无分红能力外推);
+                    # 实绩接管自动生效(target_dps > 0 时仍由宣告值替换); 利润缺失/未披露仍无数据"—"
+                    estimate = 0.0
+                    stats["stocks_est_zero_payout"] += 1
                 else:
                     stats["stocks_no_profit"] += 1
 
