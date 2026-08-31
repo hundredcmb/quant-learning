@@ -85,9 +85,10 @@ class ValuationSeriesManager:
     def __init__(self, context_fn: ContextFn, window_days: int = VALUATION_WINDOW_DAYS) -> None:
         self._context_fn = context_fn
         self._window_days = window_days
-        self._lock = threading.Lock()  # 保护 _states/_cache/_loaded（含落盘临界区）
+        self._lock = threading.Lock()  # 保护 _states/_cache/_epochs/_loaded（含落盘临界区）
         self._states: dict[str, dict[str, Any]] = {}  # index_code -> {state, progress, message}
         self._cache: dict[str, dict[str, Any]] = {}  # index_code -> {"pe": {...}, "pb": {...}, ...}
+        self._epochs: dict[str, str] = {}  # trade_date -> 披露纪元指纹(PE 归母合并纪元|bs 纪元)——过期自愈见 _detect_stale
         self._loaded = False
         self._compute_lock = threading.Lock()  # 全局串行计算(见模块 docstring)
 
@@ -101,6 +102,7 @@ class ValuationSeriesManager:
                 raw = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
                 if int(raw.get("version", 0)) == CACHE_VERSION:
                     self._cache = raw.get("series", {})
+                    self._epochs = raw.get("epochs", {})
                 else:
                     logger.warning(
                         f"估值序列缓存版本不匹配(文件 v{raw.get('version')} != v{CACHE_VERSION}), 全量重算"
@@ -113,7 +115,11 @@ class ValuationSeriesManager:
         """落盘（调用方须已持 _lock）；失败仅告警不中断计算"""
         try:
             CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"version": CACHE_VERSION, "series": self._cache}
+            payload = {
+                "version": CACHE_VERSION,
+                "series": self._cache,
+                "epochs": self._epochs,  # 披露纪元指纹(全市场一份, 与指数无关)
+            }
             CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         except Exception as err:  # noqa: BLE001 - 磁盘异常不中断计算
             logger.warning(f"估值序列缓存落盘失败: {err!r}")
@@ -220,7 +226,26 @@ class ValuationSeriesManager:
                 (datetime.strptime(missing[0], "%Y%m%d") - timedelta(days=24)).strftime("%Y%m%d"),
                 missing[-1],
             )
-        total = len(missing)
+        # 过期检测(披露纪元指纹自愈, 2026-08-31): 已算日期重算当前指纹并与存储值比对——
+        # 不一致 = 上游财报数据变了(ann_date 回填/新增修订行, 该日 PIT 视图翻转), 当日值
+        # 视同缺失重算; **无指纹的历史日期保留**(升级前入库, 数值经锚点验证仍有效), 不做
+        # 一刀切重算。指纹全市场一份(与指数无关), 每日增量时顺带全窗口校验(毫秒级/日)
+        stale: list[str] = []
+        if self._epochs:
+            for d in dates:
+                if (
+                    d not in missing
+                    and d in self._epochs
+                    and self._day_fingerprint(provider, d) != self._epochs[d]
+                ):
+                    stale.append(d)
+        if stale:
+            logger.info(
+                f"估值序列({index_code}) 检测到 {len(stale)} 个交易日的上游财报数据已更新, 重算: "
+                f"{', '.join(stale[:5])}{'...' if len(stale) > 5 else ''}"
+            )
+        todo = sorted(set(missing) | set(stale))
+        total = len(todo)
         if not total:
             self._set_state(
                 index_code,
@@ -233,7 +258,7 @@ class ValuationSeriesManager:
         done = 0
         skipped: list[str] = []
         t0 = time.perf_counter()
-        for day_str in missing:
+        for day_str in todo:
             result = self._compute_one(tree, provider, index_code, level_key, day_str)
             if result is None:
                 skipped.append(day_str)  # 当日行情未发布等, 不落键下次再试
@@ -244,6 +269,7 @@ class ValuationSeriesManager:
                     entry["pe"][day_str] = pe_value
                     entry["pb"][day_str] = pb_value
                     entry["updated"] = datetime.now().strftime("%Y%m%d %H:%M:%S")
+                    self._epochs[day_str] = self._day_fingerprint(provider, day_str)
                     self._save_locked()  # 逐日落盘, 中断不丢已算日期
             done += 1
             self._set_state(
@@ -265,6 +291,35 @@ class ValuationSeriesManager:
             f"估值序列({index_code}) 本次计算 {total - len(skipped)}/{total} 个交易日, "
             f"耗时 {elapsed:.1f}s"
         )
+
+    def _day_fingerprint(self, provider: MarketDataProvider, day_str: str) -> str:
+        """某交易日的披露纪元指纹: "PE归母合并纪元|bs纪元"(过期自愈用, 见 _run_job_locked)
+
+        与 market_data 视图键同一原料(窗口各期披露边界: fina 去重 ann ∪ express 全版本 ann
+        ∪ 法定截止日 / bs 同)但不构建视图——纯边界二分, 单日毫秒级; 首次调用会触发易变期
+        财报拉取与边界收集(与回放计算共用同一批 period 缓存, 不多花请求)。express 拉取失败
+        时 PE 侧纪元退化为纯财报口径并加哨兵前缀(与 _attr_view_with_key 同语义: 失败态指纹
+        与成功态绝不相同, 快报恢复后当日自动判过期重算)
+        """
+        day = datetime.strptime(day_str, "%Y%m%d")
+        periods = tuple(provider._fina_period_window(day))
+        fina_sets = [
+            provider._pool_ann_boundaries(p, provider._fetch_fina_period, provider._fina_ann_boundaries)
+            for p in periods
+        ]
+        try:
+            express_sets = [
+                provider._pool_ann_boundaries(p, provider._fetch_express_period, provider._express_ann_boundaries, express_style=True)
+                for p in periods
+            ]
+            pe_epoch = provider._epoch_of(day_str, fina_sets + express_sets)
+        except Exception:
+            pe_epoch = "noexpress:" + provider._epoch_of(day_str, fina_sets)
+        bs_epoch = provider._epoch_of(
+            day_str,
+            [provider._pool_ann_boundaries(p, provider._fetch_bs_period, provider._bs_ann_boundaries) for p in periods],
+        )
+        return f"{pe_epoch}|{bs_epoch}"
 
     @staticmethod
     def _compute_one(
