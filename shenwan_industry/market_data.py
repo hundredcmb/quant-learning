@@ -1,7 +1,10 @@
 """
 申万行业行情数据层 (MarketDataProvider)
 
-- 行情/市值获取: daily / daily_basic, 带按日内存缓存(涨跌幅口径见 shenwan_industry/AGENTS.md 第 3 节)
+- 行情/市值获取: daily / daily_basic, **三级查找: 内存 → SQLite 持久层(data/market.db,
+  market_store.MarketStore)→ 网络**, 网络拉回非空写穿入库(重启/CLI 重跑不再逐日重拉,
+  写穿/易变尾窗口/完整日元表规则见 market_store 模块 docstring); 涨跌幅口径见
+  shenwan_industry/AGENTS.md 第 3 节
 - 财务指标: fina_indicator_vip 按报告期全市场批拉, 一次同取扣非净利润(profit_dedt)、非经常性损益
   (extra_item)与每股净资产(bps); **归母净利润 = profit_dedt + extra_item 行内合成**(恒等式经全市场
   实测验证, 见 _fetch_fina_period), 供单日榜 PE(列名"PE"): 归母-TTM 口径 get_ts_code_to_ttm_attr_profit,
@@ -49,9 +52,11 @@ import pandas as pd
 
 try:
     from .dividend_data import DividendHistory, compute_dividend_dps
+    from .market_store import MarketStore
     from .share_change_data import RepurchaseHistory, ShareChangeHistory, compute_buyback_amount
 except ImportError:  # 直接运行本文件时
     from dividend_data import DividendHistory, compute_dividend_dps
+    from market_store import MarketStore
     from share_change_data import RepurchaseHistory, ShareChangeHistory, compute_buyback_amount
 
 logger = logging.getLogger("shenwan_industry.market_data")
@@ -72,6 +77,10 @@ MV_RESOLVE_MODE = os.environ.get("SW_MV_RESOLVE_MODE", "new")
 MV_RESOLVE_WORKERS = int(os.environ.get("SW_MV_RESOLVE_WORKERS", "8"))
 # 逐股残留"全窗回到上市日"的下界: 早于所有 A 股上市日, 等价于查完全部上市期
 _MV_LISTING_FLOOR = "19900101"
+
+# 行情/市值 SQLite 持久层开关: 默认启用(内存 → data/market.db → 网络三级查找、网络拉回
+# 写穿入库); SW_MARKET_DB=0 退回纯内存+网络的旧行为(A/B 对比/排查用, 见 market_store)
+MARKET_DB_ENABLED = os.environ.get("SW_MARKET_DB", "1") == "1"
 
 # 财务指标(VIP)批拉: 实测按 period 全量单期 6870~8808 行; limit 参数生效且上限远高于 daily(实测
 # limit=9999/20000 均整批返回无截断、单次 8000+ 行正常), 取 9999 使每期一页(8 期 8 次请求),
@@ -136,6 +145,17 @@ def _to_float(v) -> float:
     except (TypeError, ValueError):
         return 0.0
     return f if math.isfinite(f) else 0.0
+
+
+def _row_float(v) -> float | None:
+    """daily_basic 原始行字段安全转 float: 缺失/NaN/非有限值 → None(行缓存与 SQLite 均以 None 表示缺失)"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 def _calc_free_mv(
@@ -207,6 +227,8 @@ class MarketDataProvider:
         self._ttm_window_cache: dict[datetime, tuple[dict[str, tuple[str, str]], dict[str, int]]] = {}  # 计算日 -> ({ts_code: (左开端, 右闭端)}, 统计)——每股归母TTM覆盖窗口(注销分量窗口用)
         self._bb_amount_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM窗口注销金额万元, 统计)——est_bb 口径分子
         self._index_weight_month_cache: dict[tuple[str, str], dict[str, set[str]]] = {}  # (index_code, YYYYMM) -> {快照日: 样本集}——样本空间月度快照缓存
+        self._daily_basic_rows_cache: dict[datetime, dict[str, dict[str, float | None]]] = {}  # 日期 -> daily_basic 全市场原始行 {ts_code: {close,total_mv,free_share,float_share,total_share}}(三级查找的行缓存, 派生 free/total/total_share 三缓存由 _apply_daily_basic_rows 生成; 供 share_change 台阶快照共用)
+        self._market_store: MarketStore | None = None  # SQLite 行情持久层单例(惰性, market_store 属性)
 
     def _acquire_rate_slot(self, api_name: str) -> None:
         """按**接口独立**的请求开始速率节制: 每接口开始时刻按 MAX_DAILY_FETCH_RATE 平摊
@@ -230,17 +252,53 @@ class MarketDataProvider:
         """返回当前 API 调用计数快照(副本), 任务前后快照求差即任务实际调用"""
         return dict(self._counter)
 
+    @property
+    def market_store(self) -> MarketStore | None:
+        """SQLite 行情持久层单例(惰性创建): None = 禁用(SW_MARKET_DB=0)或连续失败熔断
+
+        返回 None 时各访问器直走网络(与改造前行为一致); 库文件路径/易变尾窗口/熔断阈值
+        等约定见 market_store 模块 docstring
+        """
+        if not MARKET_DB_ENABLED:
+            return None
+        if self._market_store is None:
+            self._market_store = MarketStore()
+        return None if self._market_store.disabled else self._market_store
+
     def get_ts_code_to_pct_chg(self, date: datetime) -> dict[str, float | None]:
-        """获取某日的行情数据: ts_code -> 涨跌幅(%), 数据异常时为 None"""
+        """获取某日的行情数据: ts_code -> 涨跌幅(%), 数据异常时为 None
+
+        三级查找: 内存 → SQLite 持久层(非易变尾窗口且 fetch_log 判完整日)→ 网络;
+        网络拉回非空后写穿入库(库内行集=有效行; 网络路径中 NaN 异常行仅在内存记
+        None、不入库——见 known_issues 第 47 条边界说明)
+        """
         ts_code_to_pct_chg: dict[str, float | None] = self.ts_code_to_pct_chg_cache.get(date) or {}
         ts_code_to_close: dict[str, float] = self.ts_code_to_close_cache.get(date) or {}
         ts_code_to_amount: dict[str, float] = self.ts_code_to_amount_cache.get(date) or {}
         if ts_code_to_pct_chg and ts_code_to_close:
             return ts_code_to_pct_chg
 
+        date_str = date.strftime("%Y%m%d")
+        store = self.market_store
+        if store is not None and not store.is_volatile(date_str):
+            rows = store.load_daily(date_str)
+            if rows is not None:
+                for ts_code, close, pre_close, _amount in rows:
+                    if close is None or pre_close is None or pre_close <= 0:
+                        continue  # 防御: 库内应恒为有效行(写穿时已过滤)
+                    ts_code_to_pct_chg[ts_code] = (close - pre_close) / pre_close * 100
+                    ts_code_to_close[ts_code] = close
+                ts_code_to_amount = {c: a for c, _cl, _pc, a in rows if a is not None}
+                if ts_code_to_pct_chg:
+                    self.ts_code_to_pct_chg_cache[date] = ts_code_to_pct_chg
+                    self.ts_code_to_close_cache[date] = ts_code_to_close
+                    self.ts_code_to_amount_cache[date] = ts_code_to_amount
+                    return ts_code_to_pct_chg
+                # 行集为空(库异常): 视为未命中, 继续走网络
+
+        valid_rows: list[tuple[str, float, float, float | None]] = []
         offset = 0
         batch_size = 5999
-        date_str = date.strftime("%Y%m%d")
         while True:
             self._acquire_rate_slot("daily")
             df = self.pro.daily(trade_date=date_str, offset=offset, limit=batch_size)
@@ -270,8 +328,11 @@ class MarketDataProvider:
                 ts_code_to_pct_chg[ts_code] = pct_chg
                 ts_code_to_close[ts_code] = close_f
                 amount = getattr(row, "amount", None)
+                amount_f: float | None = None
                 if amount is not None and not pd.isna(amount) and math.isfinite(float(amount)):
-                    ts_code_to_amount[ts_code] = float(amount)
+                    amount_f = float(amount)
+                    ts_code_to_amount[ts_code] = amount_f
+                valid_rows.append((ts_code, close_f, pre_close_f, amount_f))
 
             offset += len(df)
             if batch_size > len(df):
@@ -281,6 +342,8 @@ class MarketDataProvider:
             self.ts_code_to_pct_chg_cache[date] = ts_code_to_pct_chg
             self.ts_code_to_close_cache[date] = ts_code_to_close
             self.ts_code_to_amount_cache[date] = ts_code_to_amount
+            if store is not None:
+                store.save_daily(date_str, valid_rows, include_amount=True)
 
         return ts_code_to_pct_chg
 
@@ -292,16 +355,19 @@ class MarketDataProvider:
     def get_ts_code_to_amount(self, date: datetime) -> dict[str, float]:
         """获取某日的成交额数据(千元): ts_code -> 成交额
 
-        通常随 get_ts_code_to_pct_chg 的全字段拉取顺带缓存; 但区间链式预取
-        (fetch_daily_by_date) 只拉 close/pre_close 回填 pct 缓存, 该路径下 pct 缓存已满
-        不会重拉——amount 仍空时单独拉一次全字段 daily 补齐(已缓存则零请求)
+        通常随 get_ts_code_to_pct_chg 的全字段拉取顺带缓存(库内 amount 列亦然); 但区间链式
+        预取 (fetch_daily_by_date) 只拉 close/pre_close 回填 pct 缓存, 该路径下 pct 缓存已满
+        不会重拉——amount 仍空时单独拉一次全字段 daily 补齐(已缓存则零请求), 拉回后写穿
+        更新库中该日的 amount 列(下次同日零请求)
         """
         self.get_ts_code_to_pct_chg(date)
         cached = self.ts_code_to_amount_cache.get(date)
         if cached:
             return cached
         date_str = date.strftime("%Y%m%d")
+        store = self.market_store
         ts_code_to_amount: dict[str, float] = {}
+        valid_rows: list[tuple[str, float, float, float | None]] = []
         offset = 0
         while True:
             self._acquire_rate_slot("daily")
@@ -309,13 +375,28 @@ class MarketDataProvider:
             if len(df) == 0:
                 break
             for row in df.itertuples(index=False):
+                ts_code = str(row.ts_code)
+                close = row.close
+                pre_close = row.pre_close
                 amount = getattr(row, "amount", None)
+                amount_f: float | None = None
                 if amount is not None and not pd.isna(amount) and math.isfinite(float(amount)):
-                    ts_code_to_amount[str(row.ts_code)] = float(amount)
+                    amount_f = float(amount)
+                    ts_code_to_amount[ts_code] = amount_f
+                # 全字段请求顺带收集有效行写穿(与 pct 路径同一有效性口径)
+                if (
+                    close is not None and pre_close is not None
+                    and not pd.isna(close) and not pd.isna(pre_close)
+                ):
+                    close_f, pre_close_f = float(close), float(pre_close)
+                    if math.isfinite(close_f) and math.isfinite(pre_close_f) and pre_close_f > 0:
+                        valid_rows.append((ts_code, close_f, pre_close_f, amount_f))
             offset += len(df)
             if len(df) < 5999:
                 break
         self.ts_code_to_amount_cache[date] = ts_code_to_amount
+        if store is not None and ts_code_to_amount:
+            store.save_daily(date_str, valid_rows, include_amount=True)
         return ts_code_to_amount
 
     def get_ts_code_to_free_mv(self, date: datetime) -> dict[str, float]:
@@ -323,17 +404,41 @@ class MarketDataProvider:
 
         自由流通市值 = free_share × close (自由流通股本×收盘价), 三字段取同一行(同一交易日),
         等价于 circ_mv × free_share / float_share;
-        与总市值同一次请求拉取并缓存; 字段缺失/非正的股票不记入(股本比例越界视为正常, 见 _calc_free_mv)
+        与总市值同一次请求拉取并缓存; 字段缺失/非正的股票不记入(股本比例越界视为正常, 见 _calc_free_mv);
+        三级查找经 daily_basic_rows(内存行缓存 → SQLite → 网络)完成
         """
-        ts_code_to_free_mv: dict[str, float] = self.ts_code_to_free_mv_cache.get(date) or {}
-        if ts_code_to_free_mv:
-            return ts_code_to_free_mv
+        cached = self.ts_code_to_free_mv_cache.get(date)
+        if cached:
+            return cached
+        self.daily_basic_rows(date)
+        return self.ts_code_to_free_mv_cache.get(date) or {}
 
+    def daily_basic_rows(self, date: datetime) -> dict[str, dict[str, float | None]]:
+        """获取某日全市场 daily_basic 原始行: {ts_code: {close,total_mv,free_share,float_share,total_share}}
+
+        三级查找: 内存行缓存 → SQLite 持久层(非易变尾窗口且 fetch_log 判完整日)→ 网络分页;
+        网络拉回非空后写穿入库, 并经 _apply_daily_basic_rows 派生自由流通/总市值/总股本三个
+        内存缓存(口径与原 get_ts_code_to_free_mv 逐字一致); 空结果不缓存不落库(未收盘/节假日,
+        下次自动重试)。**供 get_ts_code_to_free_mv 与 share_change_data 台阶快照共用**——
+        两个子系统消费同一份全市场行数据, 三级查找下零重复请求
+        """
+        cached = self._daily_basic_rows_cache.get(date)
+        if cached:
+            return cached
+
+        date_str = date.strftime("%Y%m%d")
+        store = self.market_store
+        if store is not None and not store.is_volatile(date_str):
+            rows = store.load_daily_basic(date_str)
+            if rows is not None:
+                self._apply_daily_basic_rows(date, rows)
+                if rows:
+                    return rows
+                # 行集为空(库异常): 视为未命中, 继续走网络
+
+        rows: dict[str, dict[str, float | None]] = {}
         offset = 0
         batch_size = 5999  # 官方单次上限 6000, 留 1 余量; 全市场一次拉完
-        date_str = date.strftime("%Y%m%d")
-        ts_code_to_total_mv: dict[str, float] = {}
-        ts_code_to_total_share: dict[str, float] = {}
         while True:
             self._acquire_rate_slot("daily_basic")
             df = self.pro.daily_basic(
@@ -344,31 +449,48 @@ class MarketDataProvider:
                 limit=batch_size,
             )
             for row in df.itertuples(index=False):
-                ts_code = row.ts_code
-                free_mv = _calc_free_mv(
-                    row.close,
-                    getattr(row, "free_share", None),
-                    getattr(row, "float_share", None),
-                )
-                if free_mv is not None:
-                    ts_code_to_free_mv[ts_code] = free_mv
-                total_mv = getattr(row, "total_mv", None)
-                if total_mv is not None and not pd.isna(total_mv):
-                    ts_code_to_total_mv[ts_code] = float(total_mv)
-                total_share = getattr(row, "total_share", None)
-                if total_share is not None and not pd.isna(total_share) and float(total_share) > 0:
-                    ts_code_to_total_share[ts_code] = float(total_share)  # 万股, 供 PB(H1财报净资产折算)
+                rows[row.ts_code] = {
+                    "close": _row_float(getattr(row, "close", None)),
+                    "total_mv": _row_float(getattr(row, "total_mv", None)),
+                    "free_share": _row_float(getattr(row, "free_share", None)),
+                    "float_share": _row_float(getattr(row, "float_share", None)),
+                    "total_share": _row_float(getattr(row, "total_share", None)),
+                }
 
             offset += len(df)
             if batch_size > len(df):
                 break
 
+        if rows:
+            self._apply_daily_basic_rows(date, rows)
+            if store is not None:
+                store.save_daily_basic(date_str, rows)
+
+        return rows
+
+    def _apply_daily_basic_rows(self, date: datetime, rows: dict[str, dict[str, float | None]]) -> None:
+        """由 daily_basic 原始行写入行缓存并派生自由流通/总市值/总股本三个内存缓存
+
+        派生口径与原 get_ts_code_to_free_mv 网络路径逐字一致(_calc_free_mv 计算自由流通
+        市值、total_mv 直采、total_share>0 才记); 全部自由流通缺失的极端行集不写派生缓存
+        (行缓存仍写——它是三级查找的门槛, 避免重复拉取)
+        """
+        ts_code_to_free_mv: dict[str, float] = {}
+        ts_code_to_total_mv: dict[str, float] = {}
+        ts_code_to_total_share: dict[str, float] = {}
+        for ts_code, r in rows.items():
+            free_mv = _calc_free_mv(r["close"], r["free_share"], r["float_share"])
+            if free_mv is not None:
+                ts_code_to_free_mv[ts_code] = free_mv
+            if r["total_mv"] is not None:
+                ts_code_to_total_mv[ts_code] = r["total_mv"]
+            if r["total_share"] is not None and r["total_share"] > 0:
+                ts_code_to_total_share[ts_code] = r["total_share"]  # 万股, 供 PB(H1财报净资产折算)
+        self._daily_basic_rows_cache[date] = rows
         if ts_code_to_free_mv:
             self.ts_code_to_free_mv_cache[date] = ts_code_to_free_mv
             self.ts_code_to_total_mv_cache[date] = ts_code_to_total_mv
             self.ts_code_to_total_share_cache[date] = ts_code_to_total_share
-
-        return ts_code_to_free_mv
 
     def _fill_pct_cache_from_batch(self, day_str: str, data: dict[str, tuple[float, float]]) -> None:
         """把批拉行情回填 pct/close 缓存(与 get_ts_code_to_pct_chg 同一口径, 数据异常行已被跳过)
@@ -1813,13 +1935,42 @@ class MarketDataProvider:
         self._trade_cal_spans.append((start_str, end_str, result))
         return result
 
+    def _load_daily_pairs_from_store(self, date_str: str) -> dict[str, tuple[float, float]] | None:
+        """从 SQLite 持久层读取某日全市场 daily 为 {ts_code: (close, pre_close)}
+
+        None = 库禁用/易变尾窗口/未完整拉取/空行集(库异常)——调用方走网络;
+        与 fetch_daily_by_date 的网络返回同形状
+        """
+        store = self.market_store
+        if store is None or store.is_volatile(date_str):
+            return None
+        rows = store.load_daily(date_str)
+        if rows is None:
+            return None
+        result: dict[str, tuple[float, float]] = {}
+        for ts_code, close, pre_close, _amount in rows:
+            if close is None or pre_close is None or pre_close <= 0:
+                continue  # 防御: 库内应恒为有效行(写穿时已过滤)
+            result[ts_code] = (close, pre_close)
+        return result or None
+
     def fetch_daily_by_date(
         self,
         date_str: str,
         cancel_check: CancelCheck | None = None,
     ) -> dict[str, tuple[float, float]]:
-        """按交易日拉全市场 daily, 返回 ts_code -> (close, pre_close), 跳过异常数据"""
-        result: dict[str, tuple[float, float]] = {}
+        """按交易日拉全市场 daily, 返回 ts_code -> (close, pre_close), 跳过异常数据
+
+        三级查找: 先查 SQLite 持久层(完整日直接重建零网络), 未命中或近端易变尾窗口才走
+        网络; 网络拉回非空后写穿入库——本路径只拉 close/pre_close, upsert 不覆盖库中
+        已有 amount 列
+        """
+        cached_pairs = self._load_daily_pairs_from_store(date_str)
+        if cached_pairs is not None:
+            return cached_pairs
+
+        result = {}
+        valid_rows: list[tuple[str, float, float, float | None]] = []
         offset = 0
         batch_size = 5999
         while True:
@@ -1853,11 +2004,14 @@ class MarketDataProvider:
                     )
                     continue
                 result[ts_code] = (close_f, pre_close_f)
+                valid_rows.append((ts_code, close_f, pre_close_f, None))
 
             offset += len(df)
             if batch_size > len(df):
                 break
 
+        if result and self.market_store is not None:
+            self.market_store.save_daily(date_str, valid_rows, include_amount=False)
         return result
 
     def fetch_daily_batch(
@@ -1869,6 +2023,10 @@ class MarketDataProvider:
         """
         并发拉取多日 daily, 返回 {日期: {ts_code: (close, pre_close)}}
 
+        - **SQLite 持久层已完整的日期在调用线程顺序直读**(整段秒级)——DB 行物化是 GIL 密集
+          操作, 放进 8 线程池与网络 I/O(等待期释放 GIL)混跑会触发 GIL 押送效应, 实测把
+          区间链式三池并行预取拖慢一倍以上(22.7s vs 无库 10.2s, 2026-08-31 定位修复);
+          只有库未覆盖/易变尾窗口的日期进线程池走网络
         - 线程池并发; **请求速率由全局节流器 _acquire_rate_slot 在 fetch_daily_by_date 的实际请求点平摊**
           (与 daily_basic 点查/并发补齐共用同一把锁, 全进程 ≤450 次/分钟, 不会触发 Tushare 500 次/分钟上限)
         - 单日失败自动重试 DAILY_FETCH_RETRY 次, 仍失败则抛错(不静默改变结果)
@@ -1876,6 +2034,24 @@ class MarketDataProvider:
         results: dict[str, dict[str, tuple[float, float]]] = {}
         total = len(trading_days)
         completed = 0
+
+        def _report() -> None:
+            nonlocal completed
+            completed += 1
+            if progress_callback is not None:
+                pct = completed / total * 100.0 if total else 100.0
+                progress_callback(pct, f"已拉取 {completed}/{total} 个交易日行情")
+
+        net_days: list[str] = []
+        for day_str in trading_days:
+            if cancel_check is not None:
+                cancel_check()
+            day_data = self._load_daily_pairs_from_store(day_str)
+            if day_data is not None:
+                results[day_str] = day_data
+                _report()
+                continue
+            net_days.append(day_str)
 
         def fetch_one(day_str: str) -> tuple[str, dict[str, tuple[float, float]]]:
             if cancel_check is not None:
@@ -1891,15 +2067,13 @@ class MarketDataProvider:
                 f"拉取 {day_str} 行情连续失败 {DAILY_FETCH_RETRY} 次: {last_err}"
             )
 
-        with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
-            for day_str, data in executor.map(fetch_one, trading_days):
-                if cancel_check is not None:
-                    cancel_check()
-                results[day_str] = data
-                completed += 1
-                if progress_callback is not None:
-                    pct = completed / total * 100.0 if total else 100.0
-                    progress_callback(pct, f"已拉取 {completed}/{total} 个交易日行情")
+        if net_days:
+            with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
+                for day_str, data in executor.map(fetch_one, net_days):
+                    if cancel_check is not None:
+                        cancel_check()
+                    results[day_str] = data
+                    _report()
 
         # 回填当日 pct/close 缓存: 链式区间榜逐日调用 get_ts_code_to_pct_chg 时零额外请求
         for day_str, data in results.items():
@@ -1914,6 +2088,8 @@ class MarketDataProvider:
     ) -> None:
         """预拉区间内每日全市场 daily_basic(自由流通/总市值同请求双缓存), 后续逐日调用零请求
 
+        **SQLite 持久层已完整的日期在调用线程顺序直读**(同 fetch_daily_batch 的 GIL 押送
+        规避, 见其 docstring); 只有库未覆盖/易变尾窗口的日期进线程池走网络。
         线程池并发; 请求速率由全局节流器在 get_ts_code_to_free_mv 的实际请求点平摊
         (与 _scan 点查共用同一把锁); 已有缓存的日期跳过。链式区间榜逐日算权重前调一次即可
         """
@@ -1926,6 +2102,30 @@ class MarketDataProvider:
             return
         total = len(days)
         completed = 0
+        store = self.market_store
+
+        def _report() -> None:
+            nonlocal completed
+            completed += 1
+            if progress_callback is not None:
+                pct = completed / total * 100.0 if total else 100.0
+                progress_callback(pct, f"已拉取 {completed}/{total} 个交易日市值")
+
+        net_days: list[str] = []
+        for day_str in days:
+            if cancel_check is not None:
+                cancel_check()
+            if (
+                store is not None
+                and not store.is_volatile(day_str)
+                and store.load_daily_basic(day_str) is not None
+            ):
+                self.daily_basic_rows(datetime.strptime(day_str, "%Y%m%d"))  # 命中库, 顺序填内存
+                _report()
+                continue
+            net_days.append(day_str)
+        if not net_days:
+            return
 
         def fetch_mv(day_str: str) -> str:
             if cancel_check is not None:
@@ -1943,13 +2143,10 @@ class MarketDataProvider:
             )
 
         with ThreadPoolExecutor(max_workers=MAX_DAILY_FETCH_WORKERS) as executor:
-            for day_str in executor.map(fetch_mv, days):
+            for day_str in executor.map(fetch_mv, net_days):
                 if cancel_check is not None:
                     cancel_check()
-                completed += 1
-                if progress_callback is not None:
-                    pct = completed / total * 100.0 if total else 100.0
-                    progress_callback(pct, f"已拉取 {completed}/{total} 个交易日市值")
+                _report()
 
     def fetch_ex_div_batch(
         self,

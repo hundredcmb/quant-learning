@@ -598,7 +598,9 @@ L1 农林牧渔 / L3 种子的 PE(free) 与 PB(free) 均一致，跨进程 ulp �
   daily/daily_basic 全市场批拉）；每交易日 2 请求（daily + daily_basic 各一）+ 财报池约 36 请求
   （跨日期共享 period 缓存），1 年窗口首查 ≈ 520 请求（两接口并行各 ~245）、预计 6~8 分钟
   （92 天窗口实测 2~3 分钟按比例外推）；**第二只指数因共享
-  `MarketDataProvider` 内存缓存（行情/市值/财报全部命中）仅纯 CPU 聚合、实测秒级完成**
+  `MarketDataProvider` 内存缓存（行情/市值/财报全部命中）仅纯 CPU 聚合、实测秒级完成**；
+  **2026-08-31 起 daily/daily_basic 走 SQLite 持久层 `data/market.db` 三级查找（写穿入库，见
+  `market_store.py`）——已入库的历史日期零网络（冷启动仅财报池重拉 + 未入库日期），跨进程重启同样命中**
 - **持久缓存** `data/valuation_history.json`（本地运行产物，已 gitignore 不随仓库提交）：`{index_code: {"pe"/"pb": {日期: 值|null},
   "updated"}}`，逐日落盘（中断不丢已算日期），`version` 为算法版本号——**口径/公式/窗口右端规则
   任何变更必须 +1**（旧文件整文件作废重算）；窗口外旧日期保留无害（前端按 K 线日期对齐裁剪）

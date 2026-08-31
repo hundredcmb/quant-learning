@@ -8,10 +8,12 @@
   是唯一正确姿势); 回购进库存股不减股本 → 本口径天然只算"已注销"(真回报股东), 回购未注销
   的库存不计入
 - 持久缓存: data/share_change_events.json = 最新一份全市场总股本快照 + 台阶事件列表。
-  快照/事件来自 daily_basic 按 trade_date 全市场单请求(与市值拉取同一模式, 单页 5999);
-  每个交易日与前一日快照 diff, 只落盘变化行(全市场日均有变化的股票约几百只, 18 个月事件
-  数万条、文件几 MB)。增量 = (snapshot_date, today] 逐交易日补拉链式 diff; 首刷回填
-  RETENTION_DAYS 窗口内全部交易日(约 370 个请求, 3 次/秒档约 2 分钟, 一次性)
+  快照/事件来自 daily_basic 按 trade_date 全市场拉取——**经 provider.daily_basic_rows
+  三级查找(内存 → SQLite data/market.db → 网络)与市值拉取共享同一份行数据**, 两子系统
+  零重复请求、历史交易日零网络; 每个交易日与前一日快照 diff, 只落盘变化行(全市场日均有
+  变化的股票约几百只, 18 个月事件数万条、文件几 MB)。增量 = (snapshot_date, today]
+  逐交易日补拉链式 diff; 首刷回填 RETENTION_DAYS 窗口内全部交易日(约 370 个请求,
+  3 次/秒档约 2 分钟, 一次性)
 - 事件结构: {ts_code: [{"d": 交易日, "p": 前股本, "n": 新股本(万股), "x": 当日收盘(元)}]}
   (按日期升序)。x 缺失(数据行 NaN)的事件保留但金额计零(防御, 实测未见)
 - 注销金额(TTM 窗口口径, 供"TTM估算股息+注销率"):
@@ -48,8 +50,6 @@ CACHE_VERSION = 1
 # 快照/事件保留下限(自然日): TTM 窗口左端最早 = D-16 个月(披露滞后最多 4 个月 + 12 个月窗口),
 # 18.5 个月留裕量; 更早事件(超长停披股的标准式窗口)被裁、该股按窗口内可得事件计算
 RETENTION_DAYS = 560
-# daily_basic 单页行数(官方单次上限 6000 留 1 余量, 与市值拉取同模式; 全市场一次拉完)
-SNAPSHOT_BATCH = 5999
 # 对称对冲窗口(自然日)与相对容差: -X 后该窗口内出现 +X(相对差 ≤ 容差)即视为数据源口径
 # 跳变/过户回补成对剔除——实测四例全覆盖: 美的 20260612/-109.63 ↔ 0622/+109.63(同日级)；
 # 百济神州 20250807/-11,060.4 ↔ 0915/+11,142.1(39 天, 差 0.74%)、20251107/-10,242.3 ↔
@@ -131,30 +131,22 @@ class ShareChangeHistory:
         CACHE_PATH.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _fetch_day_with_close(self, day_str: str) -> tuple[dict[str, float], dict[str, float | None]]:
-        """首刷/增量共用的当日快照(总股本 + 收盘价; 收盘供事件定价, NaN 记 None)"""
+        """首刷/增量共用的当日快照(总股本 + 收盘价; 收盘供事件定价, NaN 记 None)
+
+        经 provider.daily_basic_rows 取全市场原始行(内存 → SQLite data/market.db → 网络
+        三级查找), 与市值拉取共享同一份数据零重复请求; 空结果(未出数/节假日)返回空 dict,
+        由调用方按原语义处理
+        """
+        day_dt = datetime.strptime(day_str, "%Y%m%d")
+        rows = self._provider.daily_basic_rows(day_dt)
         shares: dict[str, float] = {}
         closes: dict[str, float | None] = {}
-        offset = 0
-        while True:
-            self._provider._acquire_rate_slot("daily_basic")
-            df = self._provider.pro.daily_basic(
-                trade_date=day_str,
-                fields="ts_code,close,total_share",
-                offset=offset,
-                limit=SNAPSHOT_BATCH,
-            )
-            if df is None or df.empty:
-                return shares, closes
-            for row in df.itertuples(index=False):
-                ts_code = str(row.ts_code)
-                total_share = getattr(row, "total_share", None)
-                if total_share is not None and not pd.isna(total_share) and float(total_share) > 0:
-                    shares[ts_code] = float(total_share)
-                    close = getattr(row, "close", None)
-                    closes[ts_code] = None if close is None or pd.isna(close) else float(close)
-            offset += len(df)
-            if len(df) < SNAPSHOT_BATCH:
-                return shares, closes
+        for ts_code, r in rows.items():
+            total_share = r.get("total_share")
+            if total_share is not None and total_share > 0:
+                shares[ts_code] = total_share
+            closes[ts_code] = r.get("close")
+        return shares, closes
 
     def ensure_refresh(self, cancel_check=None) -> str:
         """确保台阶事件覆盖到今天, 幂等加锁: 首刷(回填 RETENTION_DAYS) / 增量(逐交易日链式 diff)

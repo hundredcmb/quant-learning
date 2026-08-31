@@ -21,3 +21,9 @@ holders/etf/*.xlsx
 
 # 申万估值走势序列缓存（K 线副图 PE/PB，本地运行产物，不随仓库提交）
 shenwan_industry/data/valuation_history.json
+
+# 申万行情/市值 SQLite 持久层（daily/daily_basic 写穿缓存，可再生的数据不进 git；
+# -wal/-shm 为 WAL 模式运行时边车文件，连接全部关闭后自动合并消失）
+shenwan_industry/data/market.db
+shenwan_industry/data/market.db-wal
+shenwan_industry/data/market.db-shm

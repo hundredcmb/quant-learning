@@ -83,6 +83,10 @@ token 保存在项目根目录 `.quant-learning/settings.json`（已 gitignore�
 .venv/bin/python -m shenwan_industry.share_change_cache --check 600519.SH 000333.SZ   # 抽查个股台阶事件与 TTM 窗口注销金额
 .venv/bin/python -m shenwan_industry.cache_commit_guard               # 数据缓存提交前检查：无变化/纯时间戳刷新/有实质变化
 .venv/bin/python -m shenwan_industry.cache_commit_guard --revert-pure # 顺带把纯时间戳刷新恢复为 HEAD（水位下次运行自动重放，数据无损）
+.venv/bin/python -m shenwan_industry.market_cache                        # 行情 SQLite 持久层(market.db)覆盖统计+行数对账（日常自动写穿生长，无需手动跑）
+.venv/bin/python -m shenwan_industry.market_cache --backfill 20240101 20241231  # 预热日期区间（只补库内缺失的交易日，约1分钟/年）
+.venv/bin/python -m shenwan_industry.market_cache --force 20250407      # 强制重拉指定日期（应对 Tushare 偶发历史数据修正）
+.venv/bin/python -m shenwan_industry.market_cache --check --sample 3    # 体检+随机抽3个日期与网络实拉逐字段比对
 .venv/bin/python shenwan_industry/valuation_series.py 801010.SI                # 行业指数估值走势序列（K 线副图 PE/PB）首查/增量
 .venv/bin/python shenwan_industry/valuation_series.py 801010.SI --force        # 忽略该指数缓存整段重算
 ```
@@ -91,7 +95,7 @@ CLI 与 Web 使用同一份 token 配置（第 2 节），运行结束会输出�
 
 ## 5. 功能说明
 
-行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值；股息率用 `dividend` 接口每股全历史持久缓存（首刷约12分钟一次性，之后自动增量），财年锚定+总额法自算（官方 dv_ratio/dv_ttm 为滚动窗口口径不采用），双口径「TTM估算股息率（默认，进行中财年宣告优先/外推补位）/静态股息率（最近完整分红年度）」与合并口径「TTM估算股息+注销率」（注销分量 = 总股本逐日台阶法，窗口与 TTM 净利润一致，含数量级守卫与 repurchase 交叉验证（对赌/激励类 0 元注销剔除）；台阶缓存 `data/share_change_events.json` + 回购公告缓存 `data/repurchase_records.json` 首刷约 2~3 分钟一次性、之后自动增量），详见 `shenwan_industry/docs/financial_indicators.md` 第 7 节。**行业指数估值走势**（Web K 线弹窗副图：下拉成交额/成交量/PE/PB，仅行业指数可选；无缓存时点"查询估值"后台计算+进度轮询，口径固定 自由流通加权+归母TTM 的 PE 与自由流通加权的 PB、与单日榜同一实现逐日回放，滚动窗口 365 自然日（1 年）、右端=今日之前最近交易日；持久缓存 `data/valuation_history.json` 首查约 6~8 分钟、之后增量秒级，第二只指数共享缓存纯本地聚合）详见 `shenwan_industry/docs/financial_indicators.md` 第 11 节。
+行业树优先从本地 `data/SW2021.json` 构建（备用 Tushare `index_classify`）；涨跌幅由 `close/pre_close` 自行重算；流通市值加权对停牌股做「停牌前最近流通市值」回退（最长 730 天）。单日榜财务指标：PE 用净利润四口径（归母/扣非 × TTM/动态，默认归母-TTM；TTM 滚动 12 月、不足四期按 4/k 年化，动态 = 最新期累计 × 4/k；接口无归母绝对额，由 `profit_dedt + extra_item` 行内合成；年报披露前有业绩快报（`express_vip`）则提前以快报值参与，审定值披露后自动切回；净利润同比同四口径，TTM 式比 TTM(D)/TTM(D-1年)、动态式比最新期/去年同季累计）、PB 用 `balancesheet_vip` 归母普通股股东权益绝对额（归母权益−其他权益工具，时点值无年化、不经"每股×股本"折算），与 `fina_indicator_vip` 按报告期并行批拉、按 `ann_date` 做时点过滤，行业合成 = ∑市值 / ∑分摊股东值；股息率用 `dividend` 接口每股全历史持久缓存（首刷约12分钟一次性，之后自动增量），财年锚定+总额法自算（官方 dv_ratio/dv_ttm 为滚动窗口口径不采用），双口径「TTM估算股息率（默认，进行中财年宣告优先/外推补位）/静态股息率（最近完整分红年度）」与合并口径「TTM估算股息+注销率」（注销分量 = 总股本逐日台阶法，窗口与 TTM 净利润一致，含数量级守卫与 repurchase 交叉验证（对赌/激励类 0 元注销剔除）；台阶缓存 `data/share_change_events.json` + 回购公告缓存 `data/repurchase_records.json` 首刷约 2~3 分钟一次性、之后自动增量），详见 `shenwan_industry/docs/financial_indicators.md` 第 7 节。**行业指数估值走势**（Web K 线弹窗副图：下拉成交额/成交量/PE/PB，仅行业指数可选；无缓存时点"查询估值"后台计算+进度轮询，口径固定 自由流通加权+归母TTM 的 PE 与自由流通加权的 PB、与单日榜同一实现逐日回放，滚动窗口 365 自然日（1 年）、右端=今日之前最近交易日；持久缓存 `data/valuation_history.json` 首查约 6~8 分钟、之后增量秒级，第二只指数共享缓存纯本地聚合）详见 `shenwan_industry/docs/financial_indicators.md` 第 11 节。**行情/市值 SQLite 持久层**（2026-08-31 第一期）：`daily`/`daily_basic` 全市场逐日快照写穿 `shenwan_industry/data/market.db`（gitignore 不提交），读取三级查找「内存 → SQLite → 网络」——重启/CLI 重跑/复盘重复查同一历史区间不再逐日重拉，台阶快照与市值拉取共享同一份行数据零重复请求；空结果不落库、近端 5 自然日易变尾窗口照常走网络覆盖写，`SW_MARKET_DB=0` 可整体禁用退回旧行为；补数/体检入口 `market_cache.py`，语义边界见 `shenwan_industry/docs/known_issues.md` 第 47 条。
 
 ## 6. 十大股东席位分析（holders）
 
