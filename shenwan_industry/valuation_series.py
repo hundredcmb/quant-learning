@@ -209,6 +209,17 @@ class ValuationSeriesManager:
             self._ensure_loaded()
         dates = _window_dates(provider, self._window_days)
         missing = [d for d in dates if not self._has_date(index_code, d)]
+        if missing:
+            # 预热树侧交易日窗口(新股 6 交易日门槛判定用): filter_stock_pool 逐日判定会对
+            # "近 24 历日上市"的新股查 [最早新股日, 当日] 跨度——回放逐日跨度不同、树的跨度
+            # 缓存逐日 miss, 打点实测 92 天窗口发出 66 次 trade_cal(~12s, 占首查 30%)。与
+            # 区间链式榜同款预热: 一次宽跨度(窗口首日−24 天覆盖)后逐日判定全部切片命中零
+            # 请求(2026-08-31; 树侧 _trading_days_window 是独立于 provider.get_trading_days
+            # 的日历获取路径, 不走 SQLite, 必须单独预热)
+            tree._trading_days_window(
+                (datetime.strptime(missing[0], "%Y%m%d") - timedelta(days=24)).strftime("%Y%m%d"),
+                missing[-1],
+            )
         total = len(missing)
         if not total:
             self._set_state(
