@@ -244,6 +244,27 @@ _stock_basic_snapshot_lock = threading.Lock()
 _index_member_all_cache: tuple[list[tuple], list[tuple]] | None = None
 _index_member_all_lock = threading.Lock()
 
+# 新三板混入过滤(2026-08-31 新增): fina/bs/express 三个 VIP 财务接口按报告期返回的是
+# "A 股 + 新三板挂牌 + 远古退市遗留"的混合——实测 43/83/87 开头且 .BJ 后缀的代码(新三板
+# 挂牌段)无任何行情、不在申万成分、也不在 stock_basic 三态快照(约 820 只/期, 占 fina
+# 全库 9%/express 10%/bs 4% 的行), 从不被榜单消费, 只徒增视图体积并以其 ann_date 污染
+# 披露纪元边界。**过滤规则取窄**: 仅丢弃"不在 stock_basic 白名单且为旧码 .BJ"的行——
+# 新上市股票的上市前申报报表回填(不在当日快照的 .SH/.SZ/92xxxx.BJ, 如 301688/920268,
+# 实测约 13 只/期)与快照内的退市股(约 180 只, list_status='D')都是合法数据, 一律保留
+_STOCK_CODE_WHITELIST: frozenset[str] | None = None
+_STOCK_CODE_WHITELIST_LOCK = threading.Lock()
+
+
+def _stock_code_whitelist(pro) -> frozenset[str]:
+    """stock_basic 三态快照(L/D/P)的代码白名单(进程内缓存; 与树构建快照同源, 通常零请求)"""
+    global _STOCK_CODE_WHITELIST
+    with _STOCK_CODE_WHITELIST_LOCK:
+        if _STOCK_CODE_WHITELIST is None:
+            _STOCK_CODE_WHITELIST = frozenset(
+                row["ts_code"] for row in get_stock_basic_snapshot(pro)
+            )
+        return _STOCK_CODE_WHITELIST
+
 
 def _snapshot_store() -> MarketStore | None:
     """树快照用的持久层单例(SW_MARKET_DB=0 时返回 None 走纯网络旧行为)"""
@@ -393,20 +414,23 @@ class MarketDataProvider:
         self.ts_code_to_total_share_cache: dict[datetime, dict[str, float]] = {}  # 日期 -> A股总股本(万股, 随 daily_basic 同请求缓存; PB 已改用 balancesheet_vip 权威净资产, 股本不再参与 PB)
         self._ex_div_records_cache: dict[datetime, list[dict]] = {}  # 日期 -> dividend 当日全记录(除息+送转字段)
         self._fina_period_cache: dict[str, dict[str, tuple[str, float, float, float, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 扣非净利润, 归母净利润, 每股净资产bps, 加权ROE%)
-        self._fina_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期数据)
-        self._ttm_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM扣非, 统计)——扣非-TTM 口径
-        self._ttm_attr_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (TTM归母, 统计)——归母-TTM 口径(PE 默认)
-        self._attr_merged_cache: dict[datetime, tuple[dict[str, dict[str, tuple[str, float | None]]], int]] = {}  # 计算日 -> (归母双源合并视图, 快报参与数)——归母 TTM/动态/动态增长对共用
+        self._fina_per_stock_cache: dict[tuple[str, ...], tuple[list[str], dict]] = {}  # 报告期窗口元组 -> (报告期列表, 每股各期数据)——**披露纪元缓存**(2026-08-31): 视图只依赖窗口报告期集合, 同窗口的日期共享
+        self._fina_ann_boundaries: dict[str, tuple[str, ...]] = {}  # 报告期 -> 去重视图全部不同披露边界升序(ann_date, 空串映射法定截止日)——纪元键的原料, 按 period 只算一次
+        self._ttm_cache: dict[tuple, tuple[dict[str, float], dict[str, int]]] = {}  # (窗口, fina 纪元) -> (TTM扣非, 统计)——扣非-TTM 口径(披露纪元缓存)
+        self._ttm_attr_cache: dict[tuple, tuple[dict[str, float], dict[str, int]]] = {}  # (窗口, 归母合并纪元) -> (TTM归母, 统计)——归母-TTM 口径(PE 默认, 披露纪元缓存)
+        self._attr_merged_cache: dict[tuple, tuple[dict[str, dict[str, tuple[str, float | None]]], int]] = {}  # (窗口, 纪元) -> (归母双源合并视图, 快报参与数)——归母 TTM/动态/动态增长对共用(披露纪元缓存)
         self._dynamic_profit_cache: dict[tuple[datetime, str], tuple[dict[str, float], dict[str, int]]] = {}  # (计算日, 口径) -> (动态净利润, 统计)——动态口径 PE 分子
         self._growth_pair_cache: dict[tuple[datetime, str], tuple[dict[str, tuple[float, float]], dict[str, int]]] = {}  # (计算日, 口径) -> (TTM增长对, 统计)——净利润同比 TTM 口径
         self._dynamic_growth_pair_cache: dict[tuple[datetime, str], tuple[dict[str, tuple[float, float]], dict[str, int]]] = {}  # (计算日, 口径) -> (动态增长对, 统计)——净利润同比动态口径
         self._roe_cache: dict[datetime, tuple[dict[str, dict[str, tuple[float, float]]], dict[str, int]]] = {}  # 计算日 -> ({basis: {ts_code: (分子, 分母)}}, 统计)——ROE 四口径(加权平均算法)
         self._bps_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (bps, 统计)——旧 PB 口径(保留对照)
         self._bs_period_cache: dict[str, dict[str, tuple[str, float]]] = {}  # 报告期 -> ts_code -> (ann_date, 归母普通股股东权益元)
-        self._bs_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期归母普通股股东权益)
-        self._equity_cache: dict[datetime, tuple[dict[str, float], dict[str, int]]] = {}  # 计算日 -> (归母普通股股东权益, 统计)——PB 当前口径
+        self._bs_per_stock_cache: dict[tuple[str, ...], tuple[list[str], dict]] = {}  # 报告期窗口元组 -> (报告期列表, 每股各期归母普通股股东权益)(披露纪元缓存)
+        self._bs_ann_boundaries: dict[str, tuple[str, ...]] = {}  # 报告期 -> 去重视图披露边界升序(bs 池, 纪元键原料)
+        self._equity_cache: dict[tuple, tuple[dict[str, float], dict[str, int]]] = {}  # (窗口, bs 纪元) -> (归母普通股股东权益, 统计)——PB 当前口径(披露纪元缓存)
         self._express_period_cache: dict[str, dict[str, list[tuple[str, float]]]] = {}  # 报告期 -> ts_code -> [(ann_date, 快报归母净利润元), ...]升序版本
-        self._express_per_stock_cache: dict[datetime, tuple[list[str], dict]] = {}  # 计算日 -> (报告期列表, 每股各期快报版本)
+        self._express_per_stock_cache: dict[tuple[str, ...], tuple[list[str], dict]] = {}  # 报告期窗口元组 -> (报告期列表, 每股各期快报版本)(披露纪元缓存)
+        self._express_ann_boundaries: dict[str, tuple[str, ...]] = {}  # 报告期 -> 全部版本披露边界升序(express 池, 纪元键原料)
         self._restructure_identified: set[str] = set()  # 已做过 4.4.14 识别判定的日期(YYYYMMDD)
         self._restructure_windows: dict[str, tuple[str, str]] = {}  # ts_code -> (除权日, 转增股上市日(缺省=除权日))
         self._trade_cal_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
@@ -729,6 +753,27 @@ class MarketDataProvider:
             return f"{year}1031"
         return f"{year + 1}0430"
 
+    def _filter_pool_raw_rows(self, raw: list[tuple]) -> list[tuple]:
+        """财报三池原始行的新三板混入过滤(窄规则, 见模块级 _STOCK_CODE_WHITELIST 注释)
+
+        只丢弃"不在 stock_basic 白名单且为旧码 .BJ(43/83/87 开头)"的行; 网络路径与
+        SQLite 读取路径统一在合并前过滤(库里 2026-08-31 之前入库的期仍含混入行, 读取时
+        同样滤掉)。行序不变, 过滤只影响不被消费的噪声行与 stats 统计基数(口径变更,
+        见 known_issues 第 47 条⑭)
+        """
+        whitelist = _stock_code_whitelist(self.pro)
+        keep = []
+        for rec in raw:
+            ts_code = rec[0]
+            if (
+                ts_code not in whitelist
+                and ts_code.endswith(".BJ")
+                and ts_code[:2] in ("43", "83", "87")
+            ):
+                continue
+            keep.append(rec)
+        return keep
+
     def _fetch_fina_period(self, period: str) -> dict[str, tuple[str, float, float, float, float]]:
         """按报告期拉全市场财务指标: 返回 {ts_code: (ann_date, 扣非净利润, 归母净利润, bps, roe_waa)}
 
@@ -762,7 +807,7 @@ class MarketDataProvider:
         if store is not None and not store.is_period_volatile(period):
             raw = store.load_fina_period(period)
             if raw is not None:
-                rows = _merge_fina_raw_rows(raw)
+                rows = _merge_fina_raw_rows(self._filter_pool_raw_rows(raw))
                 self._fina_period_cache[period] = rows
                 return rows
             # 未完整(空行集/库异常): 继续走网络
@@ -797,6 +842,7 @@ class MarketDataProvider:
             offset += len(df)
             if len(df) < FINA_FETCH_BATCH:
                 break
+        raw_rows = self._filter_pool_raw_rows(raw_rows)
         rows = _merge_fina_raw_rows(raw_rows)
         self._fina_period_cache[period] = rows
         if store is not None and rows:
@@ -840,7 +886,7 @@ class MarketDataProvider:
         if store is not None and not store.is_period_volatile(period):
             raw = store.load_bs_period(period)
             if raw is not None:
-                rows = _merge_bs_raw_rows(raw)
+                rows = _merge_bs_raw_rows(self._filter_pool_raw_rows(raw))
                 self._bs_period_cache[period] = rows
                 return rows
         raw_rows: list[tuple[str, str, str, float | None, float | None]] = []
@@ -872,6 +918,7 @@ class MarketDataProvider:
             offset += len(df)
             if len(df) < BS_FETCH_BATCH:
                 break
+        raw_rows = self._filter_pool_raw_rows(raw_rows)
         rows = _merge_bs_raw_rows(raw_rows)
         self._bs_period_cache[period] = rows
         if store is not None and rows:
@@ -903,7 +950,7 @@ class MarketDataProvider:
         if store is not None and not store.is_period_volatile(period):
             raw = store.load_express_period(period)
             if raw is not None:
-                rows = _merge_express_raw_rows(raw)
+                rows = _merge_express_raw_rows(self._filter_pool_raw_rows(raw))
                 self._express_period_cache[period] = rows
                 return rows
         raw_rows: list[tuple[str, str, float | None]] = []
@@ -933,6 +980,7 @@ class MarketDataProvider:
             offset += len(df)
             if len(df) < EXPRESS_FETCH_BATCH:
                 break
+        raw_rows = self._filter_pool_raw_rows(raw_rows)
         rows = _merge_express_raw_rows(raw_rows)
         self._express_period_cache[period] = rows
         if store is not None and rows:
@@ -976,63 +1024,127 @@ class MarketDataProvider:
                     periods.append(period)
         return periods
 
+    # ---------- 披露纪元键(2026-08-31 性能优化) ----------
+    # 财务视图对计算日 D 的依赖只有两处: 窗口报告期集合([D-24月, D] 季末)与 PIT 截止
+    # (ann_date <= D)。而 PIT 截止的全部可能边界 = 窗口各期去重视图里的披露日期(ann_date
+    # 缺失按法定截止日推定)——D 只在跨越某个披露日时才改变视图。**纪元键 = (窗口报告期元组,
+    # <=D 的最大披露边界)**: 相邻披露日之间的所有日期纪元相同、共享同一份视图/派生结果,
+    # 估值走势 365 天逐日回放一年只有十几次纪元切换, 九成的逐日重建(实测占首查 CPU 约一半)
+    # 变成字典命中。不变性论证: 纪元相同 ⟹ (D1, D2] 内无任何披露边界 ⟹ 所有 ann_date<=D
+    # 谓词逐行相同(合并视图的 eff_ann=min(财报日, 快报首版日) 或法定截止日, 均为边界集合成员)
+    # ⟹ 视图与 TTM/权益等派生逐值相同
+
+    def _pool_ann_boundaries(
+        self,
+        period: str,
+        period_cache_getter: Callable[[str], dict],
+        ann_cache: dict[str, tuple[str, ...]],
+        express_style: bool = False,
+    ) -> tuple[str, ...]:
+        """某报告期在去重视图中的全部披露边界(升序; ann_date 空串映射为法定截止日, 法定截止日
+        本身无条件纳入)——按 period 只收集一次(纪元键原料); 命中 period 缓存零网络成本"""
+        anns = ann_cache.get(period)
+        if anns is None:
+            floor = self._fina_ann_date_floor(period)
+            values = {floor}
+            for rec in period_cache_getter(period).values():
+                if express_style:
+                    values.update(ann for ann, _v in rec)
+                else:
+                    values.add(rec[0] or floor)
+            anns = tuple(sorted(values))
+            ann_cache[period] = anns
+        return anns
+
+    def _epoch_of(self, date_str: str, boundary_sets) -> str:
+        """纪元 = 全部披露边界中 <=D 的最大值(无则 "0"), 二分每集合一次"""
+        epoch = "0"
+        for anns in boundary_sets:
+            i = bisect.bisect_right(anns, date_str)
+            if i and anns[i - 1] > epoch:
+                epoch = anns[i - 1]
+        return epoch
+
+    def _fina_view_key(self, date: datetime) -> tuple[tuple[str, ...], str]:
+        """fina 池纪元键: (窗口报告期元组, fina 纪元)——扣非 TTM/bps 的选择边界集合"""
+        date_str = date.strftime("%Y%m%d")
+        periods = tuple(self._fina_period_window(date))
+        return periods, self._epoch_of(
+            date_str,
+            [self._pool_ann_boundaries(p, self._fetch_fina_period, self._fina_ann_boundaries) for p in periods],
+        )
+
+    def _bs_view_key(self, date: datetime) -> tuple[tuple[str, ...], str]:
+        """bs 池纪元键: (窗口报告期元组, bs 纪元)——权益(PB 分母)的选择边界集合"""
+        date_str = date.strftime("%Y%m%d")
+        periods = tuple(self._fina_period_window(date))
+        return periods, self._epoch_of(
+            date_str,
+            [self._pool_ann_boundaries(p, self._fetch_bs_period, self._bs_ann_boundaries) for p in periods],
+        )
+
     def _fina_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float, float, float, float]]]]:
         """拉取计算日 D 的报告期窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 扣非, 归母, bps, roe_waa)}})
 
         窗口 = _fina_period_window([D-24个月, D] 季末, 最多 8 期), 覆盖 PE TTM 式所需"最新期+去年年报+去年同季";
-        PB 只需最新期, 同窗口复用。按计算日缓存(报告期数据本身按 period 缓存跨天复用)
+        PB 只需最新期, 同窗口复用。**按窗口报告期元组缓存(披露纪元缓存)**——合并本身不按 D 过滤,
+        同窗口的所有日期共享一份; 报告期数据本身按 period 缓存跨天复用
         """
-        cached = self._fina_per_stock_cache.get(date)
+        periods_list = self._fina_period_window(date)
+        key = tuple(periods_list)
+        cached = self._fina_per_stock_cache.get(key)
         if cached is not None:
             return cached
-        periods = self._fina_period_window(date)
         per_stock: dict[str, dict[str, tuple[str, float, float, float, float]]] = {}
         # 各期并发拉取: 请求开始时刻由节流器统一错开(7.5/s), 网络往返并行重叠(同 fetch_daily_batch 模式);
         # executor.map 结果按输入顺序产出(zip 回期号), 遇错即抛(与串行时一致, 由调用方降级处理), 不静默吞掉
-        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
-            for period, period_rows in zip(periods, executor.map(self._fetch_fina_period, periods)):
+        with ThreadPoolExecutor(max_workers=min(len(periods_list), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods_list, executor.map(self._fetch_fina_period, periods_list)):
                 for ts_code, record in period_rows.items():
                     per_stock.setdefault(ts_code, {})[period] = record
-        self._fina_per_stock_cache[date] = (periods, per_stock)
-        return periods, per_stock
+        self._fina_per_stock_cache[key] = (periods_list, per_stock)
+        return periods_list, per_stock
 
     def _bs_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, tuple[str, float]]]]:
         """拉取计算日 D 的资产负债表窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: (ann_date, 归母普通股股东权益元)}})
 
         窗口与 _fina_per_stock 共用(_fina_period_window); PB 只需最新期, 同窗口复用。
         各期并发拉取(同 fina 模式: FINA_FETCH_WORKERS 线程、balancesheet_vip 独立节流, 两池可同时
-        跑); 按计算日缓存, 报告期数据按 period 缓存跨天复用; executor.map 遇错即抛(由调用方降级)
+        跑); **按窗口报告期元组缓存(披露纪元缓存)**, 报告期数据按 period 缓存跨天复用;
+        executor.map 遇错即抛(由调用方降级)
         """
-        cached = self._bs_per_stock_cache.get(date)
+        periods_list = self._fina_period_window(date)
+        key = tuple(periods_list)
+        cached = self._bs_per_stock_cache.get(key)
         if cached is not None:
             return cached
-        periods = self._fina_period_window(date)
         per_stock: dict[str, dict[str, tuple[str, float]]] = {}
-        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
-            for period, period_rows in zip(periods, executor.map(self._fetch_bs_period, periods)):
+        with ThreadPoolExecutor(max_workers=min(len(periods_list), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods_list, executor.map(self._fetch_bs_period, periods_list)):
                 for ts_code, record in period_rows.items():
                     per_stock.setdefault(ts_code, {})[period] = record
-        self._bs_per_stock_cache[date] = (periods, per_stock)
-        return periods, per_stock
+        self._bs_per_stock_cache[key] = (periods_list, per_stock)
+        return periods_list, per_stock
 
     def _express_per_stock(self, date: datetime) -> tuple[list[str], dict[str, dict[str, list[tuple[str, float]]]]]:
         """拉取计算日 D 的业绩快报窗口数据并合并为每股各期: (报告期列表升序, {ts_code: {报告期: 版本列表}})
 
         窗口与 _fina_per_stock 共用(_fina_period_window); 各期并发拉取(FINA_FETCH_WORKERS 线程、
-        express_vip 独立节流, 三池可同时跑); 按计算日缓存, 报告期数据按 period 缓存跨天复用;
-        executor.map 遇错即抛(由调用方降级——归母 getter 捕获后退回纯财报口径)
+        express_vip 独立节流, 三池可同时跑); **按窗口报告期元组缓存(披露纪元缓存)**, 报告期数据
+        按 period 缓存跨天复用; executor.map 遇错即抛(由调用方降级——归母 getter 捕获后退回纯财报口径)
         """
-        cached = self._express_per_stock_cache.get(date)
+        periods_list = self._fina_period_window(date)
+        key = tuple(periods_list)
+        cached = self._express_per_stock_cache.get(key)
         if cached is not None:
             return cached
-        periods = self._fina_period_window(date)
         per_stock: dict[str, dict[str, list[tuple[str, float]]]] = {}
-        with ThreadPoolExecutor(max_workers=min(len(periods), FINA_FETCH_WORKERS)) as executor:
-            for period, period_rows in zip(periods, executor.map(self._fetch_express_period, periods)):
+        with ThreadPoolExecutor(max_workers=min(len(periods_list), FINA_FETCH_WORKERS)) as executor:
+            for period, period_rows in zip(periods_list, executor.map(self._fetch_express_period, periods_list)):
                 for ts_code, versions in period_rows.items():
                     per_stock.setdefault(ts_code, {})[period] = versions
-        self._express_per_stock_cache[date] = (periods, per_stock)
-        return periods, per_stock
+        self._express_per_stock_cache[key] = (periods_list, per_stock)
+        return periods_list, per_stock
 
     def prefetch_fina_indicators(self, date: datetime, growth_base_date: datetime | None = None) -> None:
         """后台预热财务数据批拉: fina_indicator_vip(利润/bps) / balancesheet_vip(归母净资产) /
@@ -1209,28 +1321,58 @@ class MarketDataProvider:
             merged[ts_code] = rows
         return merged, len(express_used)
 
+    def _attr_view_with_key(
+        self, date: datetime
+    ) -> tuple[tuple, dict[str, dict[str, tuple[str, float | None]]], int]:
+        """归母双源合并视图 + 其纪元键: ((窗口, 纪元), merged, 快报实际参与股票数)
+
+        **披露纪元缓存(2026-08-31)**: 键 = (窗口报告期元组, 纪元)——纪元为窗口各期
+        fina 去重 ann ∪ express 全部版本 ann ∪ 法定截止日 中 <=D 的最大值; express 拉取失败时
+        纪元带独立哨兵前缀(失败态与成功态绝不共享缓存, 避免快报恢复后读到旧的纯财报视图)。
+        快报在键计算前拉取一次并直接用于构建(键与视图永远同源); 相邻披露日之间的日期共享视图,
+        估值走势逐日回放的重建成本降为字典命中。合并规则见 _merge_attr_with_express
+        """
+        date_str = date.strftime("%Y%m%d")
+        periods = tuple(self._fina_period_window(date))
+        _, fina_per_stock = self._fina_per_stock(date)  # 确保报告期已拉(重复调用命中缓存零成本)
+        express_per_stock: dict[str, dict[str, list[tuple[str, float]]]] | None = None
+        try:
+            _, express_per_stock = self._express_per_stock(date)
+        except Exception as err:
+            logger.warning(f"express_vip 拉取失败, 归母口径本次退回纯财报: {err!r}")
+        boundary_sets = [
+            self._pool_ann_boundaries(p, self._fetch_fina_period, self._fina_ann_boundaries)
+            for p in periods
+        ]
+        if express_per_stock is not None:
+            boundary_sets += [
+                self._pool_ann_boundaries(p, self._fetch_express_period, self._express_ann_boundaries, express_style=True)
+                for p in periods
+            ]
+            epoch = self._epoch_of(date_str, boundary_sets)
+        else:
+            epoch = "noexpress:" + self._epoch_of(date_str, boundary_sets)
+        key = (periods, epoch)
+        cached = self._attr_merged_cache.get(key)
+        if cached is not None:
+            return key, cached[0], cached[1]
+        merged, stocks_express = self._merge_attr_with_express(
+            fina_per_stock, express_per_stock or {}, date_str
+        )
+        self._attr_merged_cache[key] = (merged, stocks_express)
+        return key, merged, stocks_express
+
     def _attr_merged_view(
         self, date: datetime
     ) -> tuple[dict[str, dict[str, tuple[str, float | None]]], int]:
-        """归母净利润双源 PIT 合并视图(按计算日缓存): (merged, 快报实际参与股票数)
+        """归母净利润双源 PIT 合并视图: (merged, 快报实际参与股票数)——薄封装(_attr_view_with_key)
 
         供归母 TTM(get_ts_code_to_ttm_attr_profit)与归母动态口径(get_ts_code_to_dynamic_profit /
         get_ts_code_to_dynamic_growth_pair 当期侧)共用, 避免重复构建; 合并规则(合并可用日取
         min、审定值优先、快报取 ≤D 最新修正版本)见 _merge_attr_with_express; express_vip 拉取
         失败退回纯财报口径仅告警(归母 TTM 的既有行为)
         """
-        cached = self._attr_merged_cache.get(date)
-        if cached is not None:
-            return cached
-        date_str = date.strftime("%Y%m%d")
-        _, fina_per_stock = self._fina_per_stock(date)  # 确保报告期已拉(重复调用命中缓存零成本)
-        try:
-            _, express_per_stock = self._express_per_stock(date)
-        except Exception as err:
-            logger.warning(f"express_vip 拉取失败, 归母口径本次退回纯财报: {err!r}")
-            express_per_stock = {}
-        merged, stocks_express = self._merge_attr_with_express(fina_per_stock, express_per_stock, date_str)
-        self._attr_merged_cache[date] = (merged, stocks_express)
+        _, merged, stocks_express = self._attr_view_with_key(date)
         return merged, stocks_express
 
     def get_ts_code_to_ttm_attr_profit(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
@@ -1242,19 +1384,19 @@ class MarketDataProvider:
         归母值参与(审定值优先、快报兑现、快报拉取失败退回纯财报口径仅告警)。
         PIT 规则与报告期窗口([date-24个月, date] 季末)见 _compute_ttm; TTM 标准式与不足四期
         兜底同样见 _compute_ttm(合并视图 2 元组 value_idx=1)。
-        结果按计算日缓存(_ttm_attr_cache, 与扣非口径分开), 报告期数据跨天复用。
+        结果**按披露纪元缓存**(_ttm_attr_cache, 键与合并视图同源——纪元相同的一切日期共享,
+        与扣非口径分开), 报告期数据跨天复用。
         stats 在 _compute_ttm 四键之外加 "stocks_express"(任一期取到快报值的股票数)。
         聚合公式见 industry_ranking.daily_valuation_metric(kind="pe") 与 docs/financial_indicators.md 第 3 节
         """
-        cached = self._ttm_attr_cache.get(date)
+        view_key, merged, stocks_express = self._attr_view_with_key(date)
+        cached = self._ttm_attr_cache.get(view_key)
         if cached is not None:
             return cached
 
-        periods, _ = self._fina_per_stock(date)
-        merged, stocks_express = self._attr_merged_view(date)
-        result = self._compute_ttm(merged, 1, date.strftime("%Y%m%d"), len(periods))
+        result = self._compute_ttm(merged, 1, date.strftime("%Y%m%d"), len(view_key[0]))
         result[1]["stocks_express"] = stocks_express
-        self._ttm_attr_cache[date] = result
+        self._ttm_attr_cache[view_key] = result
         return result
 
     @staticmethod
@@ -1574,16 +1716,17 @@ class MarketDataProvider:
 
         数据为 fina_indicator_vip 原生 profit_dedt 字段(归属母公司扣非净利润、累计值、单位元),
         其余(PIT/窗口/TTM 规则/统计结构)与归母口径完全一致, 见 _compute_ttm(value_idx=1);
-        结果按计算日缓存(_ttm_cache)
+        结果**按披露纪元缓存**(_ttm_cache, 键=(窗口, fina 纪元), 纪元相同的一切日期共享)
         """
-        cached = self._ttm_cache.get(date)
+        view_key = self._fina_view_key(date)
+        cached = self._ttm_cache.get(view_key)
         if cached is not None:
             return cached
 
         date_str = date.strftime("%Y%m%d")
         periods, per_stock = self._fina_per_stock(date)
         result = self._compute_ttm(per_stock, 1, date_str, len(periods))
-        self._ttm_cache[date] = result
+        self._ttm_cache[view_key] = result
         return result
 
     def get_ts_code_to_bps(self, date: datetime) -> tuple[dict[str, float], dict[str, int]]:
@@ -1633,11 +1776,13 @@ class MarketDataProvider:
         get_ts_code_to_bps 保留对照)。
         PIT 与 PE 同规则: 每股最新期 = ann_date <= date 的最大报告期(ann_date 缺失按
         法定披露截止日推定, 实测零缺失); 净资产为时点值, 无滚动、无年化兜底(新股仅一期
-        也直接用其最新期)。结果按计算日缓存, 报告期数据按 period 缓存跨天复用。
+        也直接用其最新期)。结果**按披露纪元缓存**(键=(窗口, bs 纪元), 纪元相同的一切日期
+        共享), 报告期数据按 period 缓存跨天复用。
         stats: {"periods", "stocks_with_equity", "stocks_missing"}; 聚合公式见
         industry_ranking.daily_valuation_metric(kind="pb") 与 docs/financial_indicators.md
         """
-        cached = self._equity_cache.get(date)
+        view_key = self._bs_view_key(date)
+        cached = self._equity_cache.get(view_key)
         if cached is not None:
             return cached
 
@@ -1658,7 +1803,7 @@ class MarketDataProvider:
             equity_map[ts_code] = equity
             stats["stocks_with_equity"] += 1
 
-        self._equity_cache[date] = (equity_map, stats)
+        self._equity_cache[view_key] = (equity_map, stats)
         return equity_map, stats
 
     def get_index_weight_snapshots(
