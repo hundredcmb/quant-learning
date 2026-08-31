@@ -201,13 +201,6 @@ class ValuationSeriesManager:
             self._cache[index_code] = entry
         return entry
 
-    def _has_date(self, index_code: str, day_str: str) -> bool:
-        entry = self._cache.get(index_code)
-        if not entry:
-            return False
-        # pe/pb 同日同批写入, 校验双键齐备
-        return day_str in entry.get("pe", {}) and day_str in entry.get("pb", {})
-
     # ---------- 状态查询 ----------
 
     def status(self, index_code: str) -> dict[str, Any]:
@@ -230,7 +223,7 @@ class ValuationSeriesManager:
                 level_key = _level_key_of(tree, index_code)
                 dates = _window_dates(provider, self._window_days)
                 with self._lock:
-                    missing = [d for d in dates if not self._has_date(index_code, d)]
+                    missing = [d for d in dates if d not in self._epochs]  # 日粒度: epochs 即"该日已全行业计算"登记(2b)
                     if not missing:
                         entry = self._cache.get(index_code) or {}
                         return {
@@ -284,7 +277,7 @@ class ValuationSeriesManager:
         with self._lock:
             self._ensure_loaded()
         dates = _window_dates(provider, self._window_days)
-        missing = [d for d in dates if not self._has_date(index_code, d)]
+        missing = [d for d in dates if d not in self._epochs]  # 日粒度: epochs 即"该日已全行业计算"登记(2b)
         if missing:
             # 预热树侧交易日窗口(新股 6 交易日门槛判定用): filter_stock_pool 逐日判定会对
             # "近 24 历日上市"的新股查 [最早新股日, 当日] 跨度——回放逐日跨度不同、树的跨度
@@ -329,25 +322,31 @@ class ValuationSeriesManager:
         skipped: list[str] = []
         t0 = time.perf_counter()
         for day_str in todo:
-            result = self._compute_one(tree, provider, index_code, level_key, day_str)
+            result = self._compute_day_all(tree, provider, day_str)
             if result is None:
                 skipped.append(day_str)  # 当日行情未发布等, 不落键下次再试
             else:
-                pe_value, pb_value = result
+                updated = datetime.now().strftime("%Y%m%d %H:%M:%S")
                 with self._lock:
-                    entry = self._entry(index_code)
-                    entry["pe"][day_str] = pe_value
-                    entry["pb"][day_str] = pb_value
-                    updated = datetime.now().strftime("%Y%m%d %H:%M:%S")
-                    entry["updated"] = updated
+                    for index_code_i, (pe_value, pb_value) in result.items():
+                        entry = self._entry(index_code_i)
+                        entry["pe"][day_str] = pe_value
+                        entry["pb"][day_str] = pb_value
+                        entry["updated"] = updated
                     self._epochs[day_str] = fp = self._day_fingerprint(provider, day_str)
                     store = self._store()
                     if store is not None:
-                        # SQLite 主路径: 逐日 upsert(3 行小事务, 与表内历史数据量无关), 中断不丢
-                        store.save_valuation_point(index_code, "pe", day_str, pe_value)
-                        store.save_valuation_point(index_code, "pb", day_str, pb_value)
-                        store.save_valuation_epoch(day_str, fp)
-                        store.valuation_meta_set(f"updated:{index_code}", updated)
+                        # SQLite 主路径: 单日全行业批量写穿(单事务: 序列行+指纹+每指数 updated)
+                        rows = [
+                            (index_code_i, "pe", pe_value)
+                            for index_code_i, (pe_value, _pb) in result.items()
+                        ] + [
+                            (index_code_i, "pb", pb_value)
+                            for index_code_i, (_pe, pb_value) in result.items()
+                        ]
+                        store.save_valuation_day(
+                            day_str, rows, fp, {c: updated for c in result}
+                        )
                     else:
                         self._save_locked()  # JSON 兜底: 整文件重写(持久层禁用时)
             done += 1
@@ -401,15 +400,19 @@ class ValuationSeriesManager:
         return f"{pe_epoch}|{bs_epoch}"
 
     @staticmethod
-    def _compute_one(
+    def _compute_day_all(
         tree: ShenWanIndustryTree,
         provider: MarketDataProvider,
-        index_code: str,
-        level_key: str,
         day_str: str,
-    ) -> tuple[float | None, float | None] | None:
-        """计算单日 PE(free, 归母TTM)/PB(free)；返回 None = 当日行情未发布(跳过不落键)，
-        值 None = 行业亏损/资不抵债（正常落键, 前端断线展示）"""
+    ) -> dict[str, tuple[float | None, float | None]] | None:
+        """计算单日**全部行业节点**的 PE(free, 归母TTM)/PB(free)：{index_code: (pe, pb)}
+
+        daily_valuation_metric 本来就是对全市场股票池单遍历、同时累进 L3/L2/L1 全树节点的
+        聚合器——一天的计算天然产出全部行业, 旧实现(_compute_one)只摘一个指数、其余算完即弃。
+        2b(2026-08-31)起整张结果落库: 边际成本≈零, 任一指数"查询估值"即点即有。
+        返回 None = 当日行情未发布(跳过不落键); 值 None = 行业亏损/资不抵债(正常落键, 断线展示);
+        当日无参与股票的节点不在结果中(=未计算, 前端"—")
+        """
         day = datetime.strptime(day_str, "%Y%m%d")
         if not provider.get_ts_code_to_pct_chg(day):
             return None
@@ -417,17 +420,21 @@ class ValuationSeriesManager:
             tree, provider, day, "pe", profit_kind="attr", dynamic=False
         )
         pb_free, _, _ = daily_valuation_metric(tree, provider, day, "pb")
-        pe_map = pe_free[level_key]
-        pb_map = pb_free[level_key]
-        if index_code not in pe_map and index_code not in pb_map:
-            # 行业无参与股票(键缺失)——防御分支, 正常行业不会触发; 视为无数据不落键
-            return None
-        return pe_map.get(index_code), pb_map.get(index_code)
+        result: dict[str, tuple[float | None, float | None]] = {}
+        for lv in ("1", "2", "3"):
+            for index_code, pe in pe_free[lv].items():
+                result[index_code] = (pe, None)
+        for lv in ("1", "2", "3"):
+            for index_code, pb in pb_free[lv].items():
+                pe, _ = result.get(index_code, (None, None))
+                result[index_code] = (pe, pb)
+        return result or None
 
     # ---------- CLI / 体检辅助 ----------
 
     def run_sync(self, index_code: str, force: bool = False) -> dict[str, Any]:
-        """同步计算（CLI 用）：force=True 时先清掉该指数缓存整段重算"""
+        """同步计算（CLI 用）：force=True 时清该指数序列行 + 清日粒度指纹登记——2b 起计算按
+        日粒度全行业进行, "单指数整段重算"即"全行业整段重算"(一次回放所有指数全部重写)"""
         index_code = index_code.strip()
         if force:
             with self._lock:
@@ -436,6 +443,8 @@ class ValuationSeriesManager:
                 store = self._store()
                 if store is not None:
                     store.delete_valuation_index(index_code)  # DB 主路径: 删该指数全部序列行
+                    store.clear_valuation_epochs()  # 清日粒度登记 → job 全段重扫(全行业)
+                    self._epochs = {}
                 else:
                     self._save_locked()  # JSON 兜底
         self._run_job(index_code)

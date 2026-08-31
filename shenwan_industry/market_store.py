@@ -912,6 +912,43 @@ class MarketStore:
             self._bail(err)
             return False
 
+    def save_valuation_day(
+        self,
+        day_str: str,
+        rows: list[tuple[str, str, float | None]],
+        fingerprint: str,
+        updated_map: dict[str, str],
+    ) -> bool:
+        """单日全行业批量写穿(单事务): 序列行 + 纪元指纹 + 每指数 updated——逐日 upsert 与表内
+        历史数据量无关(2026-08-31 2b: 逐日一次全行业计算的落盘通道, rows=[(index_code, metric, value)])
+        """
+        if self._disabled or not rows:
+            return False
+        try:
+            conn = self._conn()
+            with conn:
+                conn.executemany(
+                    "INSERT INTO valuation_series(index_code, metric, trade_date, value)"
+                    " VALUES (?,?,?,?)"
+                    " ON CONFLICT(index_code, metric, trade_date) DO UPDATE SET value=excluded.value",
+                    [(c, m, day_str, v) for c, m, v in rows],
+                )
+                conn.execute(
+                    "INSERT INTO valuation_epochs(trade_date, fingerprint) VALUES (?,?)"
+                    " ON CONFLICT(trade_date) DO UPDATE SET fingerprint=excluded.fingerprint",
+                    (day_str, fingerprint),
+                )
+                conn.executemany(
+                    "INSERT INTO valuation_meta(key, value) VALUES (?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [(f"updated:{c}", updated) for c, updated in updated_map.items()],
+                )
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
     def delete_valuation_index(self, index_code: str) -> bool:
         """清除某指数全部序列行(--force 整段重算前调用)"""
         if self._disabled:
@@ -920,6 +957,20 @@ class MarketStore:
             conn = self._conn()
             with conn:
                 conn.execute("DELETE FROM valuation_series WHERE index_code=?", (index_code,))
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
+    def clear_valuation_epochs(self) -> bool:
+        """清空全部日粒度指纹(2b 起缺失判定按日粒度, --force 语义=清指纹→整段全行业重扫)"""
+        if self._disabled:
+            return False
+        try:
+            conn = self._conn()
+            with conn:
+                conn.execute("DELETE FROM valuation_epochs")
             self._failures = 0
             return True
         except sqlite3.Error as err:

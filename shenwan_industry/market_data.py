@@ -244,13 +244,14 @@ _stock_basic_snapshot_lock = threading.Lock()
 _index_member_all_cache: tuple[list[tuple], list[tuple]] | None = None
 _index_member_all_lock = threading.Lock()
 
-# 新三板混入过滤(2026-08-31 新增): fina/bs/express 三个 VIP 财务接口按报告期返回的是
-# "A 股 + 新三板挂牌 + 远古退市遗留"的混合——实测 43/83/87 开头且 .BJ 后缀的代码(新三板
-# 挂牌段)无任何行情、不在申万成分、也不在 stock_basic 三态快照(约 820 只/期, 占 fina
-# 全库 9%/express 10%/bs 4% 的行), 从不被榜单消费, 只徒增视图体积并以其 ann_date 污染
-# 披露纪元边界。**过滤规则取窄**: 仅丢弃"不在 stock_basic 白名单且为旧码 .BJ"的行——
-# 新上市股票的上市前申报报表回填(不在当日快照的 .SH/.SZ/92xxxx.BJ, 如 301688/920268,
-# 实测约 13 只/期)与快照内的退市股(约 180 只, list_status='D')都是合法数据, 一律保留
+# 占位编码过滤(2026-08-31 新增): fina/bs/express 三个 VIP 财务接口按报告期返回的是
+# "A 股 + 新三板挂牌 + IPO 申报管道 + 远古退市遗留"的混合, 后三类无行情、不在申万成分,
+# 从不被榜单消费, 只徒增视图体积并以其 ann_date 污染披露纪元边界。丢弃条件 = "不在
+# stock_basic 白名单 且 非真实编码形态": ①旧码 .BJ(43/83/87 开头, 新三板挂牌段, 约 820
+# 只/期); ②前 6 位非纯数字(如 A04010.SZ 的申报管道占位码, 2026H1 起出现, 241 行/期)——
+# 真实 A 股代码前 6 位必为纯数字, 该判定对将来的同类占位天然生效。白名单内的退市股(D,
+# 约 180 只, 历史回放需要)与白名单外但编码形态真实的待上市股(申报报表回填, 约 13 只/期)
+# 一律保留
 _STOCK_CODE_WHITELIST: frozenset[str] | None = None
 _STOCK_CODE_WHITELIST_LOCK = threading.Lock()
 
@@ -754,23 +755,29 @@ class MarketDataProvider:
         return f"{year + 1}0430"
 
     def _filter_pool_raw_rows(self, raw: list[tuple]) -> list[tuple]:
-        """财报三池原始行的新三板混入过滤(窄规则, 见模块级 _STOCK_CODE_WHITELIST 注释)
+        """财报三池原始行的占位编码过滤(窄规则, 见模块级 _STOCK_CODE_WHITELIST 注释)
 
-        只丢弃"不在 stock_basic 白名单且为旧码 .BJ(43/83/87 开头)"的行; 网络路径与
-        SQLite 读取路径统一在合并前过滤(库里 2026-08-31 之前入库的期仍含混入行, 读取时
-        同样滤掉)。行序不变, 过滤只影响不被消费的噪声行与 stats 统计基数(口径变更,
-        见 known_issues 第 47 条⑭)
+        丢弃条件 = "不在 stock_basic 白名单 且 非真实编码形态", 两类:
+        * 旧码 .BJ(43/83/87 开头)——新三板挂牌段(实测约 820 只/期);
+        * **前 6 位非纯数字**(如 A04010.SZ 的 IPO 申报管道占位码, 2026H1 起出现在最近期
+          报告期, 实测 241 行/期)——真实 A 股代码前 6 位必为纯数字, 该判定对将来的同类
+          占位编码天然生效;
+        白名单内的退市股(D)与白名单外但编码形态真实的待上市股(如 920071.BJ/301688.SZ
+        的申报报表回填)一律保留。网络路径与 SQLite 读取路径统一在合并前过滤(2026-08-31
+        之前入库的期同样在读取时滤掉)。行序不变, 仅影响不被消费的噪声行与 stats 统计
+        基数(口径变更, 见 known_issues 第 47 条⑭)
         """
         whitelist = _stock_code_whitelist(self.pro)
         keep = []
         for rec in raw:
             ts_code = rec[0]
-            if (
-                ts_code not in whitelist
-                and ts_code.endswith(".BJ")
-                and ts_code[:2] in ("43", "83", "87")
-            ):
+            if ts_code in whitelist:
+                keep.append(rec)
                 continue
+            if ts_code.endswith(".BJ") and ts_code[:2] in ("43", "83", "87"):
+                continue  # 新三板挂牌段占位
+            if not ts_code[:6].isdigit():
+                continue  # 非真实编码形态(IPO 申报管道占位等), 对未来同类占位天然生效
             keep.append(rec)
         return keep
 
