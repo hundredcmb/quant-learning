@@ -70,6 +70,45 @@ SAMPLE_SPACES: dict[str, tuple[str, ...] | None] = {
 # 默认样本空间(CLI 单档=旧行为)
 DEFAULT_SAMPLE_SPACE = "full"
 
+# 当日查询闸门(2026-08-31 新增): Tushare 盘后行情发布+修正窗口内当日数据未定形, 查当日
+# (含把结束日期设为当日/未来)原本要空跑全部流程后才报"没有获取到 X 交易日的行情数据"——
+# 编排入口前置校验直接报错。21 点 = 发布+初步修正的保守阈值; 与 market_store 近端 5 自然日
+# 易变尾窗口配套(21 点后放行的当日数据即使再被修正, 读取时绕库重拉覆盖, 无固化风险)
+SAME_DAY_CUTOFF_HOUR = 21
+
+
+def _assert_date_not_future(date: datetime, label: str = "查询日期") -> None:
+    """查询日期闸门(编排入口前置, 防空跑到底才失败): 未来日期/当日未到发布时间直接报错
+
+    CLI 与 Web(service._run_daily / 区间接口)共用——放在 run_daily_ranking/rank_range/
+    rank_range_chain 三个编排入口, 全部日期入口一次覆盖
+    """
+    now = datetime.now()
+    date_str = date.strftime("%Y%m%d")
+    today_str = now.strftime("%Y%m%d")
+    if date_str > today_str:
+        raise ValueError(f"{label} {date_str} 晚于今天 {today_str}, 不能查询未来日期")
+    if date_str == today_str and now.hour < SAME_DAY_CUTOFF_HOUR:
+        raise ValueError(
+            f"{label} {date_str} 为当日, 盘后行情 {SAME_DAY_CUTOFF_HOUR}:00 后才可查询"
+            f"(当前 {now.hour:02d}:{now.minute:02d})"
+        )
+
+
+def _assert_trading_day(market_data: MarketDataProvider, date: datetime) -> None:
+    """单日榜查询日闸门: 非交易日(周末/节假日)直接报错并给出最近交易日
+
+    区间榜的 end 落在非交易日无害(自动取区间内最后交易日), 不做此检查
+    """
+    date_str = date.strftime("%Y%m%d")
+    days = market_data.get_trading_days((date - timedelta(days=15)).strftime("%Y%m%d"), date_str)
+    if date_str in days:
+        return
+    nearest = days[-1] if days else None
+    raise ValueError(
+        f"{date_str} 非交易日" + (f", 最近交易日为 {nearest}" if nearest else "")
+    )
+
 
 def resolve_sample_segments(
     market_data: MarketDataProvider,
@@ -1350,7 +1389,12 @@ def run_daily_ranking(
     growth_compute / growth_dynamic_compute / growth_deduct_compute / growth_deduct_dynamic_compute /
     roe_compute(ROE 四口径一次) / div_yield_compute(股息率双口径一次)
     progress_callback: 可选 (0~100, 阶段说明, 阶段名), 阶段名用于 Web 前端展示
+    入口闸门(2026-08-31 新增): 查询日期须为已发布行情的交易日——未来日期/当日未到
+    SAME_DAY_CUTOFF_HOUR/周末节假日直接报错(见 _assert_date_not_future/_assert_trading_day),
+    不再空跑全流程后报"没有获取到行情"
     """
+    _assert_date_not_future(date, "查询日期")
+    _assert_trading_day(market_data, date)
     date_str = date.strftime("%Y%m%d")
     timings: dict[str, float] = {}
 
@@ -1556,6 +1600,7 @@ def rank_range(
     end_str = end_date.strftime("%Y%m%d")
     if start_str > end_str:
         raise ValueError(f"区间起点不能晚于终点: {start_str} > {end_str}")
+    _assert_date_not_future(end_date, "区间结束日期")  # 入口闸门: 当日未到发布时间/未来日期直接报错
 
     def _notify(percent: float, message: str) -> None:
         if progress_callback is not None:
@@ -1892,6 +1937,7 @@ def rank_range_chain(
     end_str = end_date.strftime("%Y%m%d")
     if start_str > end_str:
         raise ValueError(f"区间起点不能晚于终点: {start_str} > {end_str}")
+    _assert_date_not_future(end_date, "区间结束日期")  # 入口闸门: 当日未到发布时间/未来日期直接报错
 
     def _notify(percent: float, message: str) -> None:
         if progress_callback is not None:
