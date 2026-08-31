@@ -96,6 +96,7 @@ class ValuationSeriesManager:
         self._epochs: dict[str, str] = {}  # trade_date -> 披露纪元指纹(PE 归母合并纪元|bs 纪元)——过期自愈见 _detect_stale
         self._loaded = False
         self._compute_lock = threading.Lock()  # 全局串行计算(见模块 docstring)
+        self._force_pending = False  # start(force=True) 置位, 任务算出窗口后消费(见 _run_job_locked)
 
     # ---------- 持久缓存 ----------
 
@@ -241,13 +242,23 @@ class ValuationSeriesManager:
 
     # ---------- 后台计算 ----------
 
-    def start(self, index_code: str) -> dict[str, Any]:
-        """启动(或并入)该指数的后台计算；同指数计算中幂等返回 computing"""
+    def start(self, index_code: str, force: bool = False) -> dict[str, Any]:
+        """启动(或并入)该指数的后台计算；同指数计算中幂等返回 computing。
+
+        force=True(2026-08-31 2c 手动刷新入口): 置待清标记, 任务在算出窗口后**只清窗口范围内**
+        的日粒度指纹(实测教训: 全清会截断其他窗口长度已登记的指纹——如 365 天任务与 92 天
+        测试任务并存时, 92 天 force 会丢掉 365 天的 177 天登记, 行数据虽在、下次仍白付一遍
+        重算)——清空后该次 job 对窗口内所有日子全行业重扫(上游静默更正的兜底阀门; 计算按
+        日粒度全行业进行, "刷新"天然覆盖全部指数, 与锚定哪个指数无关)。若已有计算在跑则
+        返回 computing 且不应用 force(重算排队语义, 稍后可再点)"""
         index_code = index_code.strip()
         with self._lock:
             state = self._states.get(index_code)
             if state and state.get("state") == "computing":
                 return {"state": "computing", "progress": state.get("progress", 0.0), "message": state.get("message", "")}
+            if force:
+                self._ensure_loaded()
+                self._force_pending = True
             # 先占位再起线程, 防两次 POST 竞态双起
             self._states[index_code] = {"state": "computing", "progress": 0.0, "message": "排队中"}
         threading.Thread(
@@ -278,6 +289,28 @@ class ValuationSeriesManager:
             self._ensure_loaded()
         dates = _window_dates(provider, self._window_days)
         missing = [d for d in dates if d not in self._epochs]  # 日粒度: epochs 即"该日已全行业计算"登记(2b)
+        if getattr(self, "_force_pending", False):
+            # force(2c 手动刷新): 只清本任务窗口范围内的指纹登记(范围外的其他窗口登记保留,
+            # 见 start docstring 的实测教训), 清完后窗口内全部日子视同缺失 → 全行业重扫
+            with self._lock:
+                for d in dates:
+                    self._epochs.pop(d, None)
+                store = self._store()
+                if store is not None:
+                    conn = store._conn()
+                    with conn:
+                        conn.execute(
+                            "DELETE FROM valuation_epochs WHERE trade_date>=? AND trade_date<=?",
+                            (dates[0], dates[-1]),
+                        )
+                else:
+                    self._save_locked()  # JSON 兜底
+                self._force_pending = False
+            missing = list(dates)
+            logger.info(
+                f"估值序列: force 刷新, 清空窗口内 {len(missing)} 天指纹登记, "
+                f"本次任务将全行业整段重算 {missing[0]}~{missing[-1]}"
+            )
         if missing:
             # 预热树侧交易日窗口(新股 6 交易日门槛判定用): filter_stock_pool 逐日判定会对
             # "近 24 历日上市"的新股查 [最早新股日, 当日] 跨度——回放逐日跨度不同、树的跨度

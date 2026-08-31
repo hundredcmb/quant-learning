@@ -297,6 +297,12 @@ button:disabled {
   background: #fff;
 }
 
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px; /* 与上方控件行(加权方式/行业层级)同间距 */
+}
+
 .table-card {
   margin: 0;
   border: 0;

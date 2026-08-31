@@ -154,6 +154,15 @@ def start_index_valuation(index_code: str) -> dict:
         raise HTTPException(status_code=404, detail=str(err)) from err
 
 
+@app.post("/api/valuation/refresh")
+def refresh_index_valuation() -> dict:
+    """手动刷新历史估值数据: 清日粒度指纹登记 → 全行业整段重扫; anchor=进度轮询锚指数"""
+    try:
+        return service.refresh_index_valuation()
+    except ValueError as err:
+        raise HTTPException(status_code=404, detail=str(err)) from err
+
+
 @app.get("/api/stock/{ts_code}/kline")
 def get_stock_kline(
     ts_code: str,

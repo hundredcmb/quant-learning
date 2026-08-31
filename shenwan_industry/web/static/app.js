@@ -250,6 +250,7 @@ function bindEvents() {
   $("#sub-close").addEventListener("click", closeSubPanel);
   $("#kline-close").addEventListener("click", closeKlinePanel);
   $("#result-back-btn").addEventListener("click", backToQuery);
+  $("#valuation-refresh-btn").addEventListener("click", refreshValuationSeries);
 
   $("#kline-subchart").addEventListener("change", (event) => {
     state.klineSubchart = event.target.value;
@@ -425,6 +426,10 @@ function renderResult() {
   const elapsed = elapsedText(state.jobSnapshot);
   $("#summary-text").textContent = elapsed ? `${baseText} · ${elapsed}` : baseText;
   $("#result-back-btn").classList.remove("hidden");
+  const refreshBtn = $("#valuation-refresh-btn");
+  refreshBtn.classList.remove("hidden");
+  refreshBtn.disabled = false;
+  refreshBtn.textContent = "刷新历史估值数据";
   showElement("#result-panel");
   renderMainTable();
 }
@@ -1054,6 +1059,59 @@ function applyValuationStatus(data) {
   showValuationButton(data.state === "error" ? data.message : null);
 }
 
+let valuationRefreshTimer = null;
+
+function hideValuationRefresh() {
+  const btn = $("#valuation-refresh-btn");
+  if (valuationRefreshTimer) {
+    clearInterval(valuationRefreshTimer);
+    valuationRefreshTimer = null;
+  }
+  btn.classList.add("hidden");
+  btn.disabled = false;
+  btn.textContent = "刷新历史估值数据";
+}
+
+function refreshValuationSeries() {
+  // 手动刷新历史估值数据(2c): 清日粒度指纹 → 全行业整段重扫, 兜底 ann_date 不变的
+  // 静默数值更正(纪元指纹不可观测)。重算按日粒度覆盖全部指数, 进度经锚指数 GET 轮询;
+  // 点击直接开始(无确认弹窗), 进度与状态经按钮文案透出
+  const btn = $("#valuation-refresh-btn");
+  btn.disabled = true;
+  btn.textContent = "重算排队中...";
+  fetch("/api/valuation/refresh", { method: "POST" })
+    .then(handleFetchError)
+    .then((data) => {
+      if (data.state !== "computing") {
+        btn.disabled = false;
+        btn.textContent = "刷新历史估值数据";
+        return;
+      }
+      const anchor = data.anchor;
+      valuationRefreshTimer = setInterval(() => {
+        fetch(`/api/index/${encodeURIComponent(anchor)}/valuation`)
+          .then(handleFetchError)
+          .then((st) => {
+            if (st.state === "computing") {
+              btn.textContent = `重算中 ${Math.round(st.progress || 0)}%`;
+              return;
+            }
+            clearInterval(valuationRefreshTimer);
+            valuationRefreshTimer = null;
+            btn.disabled = false;
+            btn.textContent = st.state === "ready" ? "刷新历史估值数据" : `重算失败: ${st.message || "未知原因"}`;
+          })
+          .catch(() => {
+            // 瞬时失败静默继续轮询(下个周期自愈)
+          });
+      }, 1200);
+    })
+    .catch((error) => {
+      btn.disabled = false;
+      btn.textContent = `刷新失败: ${error.message}`;
+    });
+}
+
 function startValuationQuery() {
   if (!state.klineData || state.klineIsStock || !isValuationMode()) {
     return;
@@ -1141,6 +1199,7 @@ function hideValuationOverlay() {
 function backToQuery() {
   hideElement("#result-panel");
   $("#result-back-btn").classList.add("hidden");
+  hideValuationRefresh();
   state.result = null;
   state.jobSnapshot = null;
   window.scrollTo({ top: 0, behavior: "smooth" });

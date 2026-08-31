@@ -433,6 +433,18 @@ def start_index_valuation(index_code: str) -> dict[str, Any]:
     return _VALUATION_MANAGER.start(_check_valuation_index(index_code))
 
 
+def refresh_index_valuation() -> dict[str, Any]:
+    """手动刷新历史估值数据(2026-08-31 2c): 清空日粒度指纹登记 → 全行业整段重扫。
+
+    兜底 ann_date 不变的静默数值更正(纪元指纹不可观测的修正通道)。重扫按日粒度覆盖
+    全部指数(与锚定哪个指数无关), 进度经锚指数的既有 GET 轮询通道透出; 已有计算在跑时
+    返回 computing(不应用刷新, 稍后可再点)"""
+    anchor = sorted(get_sw_daily_available() or set(_L1_INDEXES))[0]
+    response = _VALUATION_MANAGER.start(anchor, force=True)
+    response["anchor"] = anchor
+    return response
+
+
 def _safe_float(value: Any) -> float | None:
     if value is None:
         return None
