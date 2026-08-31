@@ -34,10 +34,12 @@ try:
     from .industry_ranking import daily_valuation_metric
     from .industry_tree import ShenWanIndustryTree
     from .market_data import MarketDataProvider
+    from .market_store import MarketStore
 except ImportError:  # 直接以脚本方式运行时的兜底
     from industry_ranking import daily_valuation_metric
     from industry_tree import ShenWanIndustryTree
     from market_data import MarketDataProvider
+    from market_store import MarketStore
 
 logger = logging.getLogger("shenwan_industry.valuation_series")
 
@@ -48,6 +50,9 @@ CACHE_PATH = Path(__file__).resolve().parent / "data" / "valuation_history.json"
 CACHE_VERSION = 1
 # 滚动窗口自然日数（2026-08-31 定稿 1 年；延长只需改此常量，缓存按缺失日期增量补算不作废）
 VALUATION_WINDOW_DAYS = 365
+
+# 序列缓存 SQLite 单例(2026-08-31 自 JSON 迁入 market.db; SW_MARKET_DB=0 时退回 JSON 文件)
+_STORE_SINGLETON: MarketStore | None = None
 
 # 上下文获取函数类型: build=True 时阻塞构建(可能分钟级), False 时就绪则返回、未就绪返回 None
 ContextFn = Callable[[bool], tuple[ShenWanIndustryTree, MarketDataProvider] | None]
@@ -94,9 +99,48 @@ class ValuationSeriesManager:
 
     # ---------- 持久缓存 ----------
 
+    def _store(self) -> MarketStore | None:
+        """SQLite 持久层单例(惰性; SW_MARKET_DB=0 或熔断时返回 None, 序列缓存退回 JSON 文件)"""
+        global _STORE_SINGLETON
+        if _STORE_SINGLETON is None:
+            _STORE_SINGLETON = MarketStore()
+        return None if _STORE_SINGLETON.disabled else _STORE_SINGLETON
+
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
+        store = self._store()
+        if store is not None:
+            # SQLite 主路径: version 不符 → 清表全量重算(与 JSON 时代 version 语义一致);
+            # 库空且存在老 JSON → 一次性导入(数值经锚点验证逐值有效), 导入后 JSON 保留为备份不再读
+            db_version = store.valuation_meta_get("version")
+            if db_version is not None and int(db_version) != CACHE_VERSION:
+                logger.warning(
+                    f"估值序列缓存版本不匹配(库 v{db_version} != v{CACHE_VERSION}), 清空全量重算"
+                )
+                conn = store._conn()
+                with conn:
+                    conn.execute("DELETE FROM valuation_series")
+                    conn.execute("DELETE FROM valuation_epochs")
+                db_version = None
+            self._epochs = store.load_valuation_epochs()
+            self._cache = store.load_valuation_all()
+            if not self._cache and not self._epochs:
+                legacy = self._load_legacy_json()
+                if legacy is not None:
+                    series, epochs, updated_map = legacy
+                    imported = store.import_valuation_series(series, epochs, updated_map, CACHE_VERSION)
+                    self._cache = store.load_valuation_all()
+                    self._epochs = store.load_valuation_epochs()
+                    logger.info(
+                        f"估值序列缓存已从老 JSON 导入 SQLite: {len(series)} 个指数 {imported} 行"
+                        f"(原文件保留为备份不再读取)"
+                    )
+            if store.valuation_meta_get("version") is None:
+                store.valuation_meta_set("version", str(CACHE_VERSION))
+            self._loaded = True
+            return
+        # JSON 兜底路径(持久层禁用时的旧行为)
         if CACHE_PATH.exists():
             try:
                 raw = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
@@ -111,8 +155,34 @@ class ValuationSeriesManager:
                 logger.warning(f"估值序列缓存文件损坏, 将全量重建: {err!r}")
         self._loaded = True
 
+    @staticmethod
+    def _load_legacy_json() -> tuple[dict, dict, dict] | None:
+        """读老 JSON 缓存: (series, epochs, {index: updated}); 不存在/损坏/版本不符返回 None"""
+        if not CACHE_PATH.exists():
+            return None
+        try:
+            raw = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+            if int(raw.get("version", 0)) != CACHE_VERSION:
+                logger.warning("老 JSON 估值序列缓存版本不符, 跳过导入(将全量重算)")
+                return None
+            series = raw.get("series", {})
+            updated_map = {
+                index_code: str(entry.get("updated") or "")
+                for index_code, entry in series.items()
+            }
+            return series, raw.get("epochs", {}), updated_map
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"老 JSON 估值序列缓存读取失败, 跳过导入: {err!r}")
+            return None
+
     def _save_locked(self) -> None:
-        """落盘（调用方须已持 _lock）；失败仅告警不中断计算"""
+        """落盘（调用方须已持 _lock；失败仅告警不中断计算）
+
+        SQLite 主路径为逐日 upsert(调用方在写值/指纹后逐点调用 save_valuation_*), 本方法
+        仅在 JSON 兜底路径下做整文件重写
+        """
+        if self._store() is not None:
+            return
         try:
             CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             payload = {
@@ -268,9 +338,18 @@ class ValuationSeriesManager:
                     entry = self._entry(index_code)
                     entry["pe"][day_str] = pe_value
                     entry["pb"][day_str] = pb_value
-                    entry["updated"] = datetime.now().strftime("%Y%m%d %H:%M:%S")
-                    self._epochs[day_str] = self._day_fingerprint(provider, day_str)
-                    self._save_locked()  # 逐日落盘, 中断不丢已算日期
+                    updated = datetime.now().strftime("%Y%m%d %H:%M:%S")
+                    entry["updated"] = updated
+                    self._epochs[day_str] = fp = self._day_fingerprint(provider, day_str)
+                    store = self._store()
+                    if store is not None:
+                        # SQLite 主路径: 逐日 upsert(3 行小事务, 与表内历史数据量无关), 中断不丢
+                        store.save_valuation_point(index_code, "pe", day_str, pe_value)
+                        store.save_valuation_point(index_code, "pb", day_str, pb_value)
+                        store.save_valuation_epoch(day_str, fp)
+                        store.valuation_meta_set(f"updated:{index_code}", updated)
+                    else:
+                        self._save_locked()  # JSON 兜底: 整文件重写(持久层禁用时)
             done += 1
             self._set_state(
                 index_code,
@@ -354,7 +433,11 @@ class ValuationSeriesManager:
             with self._lock:
                 self._ensure_loaded()
                 self._cache.pop(index_code, None)
-                self._save_locked()
+                store = self._store()
+                if store is not None:
+                    store.delete_valuation_index(index_code)  # DB 主路径: 删该指数全部序列行
+                else:
+                    self._save_locked()  # JSON 兜底
         self._run_job(index_code)
         with self._lock:
             state = dict(self._states.get(index_code) or {})

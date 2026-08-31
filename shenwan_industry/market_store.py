@@ -178,6 +178,21 @@ CREATE TABLE IF NOT EXISTS snapshots (
     api        TEXT NOT NULL PRIMARY KEY,
     fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS valuation_series (
+    index_code TEXT NOT NULL,
+    metric     TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    value      REAL,
+    PRIMARY KEY (index_code, metric, trade_date)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS valuation_epochs (
+    trade_date  TEXT NOT NULL PRIMARY KEY,
+    fingerprint TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS valuation_meta (
+    key   TEXT NOT NULL PRIMARY KEY,
+    value TEXT NOT NULL
+) WITHOUT ROWID;
 """
 
 
@@ -825,6 +840,175 @@ class MarketStore:
             return False
 
 
+
+    # ---------- 估值走势序列(算好的 PE/PB 值 + 纪元指纹, 2026-08-31 自 JSON 迁入) ----------
+
+    def load_valuation_epochs(self) -> dict[str, str]:
+        """全部披露纪元指纹: {trade_date: fingerprint}(全市场一份与指数无关)"""
+        if self._disabled:
+            return {}
+        try:
+            rows = self._conn().execute(
+                "SELECT trade_date, fingerprint FROM valuation_epochs"
+            ).fetchall()
+            self._failures = 0
+            return {r["trade_date"]: r["fingerprint"] for r in rows}
+        except sqlite3.Error as err:
+            self._bail(err)
+            return {}
+
+    def save_valuation_epoch(self, day_str: str, fingerprint: str) -> bool:
+        """upsert 单日披露纪元指纹"""
+        if self._disabled:
+            return False
+        try:
+            conn = self._conn()
+            with conn:
+                conn.execute(
+                    "INSERT INTO valuation_epochs(trade_date, fingerprint) VALUES (?,?)"
+                    " ON CONFLICT(trade_date) DO UPDATE SET fingerprint=excluded.fingerprint",
+                    (day_str, fingerprint),
+                )
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
+    def load_valuation_all(self) -> dict[str, dict[str, dict[str, float | None]]]:
+        """全部估值序列: {index_code: {"pe": {date: value|None}, "pb": {...}}}(value NULL=亏损/资不抵债)"""
+        if self._disabled:
+            return {}
+        try:
+            rows = self._conn().execute(
+                "SELECT index_code, metric, trade_date, value FROM valuation_series"
+            ).fetchall()
+            out: dict[str, dict[str, dict[str, float | None]]] = {}
+            for r in rows:
+                entry = out.setdefault(r["index_code"], {"pe": {}, "pb": {}})
+                entry.setdefault(r["metric"], {})[r["trade_date"]] = r["value"]
+            self._failures = 0
+            return out
+        except sqlite3.Error as err:
+            self._bail(err)
+            return {}
+
+    def save_valuation_point(self, index_code: str, metric: str, day_str: str, value: float | None) -> bool:
+        """upsert 单指数单指标单日估值(value NULL=亏损/资不抵债, 行存在=已计算)"""
+        if self._disabled:
+            return False
+        try:
+            conn = self._conn()
+            with conn:
+                conn.execute(
+                    "INSERT INTO valuation_series(index_code, metric, trade_date, value)"
+                    " VALUES (?,?,?,?)"
+                    " ON CONFLICT(index_code, metric, trade_date) DO UPDATE SET value=excluded.value",
+                    (index_code, metric, day_str, value),
+                )
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
+    def delete_valuation_index(self, index_code: str) -> bool:
+        """清除某指数全部序列行(--force 整段重算前调用)"""
+        if self._disabled:
+            return False
+        try:
+            conn = self._conn()
+            with conn:
+                conn.execute("DELETE FROM valuation_series WHERE index_code=?", (index_code,))
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
+    def valuation_meta_get(self, key: str) -> str | None:
+        """估值元数据读取(version/JSON 导入标记/每指数 updated 时间戳等)"""
+        try:
+            row = self._conn().execute(
+                "SELECT value FROM valuation_meta WHERE key=?", (key,)
+            ).fetchone()
+            self._failures = 0
+            return row["value"] if row else None
+        except sqlite3.Error as err:
+            self._bail(err)
+            return None
+
+    def valuation_meta_set(self, key: str, value: str) -> bool:
+        """估值元数据写入(upsert)"""
+        try:
+            conn = self._conn()
+            with conn:
+                conn.execute(
+                    "INSERT INTO valuation_meta(key, value) VALUES (?,?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (key, value),
+                )
+            self._failures = 0
+            return True
+        except sqlite3.Error as err:
+            self._bail(err)
+            return False
+
+    def import_valuation_series(
+        self,
+        series: dict[str, dict[str, dict[str, float | None]]],
+        epochs: dict[str, str],
+        updated_map: dict[str, str],
+        version: int,
+    ) -> int:
+        """老 JSON 一次性导入(单事务: 全部序列行 + 指纹 + updated + 版本标记), 返回写入行数
+
+        幂等性由调用方保证(仅在库空且 JSON 存在时调用一次); 导入后 JSON 文件保留为备份不再读
+        """
+        if self._disabled:
+            return 0
+        rows = [
+            (index_code, metric, day, value)
+            for index_code, entry in series.items()
+            for metric in ("pe", "pb")
+            for day, value in (entry.get(metric) or {}).items()
+        ]
+        try:
+            conn = self._conn()
+            with conn:
+                conn.executemany(
+                    "INSERT INTO valuation_series(index_code, metric, trade_date, value)"
+                    " VALUES (?,?,?,?)"
+                    " ON CONFLICT(index_code, metric, trade_date) DO UPDATE SET value=excluded.value",
+                    rows,
+                )
+                conn.executemany(
+                    "INSERT INTO valuation_epochs(trade_date, fingerprint) VALUES (?,?)"
+                    " ON CONFLICT(trade_date) DO UPDATE SET fingerprint=excluded.fingerprint",
+                    list(epochs.items()),
+                )
+                for index_code, updated in updated_map.items():
+                    if updated:
+                        conn.execute(
+                            "INSERT INTO valuation_meta(key, value) VALUES (?,?)"
+                            " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                            (f"updated:{index_code}", updated),
+                        )
+                conn.execute(
+                    "INSERT INTO valuation_meta(key, value) VALUES ('version', ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(version),),
+                )
+                conn.execute(
+                    "INSERT INTO valuation_meta(key, value) VALUES ('migrated_from_json', ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (datetime.now().isoformat(timespec="seconds"),),
+                )
+            self._failures = 0
+            return len(rows)
+        except sqlite3.Error as err:
+            self._bail(err)
+            return 0
 
     # ---------- 体检与维护(供 market_cache.py CLI) ----------
 
