@@ -27,6 +27,10 @@ except ImportError:  # 直接运行本文件时
 # 协作式取消检查: 需要取消时抛异常
 CancelCheck = Callable[[], None]
 
+# 按日判定缓存的容量(日期键个数, 超出逐出最早插入的): 链式逐日推进每日 1 个活跃日期,
+# 静态区间榜全程 1 个键, 单日榜 1~2 个——16 覆盖全部场景且内存有界
+_DAY_CACHE_MAX_KEYS = 16
+
 
 class ShenWanIndustryNode:
     def __init__(self, index_code: str, industry_code: str, industry_name: str, level: str):
@@ -62,6 +66,14 @@ class ShenWanIndustryTree:
         self.all_member_codes: set[str] = set()  # 有(过)申万行业归属的股票集合(Y∪N), 榜单股票池底
         self._trade_days_cache: dict[tuple[str, str], list[str]] = {}  # 新股"上市第6交易日"计数的交易日窗口缓存(精确匹配)
         self._trade_days_spans: list[tuple[str, str, list[str]]] = []  # 交易日历跨度缓存: (起, 止, 升序列表), 查询被包含时切片命中
+        # 按日判定缓存(2026-08-31 性能优化): 链式区间榜逐日循环里同一天的过滤要跑 7 遍
+        # (停牌 memo 1 + 六条序列函数各 1)、归属解析 6 遍, 而两者都是"每股×日期"的纯函数——
+        # 结果按 (锚点日, 末日) / 日期 缓存后重复调用零重算(单日榜/区间榜/估值走势同样受益)。
+        # 判定缓存是**按股**的(池无关), 不同调用方传不同池子也安全; 归属缓存键用 datetime
+        # 对象(哈希有缓存); 容量按"最近用过的日期数"逐出最旧, 链式逐日推进每天只需 1 个
+        # 活跃日期、16 个绰绰有余
+        self._pool_verdict_cache: dict[tuple[str, str], dict[str, str | None]] = {}
+        self._nodes_on_date: dict[datetime, dict[str, tuple[ShenWanIndustryNode | None, ShenWanIndustryNode | None, ShenWanIndustryNode | None]]] = {}
 
     def build_industries(self):
         """从本地 JSON 数据源构建申万三级行业树"""
@@ -216,7 +228,7 @@ class ShenWanIndustryTree:
         cancel_check: CancelCheck | None = None,
         restructure_excluded: set[str] | None = None,
     ) -> dict[str, list[str]]:
-        """过滤股票池, 返回被剔除股票的类别明细 {类别: [ts_code, ...]}
+        """过滤股票池(原地剔除), 返回被剔除股票的类别明细 {类别: [ts_code, ...]}
 
         - 剔除缓存中记录的无行业分类的股票 (no_industry)
         - 剔除 anchor 日期无任何行业归属区间的成分 (not_member: 含未来纳入 in_date>anchor
@@ -227,6 +239,14 @@ class ShenWanIndustryTree:
         - 剔除当日处于 4.4.14 重整转增剔除窗口的股票 (restructure_window: 官方自除权日退出、
           转增股本上市日次一交易日重新计入; 窗口集合由 market_data.get_restructure_excluded 提供)
         单日榜调用传 (date, date); 区间榜传 (区间起始日, 区间末日)。
+
+        **按股判定缓存**(2026-08-31 性能优化): 判定结果只依赖 (股票, 锚点日, 末日), 按
+        (anchor, end) 缓存每股 verdict(剔除类别|None)——链式区间榜同一天 7 次过滤(停牌 memo
+        1 次 + 六条序列函数各 1 次)只有首次真正计算, 且**池无关**(不同调用方传不同池子安全,
+        verdict 只在股票出现在池中时应用)。新股 6 交易日门槛的交易日窗口批量计算保持原状
+        (只在有未判定新股时触发)。日期比较全部为 YYYYMMDD 字符串比较(字典序=日期序,
+        原实现每股每遍 strptime 是链式逐日循环的最大热点, 2026-08-31 profile 实测
+        10 日 37 万次 strptime 占该段 44%)
         """
         anchor_str = anchor_date.strftime("%Y%m%d")
         end_str = end_date.strftime("%Y%m%d")
@@ -239,67 +259,77 @@ class ShenWanIndustryTree:
             "restructure_window": [],
         }
 
-        # 剔除缓存中记录的无行业分类的股票
+        # 剔除缓存中记录的无行业分类的股票(集合小, 每次执行; 判定缓存覆盖不到这类——
+        # no_industry_stocks 会在运行中随归属解析告警增长)
         for no_industry_stock in self.no_industry_stocks:
             if no_industry_stock in stock_pool:
                 stock_pool.discard(no_industry_stock)
                 excluded["no_industry"].append(no_industry_stock)
 
-        # 按历史归属区间: 剔除 anchor 日无覆盖区间的成分(未来纳入/历史退出), 区间末前调出的剔除
+        verdicts = self._pool_verdict_cache.get((anchor_str, end_str))
+        if verdicts is None:
+            verdicts = {}
+            if len(self._pool_verdict_cache) >= _DAY_CACHE_MAX_KEYS:
+                self._pool_verdict_cache.pop(next(iter(self._pool_verdict_cache)))
+            self._pool_verdict_cache[(anchor_str, end_str)] = verdicts
+
+        # 未判定的股票批量计算(保持原批量结构: 归属区间/退市/上市判断一遍 + 新股窗口一遍)
+        pending = [ts_code for ts_code in stock_pool if ts_code not in verdicts]
+        if pending:
+            borderline: list[tuple[str, str]] = []  # (ts_code, list_date_YYYYMMDD)
+            # 快路径截止日提出循环外一次算好, 与每股 list_date 做字符串比较
+            cutoff24 = (anchor_date - timedelta(days=24)).strftime("%Y%m%d")
+            for idx, ts_code in enumerate(pending):
+                if cancel_check is not None and idx % 500 == 0:
+                    cancel_check()
+                anchor_interval = self._get_interval_on(ts_code, anchor_str)
+                if anchor_interval is None:
+                    verdicts[ts_code] = "not_member"
+                    continue
+                _l3, _in, anchor_out = anchor_interval
+                if anchor_out is not None and anchor_out <= end_str:
+                    verdicts[ts_code] = "left_mid_range"
+                    continue
+                delist_date = self.ts_code_to_delist_date.get(ts_code)
+                if delist_date is not None and delist_date < end_str:
+                    verdicts[ts_code] = "delisted"
+                    continue
+                list_date_raw = self.stock_basic.get(ts_code, {}).get('list_date')
+                if list_date_raw is None or pd.isna(list_date_raw) or str(list_date_raw).strip() == "":
+                    verdicts[ts_code] = None
+                    continue
+                list_date_s = str(list_date_raw)
+                if list_date_s < cutoff24:
+                    # 早已上市(list_date 距 anchor 超 24 历日, 字符串比较), 必有 ≥6 个交易日
+                    verdicts[ts_code] = None
+                    continue
+                borderline.append((ts_code, list_date_s))
+            if borderline:
+                # 仅对近 24 历日上市的新股按交易日历精确计数(一次窗口, 实例内缓存复用)
+                earliest = min(d for _, d in borderline)
+                if earliest > anchor_str:
+                    earliest = anchor_str
+                days = self._trading_days_window(earliest, anchor_str)
+                for ts_code, list_date_s in borderline:
+                    # [list_date, anchor] 内含 anchor 的交易日数 < 6 → 未满第 6 个交易日, 剔除
+                    verdicts[ts_code] = (
+                        "not_listed"
+                        if sum(1 for d in days if list_date_s <= d <= anchor_str) < 6
+                        else None
+                    )
+            if restructure_excluded:
+                for ts_code in restructure_excluded:
+                    if ts_code in verdicts and verdicts[ts_code] is None:
+                        verdicts[ts_code] = "restructure_window"
+
+        # 应用判定: 剔除类别的股票移出池并记入明细(命中缓存的股票零重算)
         for idx, ts_code in enumerate(list(stock_pool)):
             if cancel_check is not None and idx % 500 == 0:
                 cancel_check()
-            anchor_interval = self._get_interval_on(ts_code, anchor_str)
-            if anchor_interval is None:
+            verdict = verdicts.get(ts_code)
+            if verdict is not None:
                 stock_pool.discard(ts_code)
-                excluded["not_member"].append(ts_code)
-                continue
-            _l3, _in, anchor_out = anchor_interval
-            if anchor_out is not None and anchor_out <= end_str:
-                stock_pool.discard(ts_code)
-                excluded["left_mid_range"].append(ts_code)
-
-        # 剔除 end 日期之前已退市的股票(退市后不再参与, 退市日当天及之前正常参与)
-        for idx, ts_code in enumerate(list(stock_pool)):
-            if cancel_check is not None and idx % 500 == 0:
-                cancel_check()
-            delist_date = self.ts_code_to_delist_date.get(ts_code)
-            if delist_date is not None and delist_date < end_str:
-                stock_pool.discard(ts_code)
-                excluded["delisted"].append(ts_code)
-
-        # 剔除未上市 / 上市未满 6 个交易日的股票(官方 4.4.3: 新股上市第 6 个交易日才纳入指数;
-        # 注册制新股前 5 日无涨跌幅限制、波动剧烈, 过早计入会污染行业涨幅)
-        # 快路径: list_date 距 anchor 超过 24 历日的必有 ≥6 个交易日(含周末/节假日余量), 直接放行;
-        # 仅对近 24 历日上市的新股按交易日历精确计数(一次 trade_cal, 窗口在实例内缓存复用)
-        borderline: list[tuple[str, str]] = []  # (ts_code, list_date_YYYYMMDD)
-        for idx, ts_code in enumerate(list(stock_pool)):
-            if cancel_check is not None and idx % 500 == 0:
-                cancel_check()
-            list_date_str = self.stock_basic.get(ts_code, {}).get('list_date')
-            if pd.isna(list_date_str) or str(list_date_str).strip() == "":
-                continue
-            list_date_s = str(list_date_str)
-            if datetime.strptime(list_date_s, "%Y%m%d") < (anchor_date - timedelta(days=24)):
-                continue  # 早已上市, 必有 ≥6 个交易日
-            borderline.append((ts_code, list_date_s))
-        if borderline:
-            earliest = min(d for _, d in borderline)
-            if earliest > anchor_str:
-                earliest = anchor_str
-            days = self._trading_days_window(earliest, anchor_str)
-            for ts_code, list_date_s in borderline:
-                # [list_date, anchor] 内含 anchor 的交易日数 < 6 → 未满第 6 个交易日, 剔除
-                if sum(1 for d in days if list_date_s <= d <= anchor_str) < 6:
-                    stock_pool.discard(ts_code)
-                    excluded["not_listed"].append(ts_code)
-
-        # 剔除当日处于 4.4.14 重整转增剔除窗口的股票(官方自除权日退出、上市日次一交易日重新计入)
-        if restructure_excluded:
-            for ts_code in restructure_excluded:
-                if ts_code in stock_pool:
-                    stock_pool.discard(ts_code)
-                    excluded["restructure_window"].append(ts_code)
+                excluded[verdict].append(ts_code)
 
         return excluded
 
@@ -351,13 +381,39 @@ class ShenWanIndustryTree:
         - 不传 date: 退回当前快照查找(兼容旧调用)
         - 传 date: 按 ts_code_membership 取当日覆盖区间; 无任何归属记录视为数据异常(告警并记入
           no_industry_stocks), 有记录但当日不在任一行业则安静返回三 None(正常的历史退出情形)
+
+        **按日缓存**(2026-08-31 性能优化): 结果只依赖 (股票, 日期), 按日期缓存每股的三元组——
+        链式区间榜六条序列函数每天各解析一遍全池(实测 10 日 32 万次调用), 缓存后仅首遍计算;
+        告警/no_industry_stocks 副作用也只发生一次(原本就幂等)。缓存键用 datetime 对象本身
+        (哈希首次计算后缓存, 免去每次调用 date.strftime 的 37 万次字符串格式化热点)
         """
+        if date is not None:
+            per_date = self._nodes_on_date.get(date)
+            if per_date is None:
+                per_date = {}
+                if len(self._nodes_on_date) >= _DAY_CACHE_MAX_KEYS:
+                    self._nodes_on_date.pop(next(iter(self._nodes_on_date)))
+                self._nodes_on_date[date] = per_date
+            if ts_code in per_date:
+                return per_date[ts_code]
+            result = self._resolve_stock_nodes(ts_code, date)
+            per_date[ts_code] = result
+            return result
+        return self._resolve_stock_nodes(ts_code, date)
+
+    def _resolve_stock_nodes(
+        self,
+        ts_code: str,
+        date: datetime | None = None,
+    ) -> tuple[ShenWanIndustryNode | None, ShenWanIndustryNode | None, ShenWanIndustryNode | None]:
+        """get_stock_industry_nodes 的无缓存实现(原逻辑逐字保留; 日期格式化只做一次)"""
         if date is not None:
             if ts_code not in self.ts_code_membership:
                 warnings.warn(f"找不到股票 '{ts_code}' 的历史行业归属", RuntimeWarning)
                 self.no_industry_stocks.add(ts_code)
                 return None, None, None
-            l3_node = self.get_l3_on(ts_code, date)
+            rec = self._get_interval_on(ts_code, date.strftime("%Y%m%d"))
+            l3_node = self.index_code_to_node.get(rec[0]) if rec else None
             if l3_node is None:
                 return None, None, None
         else:

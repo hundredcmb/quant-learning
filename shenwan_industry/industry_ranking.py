@@ -215,12 +215,10 @@ def daily_rank_equal_weight(
                         continue
                     y_mv = y_mv_map.get(ts_code)
                     t_mv = today_mv_map.get(ts_code)
+                    # 热循环原生 NaN 判断(v != v), 不走 pandas 的 pd.isna(慢一个量级)
                     if (
-                        y_mv is not None
-                        and not pd.isna(y_mv)
-                        and y_mv > 0
-                        and t_mv is not None
-                        and not pd.isna(t_mv)
+                        y_mv is not None and y_mv == y_mv and y_mv > 0
+                        and t_mv is not None and t_mv == t_mv
                     ):
                         ex_div_override[ts_code] = (t_mv / y_mv - 1.0) * 100
 
@@ -327,7 +325,8 @@ def daily_rank_float_weight(
     )
 
     # 新策略: 先并发补齐缺失市值(线程池, 见 market_data.resolve_missing_mv), 避免循环内逐股串行点查
-    missing_codes = [c for c in stock_pool if pd.isna(ts_code_to_mv.get(c))]
+    # (热循环原生 NaN 判断: None 或 NaN 都算缺失, 不走 pd.isna)
+    missing_codes = [c for c in stock_pool if (v := ts_code_to_mv.get(c)) is None or v != v]
     if missing_codes:
         _t0 = time.perf_counter()
         market_data.resolve_missing_mv(missing_codes, date, cancel_check)
@@ -360,7 +359,7 @@ def daily_rank_float_weight(
                     if ts_code not in stock_pool:
                         continue
                     y_mv = y_mv_map.get(ts_code)
-                    if y_mv is not None and not pd.isna(y_mv):
+                    if y_mv is not None and y_mv == y_mv:  # 原生 NaN 判断
                         ex_div_override[ts_code] = y_mv
 
     for idx, ts_code in enumerate(stock_pool):
@@ -376,7 +375,7 @@ def daily_rank_float_weight(
 
         # 处理当日停牌的情况: 需要获取停牌前的权重市值(最多支持连续停牌 2 年); 每股只解析一次, 供 L3/L2/L1 共用
         weight_mv = ts_code_to_mv.get(ts_code)
-        if weight_mv is None or pd.isna(weight_mv):
+        if weight_mv is None or weight_mv != weight_mv:  # 原生 NaN 判断, 热循环不走 pd.isna
             if timings is not None:
                 _t0 = time.perf_counter()
             weight_mv = resolve_mv(ts_code, date, cancel_check)
@@ -553,7 +552,10 @@ def daily_valuation_metric(
             continue
         free_mv = free_mv_map.get(ts_code)
         total_mv = total_mv_map.get(ts_code)
-        if free_mv is None or total_mv is None or pd.isna(free_mv) or pd.isna(total_mv):
+        if (  # 原生 NaN 判断(free/total 为 float|None), 热循环不走 pd.isna
+            free_mv is None or total_mv is None
+            or free_mv != free_mv or total_mv != total_mv
+        ):
             pool_no_mv += 1
             continue
         ratio = float(free_mv) / float(total_mv)  # 同一日同一行口径下 = free_share/total_share
@@ -2064,11 +2066,13 @@ def rank_range_chain(
         for ts_code in participating:
             free_mv = free_map.get(ts_code)
             total_mv = total_map.get(ts_code)
-            if free_mv is not None and not pd.isna(free_mv) and total_mv is not None and not pd.isna(total_mv):
+            if free_mv is not None and free_mv == free_mv and total_mv is not None and total_mv == total_mv:
                 susp_memo[ts_code] = (free_mv, total_mv)
         for ts_code in participating:
-            free_ok = free_map.get(ts_code) is not None and not pd.isna(free_map.get(ts_code))
-            total_ok = total_map.get(ts_code) is not None and not pd.isna(total_map.get(ts_code))
+            free_mv = free_map.get(ts_code)
+            total_mv = total_map.get(ts_code)
+            free_ok = free_mv is not None and free_mv == free_mv  # 原生 NaN 判断, 热循环不走 pd.isna
+            total_ok = total_mv is not None and total_mv == total_mv
             if free_ok and total_ok:
                 continue  # 两口径当日都有数据(活跃/复牌/新上市), 无需处理
             known = susp_memo.get(ts_code)
@@ -2079,8 +2083,6 @@ def rank_range_chain(
                 if not total_ok and known_total is not None:
                     total_map[ts_code] = known_total
                 continue
-            free_mv = free_map.get(ts_code) if free_ok else None
-            total_mv = total_map.get(ts_code) if total_ok else None
             if not free_ok:
                 free_mv = market_data.resolve_free_mv(ts_code, day_dt, cancel_check)
                 if total_ok:
