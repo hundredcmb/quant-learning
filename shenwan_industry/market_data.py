@@ -5,6 +5,12 @@
   market_store.MarketStore)→ 网络**, 网络拉回非空写穿入库(重启/CLI 重跑不再逐日重拉,
   写穿/易变尾窗口/完整日元表规则见 market_store 模块 docstring); 涨跌幅口径见
   shenwan_industry/AGENTS.md 第 3 节
+- **第二期入库范围(2026-08-31)**: 财报三池原行(fina_raw/bs_raw/express_raw, 报告期键、
+  seq 保行序、字段级去重/行内合成/PIT 过滤留在读取方零口径折叠; 距今 ≥24 个月的期
+  信任库值, 更近的期每次走网络抓更正)、dividend(ex_date=D) 当日除息/送转记录
+  (dividend_ex, 按日不可变)、trade_cal(连续跨度覆盖)、index_weight 月度快照(历史月
+  不可变)、树构建快照(stock_basic/index_member_all, **日级新鲜度**——进程内缓存 →
+  当日快照 → 网络, 新上市/退市/成分调整次日刷新; 供 industry_tree 构建零请求复用)
 - 财务指标: fina_indicator_vip 按报告期全市场批拉, 一次同取扣非净利润(profit_dedt)、非经常性损益
   (extra_item)与每股净资产(bps); **归母净利润 = profit_dedt + extra_item 行内合成**(恒等式经全市场
   实测验证, 见 _fetch_fina_period), 供单日榜 PE(列名"PE"): 归母-TTM 口径 get_ts_code_to_ttm_attr_profit,
@@ -156,6 +162,191 @@ def _row_float(v) -> float | None:
     except (TypeError, ValueError):
         return None
     return f if math.isfinite(f) else None
+
+
+def _merge_fina_raw_rows(
+    raw: list[tuple[str, str, float | None, float | None, float | None, float | None]],
+) -> dict[str, tuple[str, float, float, float, float]]:
+    """fina 原始行(响应顺序)→ {ts_code: (ann_date, 扣非, 归母, bps, roe_waa)} 字段级去重
+
+    网络路径与 SQLite 读取路径**共用同一函数**(去重语义零分叉): 字段级各自取最后非空、
+    归母 = 扣非 + 非经常损益 行内合成(两字段同行齐备才算出)、ann_date 取最后非空——
+    与原网络循环逐行合并的逻辑逐字一致
+    """
+    rows: dict[str, tuple[str, float, float, float, float]] = {}
+    for ts_code, ann_date, deduct, extra, bps, roe_waa in raw:
+        attr_profit = (
+            deduct + extra
+            if deduct is not None and extra is not None
+            else None
+        )
+        ann_old, deduct_old, attr_old, bps_old, roe_old = rows.get(
+            ts_code, ("", None, None, None, None)
+        )
+        rows[ts_code] = (
+            ann_date or ann_old,
+            deduct if deduct is not None else deduct_old,
+            attr_profit if attr_profit is not None else attr_old,
+            bps if bps is not None else bps_old,
+            roe_waa if roe_waa is not None else roe_old,
+        )
+    return rows
+
+
+def _merge_bs_raw_rows(
+    raw: list[tuple[str, str, str, float | None, float | None]],
+) -> dict[str, tuple[str, float]]:
+    """bs 原始行(响应顺序)→ {ts_code: (ann_date, 归母普通股股东权益元)} 字段级去重
+
+    与原网络循环逐字一致: report_type 非 '1' 行跳过、普通股东权益 = 归母权益 − 其他权益工具
+    行内合成(oth 缺失按 0——0 是合法值即真无永续债/优先股)、字段级取最后非空
+    """
+    rows: dict[str, tuple[str, float]] = {}
+    for ts_code, ann_date, report_type, eq_raw, oth in raw:
+        if report_type and report_type != "1":
+            continue  # 只取合并报表(实测不传时服务端已默认 '1', 此为防御)
+        if eq_raw is not None:
+            equity = eq_raw - (oth if oth is not None else 0.0)
+        else:
+            equity = None
+        ann_old, equity_old = rows.get(ts_code, ("", None))
+        rows[ts_code] = (
+            ann_date or ann_old,
+            equity if equity is not None else equity_old,
+        )
+    return rows
+
+
+def _merge_express_raw_rows(
+    raw: list[tuple[str, str, float | None]],
+) -> dict[str, list[tuple[str, float]]]:
+    """express 原始行(响应顺序)→ {ts_code: [(ann_date, 快报归母), ...]}(升序版本列表)
+
+    与原网络循环逐字一致: 无公告日/无数值行丢弃、精确重复条目去重、末尾按 ann_date 排序
+    """
+    rows: dict[str, list[tuple[str, float]]] = {}
+    for ts_code, ann_date, value in raw:
+        if not ann_date or value is None:
+            continue
+        entry = (ann_date, value)
+        versions = rows.setdefault(ts_code, [])
+        if entry not in versions:
+            versions.append(entry)
+    for versions in rows.values():
+        versions.sort()
+    return rows
+
+
+# ---------- 树构建快照(进程内缓存 + SQLite 日级新鲜度 + 网络) ----------
+# 进程级缓存: 树数据与 provider 实例无关(全市场同一份), 当日内多树构建/多 provider 复用
+_stock_basic_snapshot_cache: list[dict] | None = None
+_stock_basic_snapshot_lock = threading.Lock()
+_index_member_all_cache: tuple[list[tuple], list[tuple]] | None = None
+_index_member_all_lock = threading.Lock()
+
+
+def _snapshot_store() -> MarketStore | None:
+    """树快照用的持久层单例(SW_MARKET_DB=0 时返回 None 走纯网络旧行为)"""
+    if not MARKET_DB_ENABLED:
+        return None
+    global _SNAPSHOT_STORE
+    if _SNAPSHOT_STORE is None:
+        _SNAPSHOT_STORE = MarketStore()
+    return None if _SNAPSHOT_STORE.disabled else _SNAPSHOT_STORE
+
+
+_SNAPSHOT_STORE: MarketStore | None = None
+
+
+def get_stock_basic_snapshot(pro) -> list[dict]:
+    """L/D/P 三态股票基础信息: 进程内缓存 → SQLite(当日快照) → 网络(stock_basic ×3)
+
+    返回 [{ts_code, name, list_date, list_status, delist_date|None}](比原树构建多出
+    list_status 统一字段, L 行 delist_date 为 None); 快照日级新鲜度——新上市/退市状态
+    变化次日生效(见 market_store 树快照注释), 当日内跨进程零请求
+    """
+    global _stock_basic_snapshot_cache
+    with _stock_basic_snapshot_lock:
+        if _stock_basic_snapshot_cache is not None:
+            return _stock_basic_snapshot_cache
+        store = _snapshot_store()
+        if store is not None:
+            rows = store.load_stock_basic()
+            if rows is not None:
+                _stock_basic_snapshot_cache = rows
+                return rows
+        rows: list[dict] = []
+        for status, fields in (
+            ("L", "ts_code,name,list_date,list_status"),
+            ("D", "ts_code,name,list_date,list_status,delist_date"),
+            ("P", "ts_code,name,list_date,list_status,delist_date"),
+        ):
+            df = pro.stock_basic(list_status=status, fields=fields)
+            for row in df.itertuples(index=False):
+                delist = getattr(row, "delist_date", None)
+                rows.append(
+                    {
+                        "ts_code": row.ts_code,
+                        "name": str(getattr(row, "name", "") or ""),
+                        "list_date": str(getattr(row, "list_date", "") or ""),
+                        "list_status": status,
+                        "delist_date": str(delist) if delist is not None and not pd.isna(delist) else None,
+                    }
+                )
+        if rows and store is not None:
+            store.save_stock_basic(rows)
+        if rows:
+            _stock_basic_snapshot_cache = rows
+        return rows
+
+
+def get_index_member_all_records(pro) -> tuple[list[tuple], list[tuple]]:
+    """申万成分历史归属全量: (当前成分 Y records, 历史退出 N records), 元素 (ts_code, l3_code, in_date, out_date|None)
+
+    三级查找同 get_stock_basic_snapshot(日级新鲜度); 网络路径与原 industry_tree._pull
+    逐字同构(分页 is_new=Y/N 两轮)
+    """
+    global _index_member_all_cache
+    with _index_member_all_lock:
+        if _index_member_all_cache is not None:
+            return _index_member_all_cache
+        store = _snapshot_store()
+        if store is not None:
+            records = store.load_index_member_all()
+            if records is not None:
+                _index_member_all_cache = records
+                return records
+        batch_size = 1999
+
+        def _pull(is_new: str | None) -> list[tuple[str, str, str, str | None]]:
+            records: list[tuple[str, str, str, str | None]] = []
+            offset = 0
+            while True:
+                kw: dict[str, object] = {"offset": offset, "limit": batch_size}
+                if is_new is not None:
+                    kw["is_new"] = is_new
+                df = pro.index_member_all(**kw)
+                if len(df) == 0:
+                    break
+                for row in df.itertuples(index=False):
+                    in_date = getattr(row, "in_date", None)
+                    out_date = getattr(row, "out_date", None)
+                    in_s = str(in_date) if (in_date is not None and not pd.isna(in_date)) else ""
+                    out_s: str | None = (
+                        str(out_date) if (out_date is not None and not pd.isna(out_date)) else None
+                    )
+                    records.append((row.ts_code, row.l3_code, in_s, out_s))
+                offset += len(df)
+                if batch_size > len(df):
+                    break
+            return records
+
+        records = (_pull(None), _pull("N"))
+        if records[0] and store is not None:
+            store.save_index_member_all(*records)
+        if records[0]:
+            _index_member_all_cache = records
+        return records
 
 
 def _calc_free_mv(
@@ -566,7 +757,16 @@ class MarketDataProvider:
         cached = self._fina_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, tuple[str, float, float, float, float]] = {}
+        # 三级查找: 非易变期(距今 >= FINA_VOLATILE_MONTHS 个月, 见 market_store)且库内完整 → 直接重建
+        store = self.market_store
+        if store is not None and not store.is_period_volatile(period):
+            raw = store.load_fina_period(period)
+            if raw is not None:
+                rows = _merge_fina_raw_rows(raw)
+                self._fina_period_cache[period] = rows
+                return rows
+            # 未完整(空行集/库异常): 继续走网络
+        raw_rows: list[tuple[str, str, float | None, float | None, float | None, float | None]] = []
         offset = 0
         while True:
             self._acquire_rate_slot("fina_indicator_vip")
@@ -579,31 +779,28 @@ class MarketDataProvider:
             if df is None or len(df) == 0:
                 break
             for row in df.itertuples(index=False):
-                ts_code = str(row.ts_code)
                 ann_date = str(getattr(row, "ann_date", None) or "")
                 deduct = getattr(row, "profit_dedt", None)
                 extra = getattr(row, "extra_item", None)
                 bps = getattr(row, "bps", None)
                 roe_waa = getattr(row, "roe_waa", None)
-                # 行内合成归母: 两字段同一行齐备才算出(恒等式见 docstring), 缺一即 None 不猜
-                if deduct is not None and not pd.isna(deduct) and extra is not None and not pd.isna(extra):
-                    attr_profit = float(deduct) + float(extra)
-                else:
-                    attr_profit = None
-                ann_old, deduct_old, attr_old, bps_old, roe_old = rows.get(
-                    ts_code, ("", None, None, None, None)
-                )
-                rows[ts_code] = (
-                    ann_date or ann_old,
-                    float(deduct) if deduct is not None and not pd.isna(deduct) else deduct_old,
-                    attr_profit if attr_profit is not None else attr_old,
-                    float(bps) if bps is not None and not pd.isna(bps) else bps_old,
-                    float(roe_waa) if roe_waa is not None and not pd.isna(roe_waa) else roe_old,
+                raw_rows.append(
+                    (
+                        str(row.ts_code),
+                        ann_date,
+                        float(deduct) if deduct is not None and not pd.isna(deduct) else None,
+                        float(extra) if extra is not None and not pd.isna(extra) else None,
+                        float(bps) if bps is not None and not pd.isna(bps) else None,
+                        float(roe_waa) if roe_waa is not None and not pd.isna(roe_waa) else None,
+                    )
                 )
             offset += len(df)
             if len(df) < FINA_FETCH_BATCH:
                 break
+        rows = _merge_fina_raw_rows(raw_rows)
         self._fina_period_cache[period] = rows
+        if store is not None and rows:
+            store.save_fina_period(period, raw_rows)
         return rows
 
     def _fetch_bs_period(self, period: str) -> dict[str, tuple[str, float]]:
@@ -639,7 +836,14 @@ class MarketDataProvider:
         cached = self._bs_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, tuple[str, float]] = {}
+        store = self.market_store
+        if store is not None and not store.is_period_volatile(period):
+            raw = store.load_bs_period(period)
+            if raw is not None:
+                rows = _merge_bs_raw_rows(raw)
+                self._bs_period_cache[period] = rows
+                return rows
+        raw_rows: list[tuple[str, str, str, float | None, float | None]] = []
         offset = 0
         while True:
             self._acquire_rate_slot("balancesheet_vip")
@@ -654,27 +858,24 @@ class MarketDataProvider:
             if offset == 0 and "oth_eqt_tools" not in df.columns:
                 logger.warning("balancesheet_vip 未返回 oth_eqt_tools 字段(fields 被静默忽略?), PB 净资产将退化为含其他权益工具口径")
             for row in df.itertuples(index=False):
-                report_type = str(getattr(row, "report_type", None) or "")
-                if report_type and report_type != "1":
-                    continue  # 只取合并报表(实测不传时服务端已默认 '1', 此为防御)
-                ts_code = str(row.ts_code)
-                ann_date = str(getattr(row, "ann_date", None) or "")
                 eq_raw = getattr(row, "total_hldr_eqy_exc_min_int", None)
-                if eq_raw is not None and not pd.isna(eq_raw):
-                    oth = getattr(row, "oth_eqt_tools", None)
-                    oth_v = float(oth) if oth is not None and not pd.isna(oth) else 0.0
-                    equity = float(eq_raw) - oth_v
-                else:
-                    equity = None
-                ann_old, equity_old = rows.get(ts_code, ("", None))
-                rows[ts_code] = (
-                    ann_date or ann_old,
-                    equity if equity is not None else equity_old,
+                oth = getattr(row, "oth_eqt_tools", None)
+                raw_rows.append(
+                    (
+                        str(row.ts_code),
+                        str(getattr(row, "ann_date", None) or ""),
+                        str(getattr(row, "report_type", None) or ""),
+                        float(eq_raw) if eq_raw is not None and not pd.isna(eq_raw) else None,
+                        float(oth) if oth is not None and not pd.isna(oth) else None,
+                    )
                 )
             offset += len(df)
             if len(df) < BS_FETCH_BATCH:
                 break
+        rows = _merge_bs_raw_rows(raw_rows)
         self._bs_period_cache[period] = rows
+        if store is not None and rows:
+            store.save_bs_period(period, raw_rows)
         return rows
 
     def _fetch_express_period(self, period: str) -> dict[str, list[tuple[str, float]]]:
@@ -698,7 +899,14 @@ class MarketDataProvider:
         cached = self._express_period_cache.get(period)
         if cached is not None:
             return cached
-        rows: dict[str, list[tuple[str, float]]] = {}
+        store = self.market_store
+        if store is not None and not store.is_period_volatile(period):
+            raw = store.load_express_period(period)
+            if raw is not None:
+                rows = _merge_express_raw_rows(raw)
+                self._express_period_cache[period] = rows
+                return rows
+        raw_rows: list[tuple[str, str, float | None]] = []
         offset = 0
         while True:
             self._acquire_rate_slot("express_vip")
@@ -714,22 +922,43 @@ class MarketDataProvider:
                 logger.warning("express_vip 未返回 n_income 字段(fields 被静默忽略?), 归母 TTM 将退回纯财报口径")
                 break
             for row in df.itertuples(index=False):
-                ts_code = str(row.ts_code)
-                ann_date = str(getattr(row, "ann_date", None) or "")
                 value = getattr(row, "n_income", None)
-                if not ann_date or value is None or pd.isna(value):
-                    continue  # 无公告日/无数值版本丢弃
-                entry = (ann_date, float(value))
-                versions = rows.setdefault(ts_code, [])
-                if entry not in versions:
-                    versions.append(entry)
+                raw_rows.append(
+                    (
+                        str(row.ts_code),
+                        str(getattr(row, "ann_date", None) or ""),
+                        float(value) if value is not None and not pd.isna(value) else None,
+                    )
+                )
             offset += len(df)
             if len(df) < EXPRESS_FETCH_BATCH:
                 break
-        for versions in rows.values():
-            versions.sort()
+        rows = _merge_express_raw_rows(raw_rows)
         self._express_period_cache[period] = rows
+        if store is not None and rows:
+            store.save_express_period(period, raw_rows)
         return rows
+
+    def refresh_fina_periods(self, periods: list[str]) -> dict[str, int]:
+        """强制重拉指定报告期三池(维护入口, market_cache --force-fina): 清库内该期痕迹后走网络
+
+        返回 {pool: 行数} 供 CLI 打印; 近端期本就每次走网络(volatile 规则), 本方法主要
+        服务"更久远的追溯修正"场景(Tushare 偶发修正 24 个月以前的旧报告期)
+        """
+        store = self.market_store
+        for period in periods:
+            datetime.strptime(period, "%Y%m%d")  # 格式校验
+            if store is not None:
+                store.purge_fina(period)
+            self._fina_period_cache.pop(period, None)
+            self._bs_period_cache.pop(period, None)
+            self._express_period_cache.pop(period, None)
+        result: dict[str, int] = {}
+        for period in periods:
+            result[f"fina_{period}"] = len(self._fetch_fina_period(period))
+            result[f"bs_{period}"] = len(self._fetch_bs_period(period))
+            result[f"express_{period}"] = len(self._fetch_express_period(period))
+        return result
 
     @staticmethod
     def _fina_period_window(date: datetime) -> list[str]:
@@ -1446,32 +1675,41 @@ class MarketDataProvider:
         # 窗口覆盖的自然月(含 start 所在月, 不早于 start)
         cur = datetime.strptime(start_str[:6] + "01", "%Y%m%d")
         end_month = end_str[:6]
+        store = self.market_store
         while cur.strftime("%Y%m") <= end_month:
             month_key = cur.strftime("%Y%m")
             month_start = month_key + "01"
             month_end = month_key + "31"  # 超出部分接口按窗口自动裁剪(31 日为窗口上界)
             cached = self._index_weight_month_cache.get((index_code, month_key))
             if cached is None:
-                per_month: dict[str, set[str]] = {}
-                offset = 0
-                while True:
-                    self._acquire_rate_slot("index_weight")
-                    df = self.pro.index_weight(
-                        index_code=index_code, start_date=month_start, end_date=month_end,
-                        offset=offset, limit=9999,
-                    )
-                    if df is None or df.empty:
-                        break
-                    for row in df.itertuples(index=False):
-                        trade_date = str(getattr(row, "trade_date", "") or "")
-                        con_code = str(getattr(row, "con_code", "") or "")
-                        if trade_date and con_code:
-                            per_month.setdefault(trade_date, set()).add(con_code)
-                    if len(df) < 9999:
-                        break
-                    offset += len(df)
-                cached = per_month
-                self._index_weight_month_cache[(index_code, month_key)] = cached
+                # 三级查找: 历史月(非当月)且库内完整 → 直接重建; 当月快照可能仍在滚动、绕库走网络
+                if store is not None and not store.is_month_volatile(month_key):
+                    cached = store.load_index_weight_month(index_code, month_key)
+                    if cached is not None:
+                        self._index_weight_month_cache[(index_code, month_key)] = cached
+                if cached is None:
+                    per_month: dict[str, set[str]] = {}
+                    offset = 0
+                    while True:
+                        self._acquire_rate_slot("index_weight")
+                        df = self.pro.index_weight(
+                            index_code=index_code, start_date=month_start, end_date=month_end,
+                            offset=offset, limit=9999,
+                        )
+                        if df is None or df.empty:
+                            break
+                        for row in df.itertuples(index=False):
+                            trade_date = str(getattr(row, "trade_date", "") or "")
+                            con_code = str(getattr(row, "con_code", "") or "")
+                            if trade_date and con_code:
+                                per_month.setdefault(trade_date, set()).add(con_code)
+                        if len(df) < 9999:
+                            break
+                        offset += len(df)
+                    cached = per_month
+                    self._index_weight_month_cache[(index_code, month_key)] = cached
+                    if store is not None and per_month:
+                        store.save_index_weight_month(index_code, month_key, per_month)
             snapshots.update(cached)
             # 下一自然月
             cur = datetime(month=1 if cur.month == 12 else cur.month + 1, year=cur.year + (1 if cur.month == 12 else 0), day=1)
@@ -1586,14 +1824,22 @@ class MarketDataProvider:
         """拉取并缓存 date 当日(ex_date==date) dividend 全量记录(除息+送转), 返回记录列表
 
         与除息识别共用同一次请求, 送转记录(4.4.14 重整转增识别)零额外接口成本;
-        按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
+        三级查找: 内存 → SQLite(非易变尾窗口, dividend(ex_date=D) 只回实施行、历史不可变)
+        → 网络; 按日期内存缓存(单日一次 dividend 请求, wrapper 已计数)
         """
         cached = self._ex_div_records_cache.get(date)
         if cached is not None:
             return cached
+        date_str = date.strftime("%Y%m%d")
+        store = self.market_store
+        if store is not None and not store.is_volatile(date_str):
+            records = store.load_dividend_ex(date_str)
+            if records is not None:
+                self._ex_div_records_cache[date] = records
+                return records
         records: list[dict] = []
         self._acquire_rate_slot("dividend")
-        df = self.pro.dividend(ex_date=date.strftime("%Y%m%d"))
+        df = self.pro.dividend(ex_date=date_str)
         if df is not None and not df.empty:
             for r in df.itertuples(index=False):
                 records.append(
@@ -1609,6 +1855,8 @@ class MarketDataProvider:
                     }
                 )
         self._ex_div_records_cache[date] = records
+        if store is not None and records:
+            store.save_dividend_ex(date_str, records)
         return records
 
     def get_ex_div_cash(self, date: datetime) -> dict[str, float]:
@@ -1917,22 +2165,34 @@ class MarketDataProvider:
         """获取区间内交易日列表(YYYYMMDD, 升序)
 
         跨度包含缓存: 已请求过的更宽区间(如链式区间榜预取的 区间±12 天)可被任意子区间切片命中,
-        避免除息日 12 天窗口等高频小查询重复请求 trade_cal
+        避免除息日 12 天窗口等高频小查询重复请求 trade_cal;
+        内存未命中再查 SQLite 持久层的连续覆盖跨度(market_store.trade_cal_spans, 跨进程复用),
+        仍未覆盖才走网络并写穿(行 + 跨度并集合并, 覆盖不完整如伸进未发布未来日历不登记跨度)
         """
         for span_start, span_end, days in self._trade_cal_spans:
             if span_start <= start_str and end_str <= span_end:
                 left = bisect.bisect_left(days, start_str)
                 right = bisect.bisect_right(days, end_str)
                 return days[left:right]
+        store = self.market_store
+        if store is not None:
+            db_days = store.get_trading_days(start_str, end_str)
+            if db_days is not None:
+                self._trade_cal_spans.append((start_str, end_str, db_days))
+                return db_days
+        # 拉区间内全部自然日(含休市日, is_open 不过滤): 跨度登记须校验"每个自然日都有行"才能
+        # 判定完整覆盖; 只拉交易日会把覆盖校验永久卡死(交易日数 < 自然日数)
         df = self.pro.trade_cal(
             exchange='SSE',
             start_date=start_str,
             end_date=end_str,
-            is_open='1',
-            fields='cal_date',
+            fields='cal_date,is_open',
         )
-        result = sorted(df['cal_date'].astype(str).tolist())
+        all_rows = [(str(r.cal_date), int(r.is_open)) for r in df.itertuples(index=False)]
+        result = sorted(d for d, is_open in all_rows if is_open == 1)
         self._trade_cal_spans.append((start_str, end_str, result))
+        if store is not None:
+            store.save_trade_cal(start_str, end_str, all_rows)
         return result
 
     def _load_daily_pairs_from_store(self, date_str: str) -> dict[str, tuple[float, float]] | None:

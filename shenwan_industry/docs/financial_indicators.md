@@ -535,7 +535,10 @@ E_TTM = E_waa(A) + (E_waa(P) − E_waa(S)) ÷ 2
   缓存——拉取的墙体时间被隐藏；任一池失败仅该池对应指标降级（bs 池失败只影响 PB）
 - 浏览器/进程内二次计算同一天 → 报告期缓存命中，该阶段 0 请求
 - 报告期数据按 period 内存缓存；每股各期合并按计算日缓存（`_fina_per_stock`/`_bs_per_stock`）；
-  TTM / bps / equity 结果各自按计算日缓存
+  TTM / bps / equity 结果各自按计算日缓存；**第二期(2026-08-31)起三池原始行写穿 SQLite
+  `data/market.db`（`fina_raw`/`bs_raw`/`express_raw`，报告期键、去重/PIT 留读取方零口径折叠）——
+  距今 ≥24 个月的期跨进程读取零网络（历史复盘/同比基期长尾受益），更近的期每次走网络
+  抓财报更正（与原行为一致），远期追溯修正走 `market_cache.py --force-fina`**
 - 限流：`fina_indicator_vip` 与 `balancesheet_vip` 与 `express_vip` 各用独立节流器（7.5 次/秒 ≈ 450 次/分钟，互不影响）
 - **注销分量（7.6 节）**：`daily_basic` 按日全市场快照 diff 落盘持久缓存
   （`data/share_change_events.json`，随仓库提交），首刷回填 560 自然日约 370 请求 ~2 分钟

@@ -101,17 +101,30 @@ def _run_check(provider_factory, store: MarketStore, sample_n: int | None) -> No
     stats = store.stats()
     print("\n===== 行情 SQLite 持久层体检 =====")
     print(f"库文件: {stats['db_path']} ({stats['db_size_mb']} MB)")
-    for api in ("daily", "daily_basic"):
+    for api in (
+        "daily", "daily_basic", "dividend_ex",
+        "fina_indicator_vip", "balancesheet_vip", "express_vip", "index_weight",
+    ):
         s = stats[api]
         rng = f"{s['first']}~{s['last']}" if s["first"] else "无"
-        print(f"{api}: 覆盖 {s['dates']} 个交易日 ({rng})")
-        if s["row_count_mismatch"]:
-            for day, logged, actual in s["row_count_mismatch"][:10]:
-                print(f"  ⚠ {day} fetch_log 记 {logged} 行, 表内实数 {actual} 行")
+        label = "个交易日" if api in ("daily", "daily_basic", "dividend_ex") else "个报告期" if api != "index_weight" else "个指数月"
+        print(f"{api}: 覆盖 {s['dates']} {label} ({rng})")
+        if s.get("row_count_mismatch"):
+            for key, logged, actual in s["row_count_mismatch"][:10]:
+                print(f"  ⚠ {key} fetch_log 记 {logged} 行, 表内实数 {actual} 行")
             if len(s["row_count_mismatch"]) > 10:
-                print(f"  ⚠ ...共 {len(s['row_count_mismatch'])} 个日期不一致")
-        else:
+                print(f"  ⚠ ...共 {len(s['row_count_mismatch'])} 个键不一致")
+        elif "row_count_mismatch" in s:
             print("  行数对账一致")
+    if stats["trade_cal"]["spans"]:
+        spans = ", ".join(f"{a}~{b}" for a, b in stats["trade_cal"]["spans"][:8])
+        more = f" ...共{len(stats['trade_cal']['spans'])}段" if len(stats["trade_cal"]["spans"]) > 8 else ""
+        print(f"trade_cal: 连续覆盖跨度 {spans}{more}")
+    else:
+        print("trade_cal: 无覆盖跨度")
+    for api in ("stock_basic", "index_member_all"):
+        at = stats[api]["fetched_at"]
+        print(f"{api}: 快照 {'今日(' + at + ')' if at and at[:10] == __import__('datetime').datetime.now().strftime('%Y-%m-%d') else (at + ' (已过期, 下次构建刷新)') if at else '无'}")
 
     if not sample_n:
         return
@@ -165,12 +178,20 @@ def _run_check(provider_factory, store: MarketStore, sample_n: int | None) -> No
         market_data_module.MARKET_DB_ENABLED = True
 
 
+def _run_force_fina(provider: MarketDataProvider, periods: list[str]) -> None:
+    result = provider.refresh_fina_periods(periods)
+    for key, count in result.items():
+        print(f"  {key}: {count} 行")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="行情/市值 SQLite 持久层(data/market.db)补数与体检")
     parser.add_argument("--backfill", nargs=2, metavar=("START", "END"),
                         help="预热日期区间(YYYYMMDD): 只补库内缺失的交易日")
     parser.add_argument("--force", nargs="+", metavar="DATE",
                         help="强制重拉指定日期(先清库内痕迹再网络覆盖)")
+    parser.add_argument("--force-fina", nargs="+", metavar="PERIOD", dest="force_fina",
+                        help="强制重拉指定报告期三池(YYYYMMDD 季末日, 如 20240630; 应对远期追溯修正)")
     parser.add_argument("--check", action="store_true", help="体检(默认无参数也执行)")
     parser.add_argument("--sample", type=int, default=None, metavar="N",
                         help="配合 --check: 随机抽 N 个日期与网络实拉逐字段比对")
@@ -185,4 +206,6 @@ if __name__ == "__main__":
         _run_backfill(provider, store, args.backfill[0], args.backfill[1])
     if args.force:
         _run_force(provider, store, args.force)
+    if args.force_fina:
+        _run_force_fina(provider, args.force_fina)
     _run_check(_build_provider, store, args.sample if args.check else None)

@@ -19,6 +19,11 @@ from typing import Callable
 import pandas as pd
 from tushare.pro.client import DataApi
 
+try:
+    from .market_data import get_index_member_all_records, get_stock_basic_snapshot
+except ImportError:  # 直接运行本文件时
+    from market_data import get_index_member_all_records, get_stock_basic_snapshot
+
 # 协作式取消检查: 需要取消时抛异常
 CancelCheck = Callable[[], None]
 
@@ -120,8 +125,11 @@ class ShenWanIndustryTree:
         """
         从 tushare 数据源获取各个行业的股票列表并填充到对应节点。
 
-        每次构建**实时拉取** index_member_all 两次: 默认(is_new=Y, 当前成分) + is_new='N'(历史退出,
-        out_date 非空), 拼成每股完整历史归属区间 ts_code_membership(不落盘、不缓存, 见 roadmap)。
+        成分与股票基础信息经 market_data 的树构建快照函数获取(进程内缓存 → SQLite
+        data/market.db **日级新鲜度**快照 → 网络): 当日内二次构建/跨进程重启零请求,
+        新上市/退市/成分调整次日自动刷新(见 market_store 树快照注释)。当前成分(Y,
+        is_new 默认) + 历史退出(is_new='N', out_date 非空)拼成每股完整历史归属区间
+        ts_code_membership。
         - 当前成分(Y): 同时维护当前快照结构(constituent_stock_to_l3_node / 节点成分集合 / in_date)
         - 历史退出(N): 只入 ts_code_membership / all_member_codes, 不填当前快照; l3_code 无法入树则跳过并告警
         """
@@ -129,51 +137,16 @@ class ShenWanIndustryTree:
             raise RuntimeError("请先构建行业树结构")
 
         if filter_unlisted and not self.stock_basic:
-            df_l = self.pro.stock_basic(list_status='L', fields='ts_code,name,list_date')
-            for row in df_l.itertuples(index=False):
-                self.stock_basic[row.ts_code] = row._asdict()
             # 退市/暂停上市股票也纳入, 供历史日期分析使用(按退市日期截断)
-            for status in ('D', 'P'):
-                df_status = self.pro.stock_basic(
-                    list_status=status,
-                    fields='ts_code,name,list_date,delist_date',
-                )
-                for row in df_status.itertuples(index=False):
-                    self.stock_basic[row.ts_code] = row._asdict()
-                    delist_date = row.delist_date
-                    if delist_date is not None and not pd.isna(delist_date):
-                        self.ts_code_to_delist_date[row.ts_code] = str(delist_date)
+            for row in get_stock_basic_snapshot(self.pro):
+                self.stock_basic[row["ts_code"]] = row
+                delist_date = row.get("delist_date")
+                if delist_date:
+                    self.ts_code_to_delist_date[row["ts_code"]] = delist_date
 
-        batch_size = 1999
-
-        def _pull(is_new: str | None) -> list[tuple[str, str, str, str | None]]:
-            """分页拉取 index_member_all, 返回 [(ts_code, l3_code, in_date, out_date|None)];
-            is_new=None=当前成分(Y), 'N'=历史退出"""
-            records: list[tuple[str, str, str, str | None]] = []
-            offset = 0
-            while True:
-                kw = {"offset": offset, "limit": batch_size}
-                if is_new is not None:
-                    kw["is_new"] = is_new
-                df = self.pro.index_member_all(**kw)
-                if len(df) == 0:
-                    break
-                for row in df.itertuples(index=False):
-                    in_date = getattr(row, "in_date", None)
-                    out_date = getattr(row, "out_date", None)
-                    in_s = str(in_date) if (in_date is not None and not pd.isna(in_date)) else ""
-                    out_s: str | None = (
-                        str(out_date) if (out_date is not None and not pd.isna(out_date)) else None
-                    )
-                    records.append((row.ts_code, row.l3_code, in_s, out_s))
-                offset += len(df)
-                if batch_size > len(df):
-                    break
-            return records
+        y_records, n_records = get_index_member_all_records(self.pro)
 
         count = 0  # 当前成分(Y) 数量, 与旧版一致
-        y_records = _pull(None)
-        n_records = _pull("N")
 
         # 当前成分(Y): 填当前快照 + 记 membership
         for ts_code, l3_code, in_s, out_s in y_records:
